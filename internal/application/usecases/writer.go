@@ -83,10 +83,15 @@ func resolveSite(raw, def string) (slotplan.SiteID, error) {
 	return slotplan.NewSiteID(raw)
 }
 
-// lookbackDays validates a window length in days; 0 means the default.
-func lookbackDays(days int) (int, error) {
+// lookbackDays validates a window length in days; 0 means def (the configured
+// default), which itself falls back to DefaultLookbackDays when unset or out
+// of range.
+func lookbackDays(days, def int) (int, error) {
 	if days == 0 {
-		return DefaultLookbackDays, nil
+		if def < 1 || def > MaxLookbackDays {
+			return DefaultLookbackDays, nil
+		}
+		return def, nil
 	}
 	if days < 1 || days > MaxLookbackDays {
 		return 0, ErrInvalidLookback

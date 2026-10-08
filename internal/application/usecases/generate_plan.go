@@ -23,6 +23,9 @@ type GeneratePlan struct {
 	Planner          *planning.Planner
 	DefaultSite      string
 	ForwardZoneCodes []string
+	// DefaultLookback is the window used when a request names none
+	// (LOOKBACK_DAYS); 0 means DefaultLookbackDays.
+	DefaultLookback int
 }
 
 // GenerateInput is the request: both fields are optional (site defaults to
@@ -38,7 +41,7 @@ func (uc *GeneratePlan) Handle(ctx context.Context, in GenerateInput) (*slotplan
 	if err != nil {
 		return nil, err
 	}
-	days, err := lookbackDays(in.LookbackDays)
+	days, err := lookbackDays(in.LookbackDays, uc.DefaultLookback)
 	if err != nil {
 		return nil, err
 	}

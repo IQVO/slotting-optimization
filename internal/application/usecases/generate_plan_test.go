@@ -93,6 +93,23 @@ func TestGeneratePlanIsStickyAgainstTheApprovedPlan(t *testing.T) {
 	}
 }
 
+func TestGeneratePlanUsesTheConfiguredDefaultLookback(t *testing.T) {
+	for _, c := range []struct{ configured, want int }{{7, 7}, {0, 28}, {-3, 28}, {400, 28}} {
+		h := newHarness()
+		uc := newGenerate(t, h)
+		uc.DefaultLookback = c.configured
+		p, err := uc.Handle(context.Background(), usecases.GenerateInput{})
+		noErr(t, err)
+		timeEq(t, "window from", p.Snapshot().Window.From, t0.Add(-time.Duration(c.want)*24*time.Hour))
+	}
+	h := newHarness()
+	uc := newGenerate(t, h)
+	uc.DefaultLookback = 7
+	p, err := uc.Handle(context.Background(), usecases.GenerateInput{LookbackDays: 14})
+	noErr(t, err)
+	timeEq(t, "a request overrides the configured default", p.Snapshot().Window.From, t0.Add(-14*24*time.Hour))
+}
+
 func TestGeneratePlanValidatesTheRequest(t *testing.T) {
 	cases := []struct {
 		name string
