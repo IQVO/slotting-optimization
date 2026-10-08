@@ -1,0 +1,11 @@
+DROP TABLE IF EXISTS idempotency_keys;
+DROP TABLE IF EXISTS processed_events;
+DROP TABLE IF EXISTS outbox_events;
+DROP TABLE IF EXISTS slots;
+DROP TABLE IF EXISTS zones;
+DROP TABLE IF EXISTS product_profiles;
+DROP TABLE IF EXISTS demand_lines;
+DROP TABLE IF EXISTS slot_plan_unassigned;
+DROP TABLE IF EXISTS slot_plan_moves;
+DROP TABLE IF EXISTS slot_plan_assignments;
+DROP TABLE IF EXISTS slot_plans;
