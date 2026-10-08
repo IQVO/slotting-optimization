@@ -5,8 +5,6 @@ disable-model-invocation: true
 argument-hint: "[git range]"
 ---
 
-<!-- TEMPLATE NOTE (warehouse-harness-template v2): adapt every repo-specific example in this file (file paths, type names, field names) to THIS repo real code. Do not copy-paste verbatim. -->
-
 Perform a bounded-context boundary and ADR-compliance review of the
 current changes (or `$ARGUMENTS` if given, e.g. a branch/PR diff range).
 
@@ -24,29 +22,25 @@ check a design decision against this fleet's standing architecture.
    `go test ./internal/architecture/... -v` first — if it's already red,
    report that and stop; don't hand-review what a fitness test already
    caught.
-2. **Customer/Supplier direction, per `.claude/rules/domain-model.md`
-   (or this repo's equivalent doc).** A new outbound call to a sibling
-   context must go the direction ADRs already established — check
-   `docs/docs/adr/` for the relevant context-mapping ADR before assuming
-   a new integration is fine. Flag any outbound call added to a context
-   this repo doesn't already integrate with; that's a new architectural
-   decision that needs its own ADR, not a code change slipped in
-   silently.
-3. **MCP additive-boundary rule (ADR-0008 fleet-wide).** A change under
-   `internal/adapters/inbound/mcp/` must depend only on
-   application/domain, and nothing else in the codebase may depend on
-   it. If this repo has a `TestMCPAdapterDependencyRule` fitness test,
-   confirm it's green; if not, check by eye.
-2b. **Zero-write guardrails, where applicable.** If this repo has a
-   documented zero-write constraint (e.g. warehouse-ops-agent v1), check
-   no mutating HTTP method or MCP tool without `ReadOnlyHint: true` was
-   added to an outbound/inbound surface bound by that constraint.
-4. **Analytics isolation (ADR-0006-style, where this repo has an
-   `internal/analytics/` read side).** The OLTP domain/application layers
-   must never import the analytics store or read model; the analytics
-   side must depend on nothing internal except itself. This is a real,
-   already-fitness-tested rule in most repos — confirm the test exists
-   and is green rather than re-deriving it by eye if possible.
+2. **Customer/Supplier direction, per `.claude/rules/domain-model.md`.**
+   This service is downstream of order-management (demand), product-master
+   (profiles) and facility-layout (slots). Check
+   `docs/adr/0001-slotting-optimization-bounded-context.md` and
+   `docs/adr/0003-local-copies-and-consumed-contracts.md` before assuming a
+   new integration is fine. There is NO HTTP client to a sibling context:
+   flag any outbound call as a new architectural decision that needs its
+   own ADR, not a code change slipped in silently.
+3. **Local-copy discipline (ADR 0003).** The consumers in
+   `internal/adapters/inbound/kafka/` may only write the local copies
+   (`demand_lines`, `product_profiles`, `zones`, `slots`) through the
+   `Apply*` use cases in `internal/application/usecases/consumers.go`, and
+   each must claim the CloudEvents id and upsert in ONE unit of work. A
+   consumer that writes a `SlotPlan`, or skips the claim, is a blocking
+   finding.
+4. **Planner purity.** `internal/domain/planning` does no I/O and reads no
+   clock; the `GeneratePlan` use case supplies the inputs. A second ranking
+   policy needs an ADR (see
+   `docs/adr/0002-slotplan-aggregate-and-abc-velocity-policy.md`).
 5. **Kafka consumer-group pattern correctness.** A new Kafka consumer
    must use either (a) a named long-lived constant for a genuinely
    single-instance consumer, or (b) a per-process-unique generated group
