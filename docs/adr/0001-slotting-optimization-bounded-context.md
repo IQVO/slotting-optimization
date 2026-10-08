@@ -58,7 +58,7 @@ One aggregate, `SlotPlan`, and one pure domain service, `planning.Planner`
 | order-management -> slotting-optimization | Published Language (`SiteSkuDemandChanged`, `warehouse.order-management.events`); slotting-optimization is a **Conformist** and keeps a local demand copy | Contract verified on `origin/develop` 2026-10-08; consumer built in the service phase |
 | product-master -> slotting-optimization | Published Language (`ProductClassified`, `ProductDimensionsDeclared`, `ProductMeasured`); **Conformist**, local product copy | Contract verified 2026-10-08; consumer in the service phase |
 | facility-layout -> slotting-optimization | Open Host Service / Published Language (`ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned`); **Conformist**, local slot copy | Contract verified 2026-10-08; consumer in the service phase |
-| slotting-optimization -> warehouse-ops-agent, warehouse-console | **Open Host Service** (REST; MCP read tools in a later phase) | Planned, later phases |
+| slotting-optimization -> warehouse-ops-agent, warehouse-console | **Open Host Service** (REST; MCP read tools, ADR 0005) | REST and MCP built; the consumers are later phases |
 | slotting-optimization -> process-path-management -> wes-work-planning -> fulfillment-execution | `SlotPlanApproved` carries the moves; turning them into MOVE/REPLENISH work through the process-path catalogue is the execution path | **PLANNED, not built** (ADR 0002): needs its own ADRs in those contexts and a new task type |
 
 ### Exclusions
