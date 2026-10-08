@@ -57,7 +57,7 @@ paths:
 - `SlotPlanApproved` (supersedes plan id, FULL assignments, moves): raised by `Approve`.
 - `SlotPlanRejected` (reason): raised by `Reject`. `Supersede` raises no event.
 
-## Key use cases (`internal/application/usecases`, built in the service phase)
+## Key use cases (application layer, built in the service phase)
 
 - `GenerateSlotPlan`: read the demand, product and layout copies, run the
   planner against the site's Approved map, store the Draft; idempotent per
