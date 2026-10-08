@@ -3,12 +3,11 @@ name: how-to-test
 description: Write or review tests and diagnose a failing coverage, mutation, bdd or integration CI job: the four test layers, the 90% gate, gremlins threshold semantics, the testcontainers rule. Use when adding tests, killing a surviving mutant, or fixing a red check.
 ---
 
-<!-- TEMPLATE NOTE (warehouse-harness-template v2): adapt every repo-specific example in this file (file paths, type names, field names) to THIS repo real code. Do not copy-paste verbatim. -->
-
 # How to test
 
 Use when writing or reviewing tests in this repo, or diagnosing a failing
-`coverage`/`mutation-fast`/`bdd`/`integration` CI job. This fleet's quality
+`coverage`/`mutation-fast`/`bdd`/`integration` CI job (locally: `make coverage`,
+`make mutation`, `make bdd`, `make integration`). This fleet's quality
 bar is layered — passing `go test` is necessary but is the WEAKEST signal
 of the four; mutation testing exists specifically because green tests can
 assert nothing.
@@ -17,19 +16,24 @@ assert nothing.
 
 1. **Unit tests** (`go test ./...`) — prove the code runs without
    panicking and returns SOMETHING. Table-driven, in-memory adapters only
-   (`internal/adapters/outbound/memory/`), never a real network/DB call.
+   (`internal/adapters/outbound/memory/`) or the fakes in
+   `internal/application/usecases/fakes_test.go`, never a real network/DB call.
+   Keep assertions flat (`eq`/`noErr`/`isErr`/`timeEq` in that file): the
+   linters bound test complexity.
 2. **Coverage** (`make coverage`, 90% gate on
    `./internal/domain/...,./internal/application/...`) — proves lines
    executed. Proves nothing about whether the test asserted the right
    thing.
-3. **Mutation testing** (`make mutation-fast`, gremlins) — proves the
+3. **Mutation testing** (`make mutation`, gremlins; the CI job `mutation-fast`) — proves the
    tests actually ASSERT, not merely execute. A mutant is a deliberately
    broken version of the code (`<` -> `<=`, `+` -> `-`, etc.); if the test
    suite still passes against the mutant, it "survived" (LIVED) — meaning
    no test would catch that exact bug in production. This is the sensor
    most worth understanding deeply; the pitfalls below are all about it.
 4. **BDD / behaviour** (`make bdd`, godog) — proves the use case works
-   end-to-end through the real HTTP surface, not through a mocked port.
+   end-to-end through the real HTTP surface, not through a mocked port:
+   `features/*.feature` and `features_test.go`, which feed the local copies
+   through the real consumers with raw CloudEvents.
 
 ## Mutation testing: `<=` fails, not `>=`
 
@@ -102,12 +106,17 @@ skip-gated test silently skips in CI and proves nothing there, while
 testcontainers actually exercises the assertions on the runner. A fitness
 test per technology enforces it (`TestKafkaIntegrationTestsUseTestcontainers`,
 `TestPostgresIntegrationTestsUseTestcontainers`). Share one container per
-package through a helper (e.g. an `outboxDB(t)` that runs
-`tcpostgres.Run` -> `ConnectionString` -> migrate -> pool -> `t.Cleanup`). See
-`internal/adapters/outbound/facilitycache/consumer_integration_test.go`
-for the working recipe (unique topic per test, one shared container per
-package, explicit `CreateTopics` + poll for the partition leader before
-the first read/write).
+test binary through the helpers in `internal/testing/`: `pgtest.NewPool(t)`
+(one Postgres container, a fresh database per test cloned from a migrated
+template) and `kafkatest.Brokers(t)`. Each package with integration tests
+shuts them down from a `TestMain` (`pgtest.Shutdown`, `kafkatest.Shutdown`).
+The same repository contract runs against the memory and the Postgres
+adapters (`internal/testing/repocontract`), so they cannot drift. See
+`internal/adapters/inbound/kafka/consumers_integration_test.go` for the
+working recipe (unique topic per test via `kafkatest.Topic`, one shared
+container per test binary, explicit `CreateTopics` + poll for the partition
+leader before the first read/write; `kafkatest.Produce` retries the one
+`UnknownTopicOrPartition` a just-created topic can still answer).
 
 ## Verify before opening the PR
 
