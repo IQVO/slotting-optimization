@@ -284,6 +284,31 @@ jobs:
       - name: govulncheck
         run: govulncheck ./...
 
+  # Packaging validation: chart lint + the wiring test (every Service selects
+  # exactly one Deployment). Not a required check.
+  helm-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: v3.16.4
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.x"
+          check-latest: true
+      - uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
+      - name: Run chart-testing (lint)
+        run: ct lint --charts charts/slotting-optimization --validate-maintainers=false --check-version-increment=false
+      - name: Chart wiring tests (each Service selects exactly one Deployment)
+        run: |
+          pip install pyyaml
+          python3 charts/slotting-optimization/tests/test_service_selectors.py
+
   # ============================================================
   # CLASSIFICATION: LINTERS & STATIC ANALYSIS (architecture fitness)
   # ============================================================
@@ -297,6 +322,58 @@ jobs:
           go-version-file: go.mod
       - name: Architecture fitness tests
         run: go test ./internal/architecture/... -v
+
+  # Shift-left container scan: builds the image (no push) on pull requests,
+  # so a vulnerable base image or dependency is caught before merge, not just
+  # at publish time. Blocks on CRITICAL/HIGH with a known fix; findings also
+  # land in the repo's Security tab (SARIF) regardless of pass/fail so
+  # history is visible even when nothing blocks. Not a required check.
+  # ============================================================
+  # CLASSIFICATION: SECURITY SCANNER (container image)
+  # ============================================================
+  trivy-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Build image (local only, not pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: "slotting-optimization:scan"
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Trivy scan (SARIF, always uploaded)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        if: always()
+        with:
+          image-ref: 'slotting-optimization:scan'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          ignore-unfixed: true
+      - name: Upload Trivy SARIF to Security tab
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+      - name: "Trivy scan (blocking gate: CRITICAL/HIGH with a fix available)"
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: 'slotting-optimization:scan'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
 
   # ============================================================
   # CLASSIFICATION: PUBLISH (Docker image) -- push-to-main only
