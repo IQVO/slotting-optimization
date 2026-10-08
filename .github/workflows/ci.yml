@@ -153,9 +153,11 @@ jobs:
 
   # Fast, BLOCKING mutation subset: runs on every push/PR so a drop in test
   # quality (tests that execute but stop asserting) is caught immediately.
-  # Subset = ./internal/domain/slotplan, the StockUnit aggregate: the richest
-  # behavioural core in the domain (15 of the 41 domain mutants) and it
-  # completes in ~1 minute. Thresholds/workers/timeout come from .gremlins.yaml,
+  # Subset = ./internal/domain/slotplan (the SlotPlan aggregate) and
+  # ./internal/domain/planning (the abc-velocity-v1 planner), each mutated on
+  # its own (gremlins takes one path). Measured 2026-10-08: 100 % efficacy and
+  # 100 % mutant coverage in both, 72 + 46 mutants, ~1 minute together.
+  # Thresholds/workers/timeout come from .gremlins.yaml,
   # so this job, the scheduled `mutation` job below and `make mutation` all
   # agree. The exhaustive run stays in the `mutation` job.
   # ============================================================
@@ -171,8 +173,11 @@ jobs:
           go-version-file: go.mod
       - name: Install gremlins
         run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
-      - name: Mutation testing (fast subset — slotplan aggregate)
-        run: gremlins unleash ./internal/domain/slotplan
+      - name: Mutation testing (fast subset — slotplan aggregate and planning service)
+        run: |
+          for pkg in ./internal/domain/slotplan ./internal/domain/planning; do
+            gremlins unleash "$pkg"
+          done
 
   mutation:
     runs-on: ubuntu-latest
