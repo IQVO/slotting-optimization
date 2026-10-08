@@ -1,0 +1,55 @@
+# Non-secret configuration of the api component, mirrored from the env the
+# Deployment renders; the Deployment's checksum/config annotation rolls the
+# pods whenever any of it changes. DATABASE_URL never lands here: it lives in
+# the Secret (templates/secret.yaml or database.existingSecret).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "slotting-optimization.fullname" . }}
+  labels:
+    {{- include "slotting-optimization.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+data:
+  HTTP_ADDR: {{ .Values.config.httpAddr | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  EVENT_PUBLISHER: {{ .Values.config.eventPublisher | quote }}
+  DEMAND_MODE: {{ .Values.config.demandMode | quote }}
+  PRODUCT_MODE: {{ .Values.config.productMode | quote }}
+  LAYOUT_MODE: {{ .Values.config.layoutMode | quote }}
+  ENVIRONMENT: {{ .Values.environment | quote }}
+  {{- with .Values.config.demandConsumerGroup }}
+  DEMAND_CONSUMER_GROUP: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.productConsumerGroup }}
+  PRODUCT_CONSUMER_GROUP: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.layoutConsumerGroup }}
+  LAYOUT_CONSUMER_GROUP: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.demandSiteId }}
+  DEMAND_SITE_ID: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.defaultSiteId }}
+  DEFAULT_SITE_ID: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.lookbackDays }}
+  LOOKBACK_DAYS: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.forwardZoneCodes }}
+  FORWARD_ZONE_CODES: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.outboxRelayInterval }}
+  OUTBOX_RELAY_INTERVAL: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.shutdownDrainDelay }}
+  SHUTDOWN_DRAIN_DELAY: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.corsAllowedOrigins }}
+  CORS_ALLOWED_ORIGINS: {{ . | quote }}
+  {{- end }}
+  {{- if .Values.otel.enabled }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.endpoint | quote }}
+  {{- end }}
+  {{- if .Values.kafka.enabled }}
+  KAFKA_BROKERS: {{ .Values.kafka.brokers | quote }}
+  {{- end }}
