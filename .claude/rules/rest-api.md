@@ -5,22 +5,37 @@ paths:
   - "apis/openapi/**"
 ---
 
-<!-- TEMPLATE (warehouse-harness-template v2): fill in for THIS repo. -->
 # REST API (inbound adapter)
 
-List every route -> use case mapping, kept in sync with `apis/openapi.yaml`
-(the `docs-api-drift` CI job fails if generated docs disagree with this
-file's own spec, but this file itself is documentation for an agent, not
-generated -- keep it manually accurate).
+Source of truth: `apis/openapi.yaml`. Keep this list in sync with it. Kong path
+prefix `/api/slotting-optimization`.
 
-- `<METHOD> <path>`    -> `<UseCaseName>`
-- ...
+- `POST /slot-plans`                 -> `GenerateSlotPlan` (201 Draft; body `{siteId?, lookbackDays?}` optional; `Idempotency-Key`)
+- `GET  /slot-plans?limit=&cursor=&siteId=&state=` -> `ListSlotPlans` (newest first, cursor paging)
+- `GET  /slot-plans/{planId}`        -> `GetSlotPlan`
+- `POST /slot-plans/{planId}/approve` -> `ApprovePlan` (200; 409 `plan-not-draft`, 409 `approved-plan-conflict`)
+- `POST /slot-plans/{planId}/reject`  -> `RejectPlan` (200; body `{reason?}`; 409 `plan-not-draft`)
+- `GET  /forward-slots?siteId=`      -> `ListForwardSlots` (the current approved assignment map; empty without `planId` when none)
+- `GET  /sku-velocity?limit=&windowDays=&siteId=` -> `ListSkuVelocity`
+- `GET  /healthz`, `GET /readyz` (503 while draining), `GET /metrics`
 
 ## Conventions
 
-- Error shape: <RFC 7807 problem+json? custom envelope? state it>.
-- Auth: <this fleet's fleet-wide REST+MCP auth was deliberately reverted
-  2026-09-11 and is unauthenticated pending a fresh decision -- state
-  whichever is true for this repo, and keep
-  `internal/architecture/fitness_test.go`'s TestNoAuthMiddlewareReintroduced
-  in sync if that ever changes>.
+- Errors: RFC 7807 `application/problem+json`,
+  `type = https://errors.slotting-optimization.warehouse-systems.dev/<slug>`.
+  One lookup table maps typed errors to (status, slug, title). Slugs:
+  `malformed-request`, `invalid-plan-id`, `invalid-site-id`,
+  `invalid-lookback`, `invalid-limit`, `invalid-cursor`, `invalid-state`,
+  `reject-reason-too-long`, `idempotency-key-required`,
+  `idempotency-key-reused`, `plan-not-found`, `plan-not-draft`,
+  `approved-plan-conflict`, `concurrent-modification`, `internal-error`.
+- Request bodies reject unknown fields (`DisallowUnknownFields`).
+- `POST /slot-plans` creates a resource: the fleet `Idempotency-Key` middleware
+  applies (missing key = 400 `idempotency-key-required`; same key + different
+  body = 422 `idempotency-key-reused`). Approve and reject are state transitions
+  on an existing resource and do not take a key: repeating one answers 409
+  `plan-not-draft`.
+- Lists use opaque cursors (`nextCursor` absent on the last page).
+- Auth: none (fleet-wide revert 2026-09-11; `TestNoAuthMiddlewareReintroduced`).
+- No outbound HTTP client and no MCP client: plans are computed from event-fed
+  local copies (ADR 0003).
