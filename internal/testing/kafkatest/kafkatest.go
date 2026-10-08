@@ -6,6 +6,7 @@ package kafkatest
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -119,7 +120,16 @@ func Produce(t *testing.T, topic string, msgs ...Message) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := w.WriteMessages(ctx, out...); err != nil {
+	// A just-created topic can still be unknown to the broker that serves the
+	// produce request even once its leader is visible, so retry that one error.
+	var err error
+	for attempt := 0; attempt < 50; attempt++ {
+		if err = w.WriteMessages(ctx, out...); err == nil || !errors.Is(err, kafkago.UnknownTopicOrPartition) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if err != nil {
 		t.Fatalf("produce to %s: %v", topic, err)
 	}
 }
