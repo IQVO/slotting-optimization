@@ -1,0 +1,178 @@
+{{- include "slotting-optimization.requireDatabase" . -}}
+{{- include "slotting-optimization.requireKafkaForPublisher" . -}}
+{{- include "slotting-optimization.requireKnownPublisher" . -}}
+{{- include "slotting-optimization.requireConsumerConfig" . -}}
+{{- include "slotting-optimization.requireLookbackDays" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "slotting-optimization.fullname" . }}
+  labels:
+    {{- include "slotting-optimization.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  {{- if not .Values.autoscaling.api.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "slotting-optimization.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "slotting-optimization.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ . }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "slotting-optimization.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "slotting-optimization.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          # Env contract verified against cmd/api/main.go's header comment.
+          # Values that have a dedicated chart key are rendered here, never
+          # through extraEnv, so the same variable is never set twice.
+          env:
+            - name: HTTP_ADDR
+              value: {{ .Values.config.httpAddr | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: EVENT_PUBLISHER
+              value: {{ .Values.config.eventPublisher | quote }}
+            {{- with .Values.config.outboxRelayInterval }}
+            - name: OUTBOX_RELAY_INTERVAL
+              value: {{ . | quote }}
+            {{- end }}
+            # Planning defaults (ADR 0002): the site plans default to (and,
+            # as DEMAND_SITE_ID, the only site whose demand is ingested),
+            # the default demand window and the forward-slot zone codes.
+            # Absent while empty so the binary's own defaults apply.
+            {{- with .Values.config.demandSiteId }}
+            - name: DEMAND_SITE_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.defaultSiteId }}
+            - name: DEFAULT_SITE_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.lookbackDays }}
+            - name: LOOKBACK_DAYS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.forwardZoneCodes }}
+            - name: FORWARD_ZONE_CODES
+              value: {{ . | quote }}
+            {{- end }}
+            # ADR 0003 local copies. DEMAND_MODE / PRODUCT_MODE / LAYOUT_MODE
+            # are always rendered (permissive = the consumer is not started).
+            # The consumer group ids come from values, never a literal: a
+            # stable id is what makes a rescheduled pod resume from its
+            # committed offsets. Absent while empty.
+            - name: DEMAND_MODE
+              value: {{ .Values.config.demandMode | quote }}
+            {{- with .Values.config.demandConsumerGroup }}
+            - name: DEMAND_CONSUMER_GROUP
+              value: {{ . | quote }}
+            {{- end }}
+            - name: PRODUCT_MODE
+              value: {{ .Values.config.productMode | quote }}
+            {{- with .Values.config.productConsumerGroup }}
+            - name: PRODUCT_CONSUMER_GROUP
+              value: {{ . | quote }}
+            {{- end }}
+            - name: LAYOUT_MODE
+              value: {{ .Values.config.layoutMode | quote }}
+            {{- with .Values.config.layoutConsumerGroup }}
+            - name: LAYOUT_CONSUMER_GROUP
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.shutdownDrainDelay }}
+            - name: SHUTDOWN_DRAIN_DELAY
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.config.corsAllowedOrigins }}
+            - name: CORS_ALLOWED_ORIGINS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: SERVICE_VERSION
+              value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+            {{- if .Values.otel.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            {{- end }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "slotting-optimization.databaseSecretName" . }}
+                  key: {{ .Values.database.existingSecretKey }}
+            {{- if .Values.database.migrationsExistingSecretKey }}
+            # See values.yaml's database.migrationsExistingSecretKey comment:
+            # a direct (non-pooled) connection used only for the
+            # golang-migrate step, never for the runtime pgxpool.
+            # `optional: true` so a secret without this key still starts the
+            # pod -- the binary falls back to DATABASE_URL.
+            - name: MIGRATIONS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "slotting-optimization.databaseSecretName" . }}
+                  key: {{ .Values.database.migrationsExistingSecretKey }}
+                  optional: true
+            {{- end }}
+            {{- if .Values.kafka.enabled }}
+            - name: KAFKA_BROKERS
+              value: {{ .Values.kafka.brokers | quote }}
+            {{- end }}
+            {{- range .Values.extraEnv }}
+            - {{ toYaml . | nindent 14 | trim }}
+            {{- end }}
+          {{- with .Values.startupProbe }}
+          startupProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

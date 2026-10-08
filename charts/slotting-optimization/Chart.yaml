@@ -1,0 +1,12 @@
+apiVersion: v2
+name: slotting-optimization
+description: Slotting Optimization — ABC-velocity forward pick slot plans (Draft, Approved, Rejected); publishes Slotting events on warehouse.slotting-optimization.events
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/IQVO/slotting-optimization
+keywords:
+  - ddd
+  - hexagonal-architecture
+  - warehouse-management-system
+  - golang

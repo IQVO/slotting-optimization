@@ -1,0 +1,53 @@
+{{ .Chart.Name }} has been deployed.
+
+Release:   {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+
+Service:   {{ include "slotting-optimization.fullname" . }} ({{ .Values.service.type }}, port {{ .Values.service.port }})
+
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+Ingress:   http://{{ .host }}{{ (index .paths 0).path }}
+{{- end }}
+{{- else if .Values.gatewayApi.enabled }}
+Gateway API HTTPRoute enabled — routed via the parentRefs/hosts configured
+in gatewayApi.*.
+{{- else }}
+To reach it locally:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "slotting-optimization.fullname" . }} 8080:{{ .Values.service.port }}
+  curl http://localhost:8080/healthz
+{{- end }}
+
+{{- if .Values.mcp.enabled }}
+
+MCP server (read-only tools, Streamable HTTP, no auth):
+  http://{{ include "slotting-optimization.mcpFullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.mcp.service.port }}/mcp
+{{- end }}
+
+{{- if eq .Values.config.eventPublisher "kafka" }}
+
+config.eventPublisher is "kafka" — Slotting events are relayed from the
+transactional outbox onto warehouse.slotting-optimization.events ({{ .Values.kafka.brokers }}).
+{{- else }}
+
+NOTE: config.eventPublisher is "log" (the default) — outbox rows are drained
+to the log sink, nothing reaches warehouse.slotting-optimization.events.
+{{- end }}
+{{- if eq .Values.config.demandMode "kafka" }}
+
+The demand local-copy consumer is ON (group
+{{ .Values.config.demandConsumerGroup }}, topic warehouse.order-management.events):
+plans are generated from the ingested order-line demand.
+{{- end }}
+{{- if eq .Values.config.productMode "kafka" }}
+
+The product local-copy consumer is ON (group
+{{ .Values.config.productConsumerGroup }}, topic warehouse.product-master.events):
+the planner sees ABC classes and physical profiles.
+{{- end }}
+{{- if eq .Values.config.layoutMode "kafka" }}
+
+The layout local-copy consumer is ON (group
+{{ .Values.config.layoutConsumerGroup }}, topic warehouse.facility.events):
+the forward-slot catalogue follows the facility layout.
+{{- end }}

@@ -1,0 +1,253 @@
+# Default values for slotting-optimization.
+
+replicaCount: 1
+
+# The image is NEVER pulled from a registry in the local kind cluster: it is
+# built from the local checkout and side-loaded with `kind load docker-image`
+# (warehouse-infra overrides repository and tag with a content-derived
+# local-<hash> tag). `pullPolicy: IfNotPresent` is required there, or the
+# kubelet tries to pull from Docker Hub and ImagePullBackOffs. The same image
+# carries both binaries: /app/api (this Deployment) and /app/mcp.
+image:
+  repository: warehouse/slotting-optimization
+  pullPolicy: IfNotPresent
+  tag: "local"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: slotting-optimization.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# Additive, disabled-by-default alternative to the ingress: block above.
+# Same shape as every other chart in this fleet. Routes only to this chart's
+# main REST API Service -- the same Service ingress.yaml targets.
+# warehouse-infra turns it on and supplies the Kong Gateway parentRef + path.
+gatewayApi:
+  enabled: false
+  parentRefs:
+    - name: ""
+      namespace: ""
+      sectionName: "http"
+  hosts:
+    - path: /
+      pathType: PathPrefix
+  stripPath: true
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# HorizontalPodAutoscaler (autoscaling/v2) for the api Deployment, disabled by
+# default so nothing changes replica behaviour silently. When enabled, the
+# Deployment's replicaCount is omitted so the HPA is the sole owner of
+# .spec.replicas. N>1 is safe for the outbox relay (FOR UPDATE SKIP LOCKED),
+# the version-guarded aggregate writes (concurrent-modification on conflict)
+# and the local-copy consumers (stable consumer groups, dedupe on the
+# CloudEvents id in the same transaction); it has not been load-tested. mcp
+# deliberately has no block here: the MCP Streamable-HTTP handler keeps
+# per-process session state and the mcp Service has no session affinity (see
+# mcp: below).
+autoscaling:
+  api:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 4
+    targetCPUUtilizationPercentage: 70
+
+# deployment.environment.name on every span, metric and log (ENVIRONMENT).
+environment: "local"
+
+# Environment read by cmd/api/main.go. Every key maps 1:1 to one env var.
+config:
+  httpAddr: ":8080"                  # HTTP_ADDR
+  logLevel: "info"                   # LOG_LEVEL: debug | info | warn | error
+  # CORS_ALLOWED_ORIGINS (comma-separated). Empty = not rendered, so the
+  # binary's own local-dev default applies. In the kind cluster Kong's global
+  # CORS plugin handles browsers; set this only for a direct-to-pod caller.
+  corsAllowedOrigins: ""
+  # EVENT_PUBLISHER: "log" (default; the outbox drains to the log sink) or
+  # "kafka" (relay Slotting events onto warehouse.slotting-optimization.events;
+  # requires kafka.enabled=true -- the chart refuses to render otherwise).
+  eventPublisher: "log"
+  # OUTBOX_RELAY_INTERVAL: Go duration ("500ms", "2s") or plain seconds.
+  # Empty = not rendered; the binary defaults to 1s.
+  outboxRelayInterval: ""
+  # DEMAND_SITE_ID: the site plans default to; when set, demand for other
+  # sites is ignored by the demand consumer. Empty = not rendered, so every
+  # request must name its site and every site's demand is ingested. Also
+  # rendered into the mcp Deployment (the site its tools default to).
+  demandSiteId: ""
+  # DEFAULT_SITE_ID: fallback of the default site when DEMAND_SITE_ID is
+  # unset (the default site WITHOUT restricting the demand ingested). Empty =
+  # not rendered. Also rendered into the mcp Deployment.
+  defaultSiteId: ""
+  # LOOKBACK_DAYS: default demand window of a new plan, 1..365 (the chart
+  # refuses anything else; the binary would silently use 28). Empty/0 = not
+  # rendered; the binary defaults to 28.
+  lookbackDays: ""
+  # FORWARD_ZONE_CODES: comma-separated zone codes of the forward pick slots.
+  # Empty = not rendered; the binary defaults to FWD.
+  forwardZoneCodes: ""
+  # DEMAND_MODE (ADR 0003): "permissive" (default; the demand consumer is not
+  # started) or "kafka" (the order-line demand copy, fed from
+  # warehouse.order-management.events). "kafka" needs demandConsumerGroup and
+  # kafka.enabled=true.
+  demandMode: "permissive"
+  # DEMAND_CONSUMER_GROUP: the demand consumer's STABLE group id, so a
+  # rescheduled pod resumes from its committed offsets. Required when
+  # demandMode is "kafka"; setting it in permissive mode is refused (the
+  # consumer would silently not start).
+  demandConsumerGroup: ""
+  # PRODUCT_MODE (ADR 0003): "permissive" (default) or "kafka" (the ABC class
+  # and physical profile copy, fed from warehouse.product-master.events).
+  productMode: "permissive"
+  # PRODUCT_CONSUMER_GROUP: the product consumer's STABLE group id. Required
+  # when productMode is "kafka"; refused otherwise.
+  productConsumerGroup: ""
+  # LAYOUT_MODE (ADR 0003): "permissive" (default) or "kafka" (the forward
+  # slot catalogue copy, fed from warehouse.facility.events).
+  layoutMode: "permissive"
+  # LAYOUT_CONSUMER_GROUP: the layout consumer's STABLE group id. Required
+  # when layoutMode is "kafka"; refused otherwise.
+  layoutConsumerGroup: ""
+  # SHUTDOWN_DRAIN_DELAY: wait after /readyz flips before closing the
+  # listener. Empty = not rendered; the binary defaults to 5s.
+  shutdownDrainDelay: ""
+
+# The chart refuses to render unless database.url or database.existingSecret
+# is set (templates/_helpers.tpl: slotting-optimization.requireDatabase).
+database:
+  url: ""
+  existingSecret: ""
+  existingSecretKey: "DATABASE_URL"
+  # Key, in the same existingSecret, of a DIRECT (non-pooled, session-mode)
+  # Postgres connection string used ONLY for the golang-migrate startup step
+  # (cmd/api and cmd/mcp) -- never for the runtime pgxpool, which always uses
+  # existingSecretKey/DATABASE_URL. golang-migrate takes a session-scoped
+  # pg_advisory_lock that PgBouncer's transaction pooling cannot honour.
+  # `optional: true` on the rendered secretKeyRef so a secret without this key
+  # still starts the pod: the binary falls back to DATABASE_URL.
+  migrationsExistingSecretKey: "MIGRATIONS_DATABASE_URL"
+
+# KAFKA_BROKERS is only set in the api container env when kafka.enabled is
+# true. Without it EVENT_PUBLISHER must stay "log" and the local-copy
+# consumers cannot run. Produced topic: warehouse.slotting-optimization.events;
+# consumed (only in the kafka modes): warehouse.order-management.events,
+# warehouse.product-master.events and warehouse.facility.events.
+kafka:
+  enabled: false
+  brokers: "kafka:9092"
+
+# OpenTelemetry traces + metrics, pushed over OTLP/gRPC to a Collector. The
+# endpoint below is the in-cluster Collector Service in the warehouse-infra
+# kind cluster. Export is non-blocking, so a Collector that is down costs
+# telemetry and nothing else; otel.enabled=false skips the env entirely.
+otel:
+  enabled: true
+  endpoint: "otel-collector.observability.svc.cluster.local:4317"
+
+# Extra env vars appended to the api container as a raw list.
+extraEnv: []
+
+# The Postgres dial (migrations + ping) at boot is wrapped in a bounded retry
+# (internal/bootretry). periodSeconds * failureThreshold gives a ~60s window
+# before the kubelet gives up. Once startupProbe succeeds, liveness takes
+# over; readiness uses the separate /readyz endpoint (flipped to not-ready as
+# the FIRST step of graceful shutdown).
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 2
+  failureThreshold: 30
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  initialDelaySeconds: 3
+  periodSeconds: 5
+
+# Room for the binary's graceful shutdown: SHUTDOWN_DRAIN_DELAY (default 5s)
+# + HTTP drain (10s) + consumers drain (10s) + outbox relay drain (10s),
+# sequential, worst case ~35s.
+terminationGracePeriodSeconds: 40
+
+# --- MCP server (docs/adr/0005) ---
+# The Model Context Protocol server (cmd/mcp, Streamable HTTP only, READ-ONLY
+# tools). DISABLED by default. Enabling it renders its own Deployment +
+# Service (component=mcp) over the same OLTP database, served at "/" and
+# "/mcp" with GET /healthz probes, command /app/mcp. Env names in
+# templates/mcp-deployment.yaml match cmd/mcp/main.go. It starts no outbox
+# relay and dials no Kafka. No auth / API key: MCP servers are
+# unauthenticated fleet-wide.
+#
+# Deliberately NOT HPA-scalable (no autoscaling.mcp block): the SDK's
+# StreamableHTTPHandler keeps in-memory, per-process MCP session state and
+# the mcp Service has no session affinity, so a second replica could receive
+# a mid-session request its own process never created.
+mcp:
+  enabled: false
+  replicaCount: 1
+  httpAddr: ":8090"
+  service:
+    type: ClusterIP
+    port: 8090
+    targetPort: 8090
+  extraEnv: []
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,35 @@
+# Used by `helm lint` / `ct lint`: every optional component enabled at once.
+database:
+  existingSecret: "slotting-optimization-db"
+config:
+  eventPublisher: "kafka"
+  outboxRelayInterval: "500ms"
+  demandSiteId: "SITE-1"
+  defaultSiteId: "SITE-1"
+  lookbackDays: "28"
+  forwardZoneCodes: "FWD,FWD2"
+  demandMode: "kafka"
+  demandConsumerGroup: "slotting-optimization-demand"
+  productMode: "kafka"
+  productConsumerGroup: "slotting-optimization-product"
+  layoutMode: "kafka"
+  layoutConsumerGroup: "slotting-optimization-layout"
+  shutdownDrainDelay: "5s"
+  corsAllowedOrigins: "http://localhost:5173"
+kafka:
+  enabled: true
+  brokers: "kafka.warehouse-systems.svc.cluster.local:9092"
+gatewayApi:
+  enabled: true
+  parentRefs:
+    - name: warehouse-gateway
+      namespace: kong
+      sectionName: http
+  hosts:
+    - path: /api/slotting-optimization
+      pathType: PathPrefix
+autoscaling:
+  api:
+    enabled: true
+mcp:
+  enabled: true
