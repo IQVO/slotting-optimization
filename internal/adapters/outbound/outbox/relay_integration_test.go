@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	kafkago "github.com/segmentio/kafka-go"
-
 	"github.com/claudioed/slotting-optimization/internal/adapters/kafka/cloudevents"
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/clock"
 	outboundkafka "github.com/claudioed/slotting-optimization/internal/adapters/outbound/kafka"
@@ -62,30 +60,22 @@ func TestRelay_RealPostgresAndKafka_PublishesCloudEventsKeyedByPlanID(t *testing
 	go func() { defer close(done); _ = r.Run(runCtx) }()
 	t.Cleanup(func() { stop(); <-done })
 
-	reader := kafkago.NewReader(kafkago.ReaderConfig{Brokers: brokers, Topic: topic, Partition: 0, MinBytes: 1, MaxBytes: 1 << 20})
-	t.Cleanup(func() { _ = reader.Close() })
-	readCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
 	prefix := "com.warehouse.wms.slotting-optimization.slotplan."
+	got := kafkatest.ReadN(t, topic, 2, 60*time.Second)
 	for i, want := range []struct{ typ, plan string }{{prefix + "SlotPlanApproved", "plan-a"}, {prefix + "SlotPlanRejected", "plan-b"}} {
-		msg, err := reader.ReadMessage(readCtx)
-		if err != nil {
-			t.Fatalf("read message %d: %v", i, err)
-		}
-		assertCloudEvent(t, msg, want.typ, want.plan)
+		assertCloudEvent(t, got[i], want.typ, want.plan)
 	}
 	pgtest.WaitAllPublished(t, pool)
 }
 
 // assertCloudEvent checks the key, the content-type header and the decoded
 // CloudEvents attributes of one consumed message.
-func assertCloudEvent(t *testing.T, msg kafkago.Message, wantType, wantPlan string) {
+func assertCloudEvent(t *testing.T, msg kafkatest.Message, wantType, wantPlan string) {
 	t.Helper()
-	if string(msg.Key) != wantPlan {
+	if msg.Key != wantPlan {
 		t.Errorf("key = %q, want %s", msg.Key, wantPlan)
 	}
-	if len(msg.Headers) != 1 || msg.Headers[0].Key != "content-type" || string(msg.Headers[0].Value) != cloudevents.MediaType {
+	if len(msg.Headers) != 1 || msg.Headers["content-type"] != cloudevents.MediaType {
 		t.Errorf("headers = %+v", msg.Headers)
 	}
 	e, err := cloudevents.Decode(msg.Value)

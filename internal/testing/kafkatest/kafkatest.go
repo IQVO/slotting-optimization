@@ -73,6 +73,57 @@ func CreateTopic(t *testing.T, topic string) {
 	t.Fatalf("topic %s never got a leader", topic)
 }
 
+// Message is a consumed or produced Kafka message in neutral terms, so test
+// files need not touch the Kafka client themselves.
+type Message struct {
+	Key     string
+	Value   []byte
+	Headers map[string]string
+}
+
+// ReadN reads exactly n messages from the single partition of topic, from the
+// start, and fails the test if they do not arrive within timeout.
+func ReadN(t *testing.T, topic string, n int, timeout time.Duration) []Message {
+	t.Helper()
+	reader := kafkago.NewReader(kafkago.ReaderConfig{Brokers: Brokers(t), Topic: topic, Partition: 0, MinBytes: 1, MaxBytes: 1 << 20})
+	defer func() { _ = reader.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	out := make([]Message, 0, n)
+	for len(out) < n {
+		m, err := reader.ReadMessage(ctx)
+		if err != nil {
+			t.Fatalf("read message %d of %d from %s: %v", len(out)+1, n, topic, err)
+		}
+		headers := make(map[string]string, len(m.Headers))
+		for _, h := range m.Headers {
+			headers[h.Key] = string(h.Value)
+		}
+		out = append(out, Message{Key: string(m.Key), Value: m.Value, Headers: headers})
+	}
+	return out
+}
+
+// Produce writes messages to topic (key and headers as given) and waits for
+// the broker's acknowledgement.
+func Produce(t *testing.T, topic string, msgs ...Message) {
+	t.Helper()
+	w := &kafkago.Writer{Addr: kafkago.TCP(Brokers(t)...), Topic: topic, Balancer: &kafkago.Hash{}, RequiredAcks: kafkago.RequireAll, BatchTimeout: 10 * time.Millisecond}
+	defer func() { _ = w.Close() }()
+	out := make([]kafkago.Message, len(msgs))
+	for i, m := range msgs {
+		out[i] = kafkago.Message{Key: []byte(m.Key), Value: m.Value}
+		for k, v := range m.Headers {
+			out[i].Headers = append(out[i].Headers, kafkago.Header{Key: k, Value: []byte(v)})
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := w.WriteMessages(ctx, out...); err != nil {
+		t.Fatalf("produce to %s: %v", topic, err)
+	}
+}
+
 // Shutdown terminates the shared broker; call it from TestMain.
 func Shutdown() {
 	if container != nil {
