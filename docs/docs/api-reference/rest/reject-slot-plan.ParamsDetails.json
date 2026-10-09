@@ -1,0 +1,1 @@
+{"parameters":[{"name":"planId","in":"path","required":true,"description":"The plan id (`plan-` followed by a unique suffix, at most 64 characters).","schema":{"type":"string","minLength":6,"maxLength":64,"pattern":"^plan-[^\\s/]+$"},"example":"plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07"}]}
