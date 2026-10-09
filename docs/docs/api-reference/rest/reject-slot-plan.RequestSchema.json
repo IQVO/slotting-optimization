@@ -1,0 +1,1 @@
+{"title":"Body","body":{"required":false,"content":{"application/json":{"schema":{"type":"object","additionalProperties":false,"properties":{"reason":{"type":"string","maxLength":500,"description":"Why the plan was rejected; optional."}},"title":"RejectSlotPlanRequest"},"example":{"reason":"Too many relocations before peak season."}}}}}

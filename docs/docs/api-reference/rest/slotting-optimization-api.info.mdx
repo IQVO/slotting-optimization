@@ -1,0 +1,76 @@
+---
+id: slotting-optimization-api
+title: "Slotting Optimization API"
+description: "The WMS-tier planner of forward pick slots in the warehouse-systems platform"
+sidebar_label: Introduction
+sidebar_position: 0
+hide_title: true
+custom_edit_url: null
+---
+
+import ApiLogo from "@theme/ApiLogo";
+import Heading from "@theme/Heading";
+import SchemaTabs from "@theme/SchemaTabs";
+import TabItem from "@theme/TabItem";
+import Export from "@theme/ApiExplorer/Export";
+
+<span
+  className={"theme-doc-version-badge badge badge--secondary"}
+  children={"Version: 1.0.0"}
+>
+</span>
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Slotting Optimization API"}
+>
+</Heading>
+
+
+
+The WMS-tier planner of forward pick slots in the warehouse-systems platform
+(ADR 0001, ADR 0002). It proposes which SKUs get a forward pick slot and
+which slot, as a reviewable **slot plan**, and records the human decision on
+it. Policy `abc-velocity-v1`: rank SKUs by order-line picks over a lookback
+window, class them A/B/C, and assign eligible forward slots with stickiness
+(a SKU that still fits its current slot keeps it).
+
+A plan is created as a `Draft`. Only `approve` makes it the site's forward
+slot map (at most one `Approved` plan per site; approving a new one
+supersedes the previous one in the same transaction). Approval publishes
+`SlotPlanApproved` with the full assignment map and the moves; nothing moves
+stock (execution of the moves is a planned, unbuilt edge, ADR 0002).
+
+Plans are computed from local copies fed by events (ADR 0003); this API never
+calls a sibling context. Events are published as CloudEvents on
+`warehouse.slotting-optimization.events` through a transactional outbox (see
+`apis/asyncapi.yaml`).
+
+Errors are RFC 7807 problem documents with
+`type = https://errors.slotting-optimization.warehouse-systems.dev/<slug>`.
+There is no authentication layer (fleet decision 2026-09-11).
+
+
+<div
+  style={{"display":"flex","flexDirection":"column","marginBottom":"var(--ifm-paragraph-margin-bottom)"}}
+>
+  <h3
+    style={{"marginBottom":"0.25rem"}}
+  >
+    Contact
+  </h3><span>
+    slotting-optimization maintainers: 
+  </span><span>
+    URL: [https://github.com/IQVO/slotting-optimization](https://github.com/IQVO/slotting-optimization)
+  </span>
+</div><div
+  style={{"marginBottom":"var(--ifm-paragraph-margin-bottom)"}}
+>
+  <h3
+    style={{"marginBottom":"0.25rem"}}
+  >
+    License
+  </h3>
+</div>
+      
