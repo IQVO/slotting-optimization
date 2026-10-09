@@ -544,6 +544,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerGiven(sc, w)
 	registerWhen(sc, w)
 	registerThen(sc, w)
+	registerWave2(sc, w) // features_wave2_test.go
 }
 
 func registerGiven(sc *godog.ScenarioContext, w *world) {
