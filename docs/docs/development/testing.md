@@ -9,14 +9,14 @@ sidebar_position: 1
 
 The test pyramid as it exists on `develop`, the `make` targets that run each
 layer, and the CI jobs that gate a pull request. Every count on this page
-was taken from the repository on 2026-10-09.
+was taken from the repository on 2026-10-10 (`develop` at `ab0f53e`).
 
 ```mermaid
 flowchart TB
     arch["Architecture fitness: internal/architecture (12 tests, arch-go + AST)"]
     mut["Mutation: gremlins on internal/domain/slotplan and internal/domain/planning (efficacy and mutant coverage at least 99 %)"]
     bdd["BDD: 5 features, 50 Scenario / Scenario Outline blocks, real router + real consumers over in-memory adapters"]
-    integ["Integration: 9 files tagged integration, testcontainers Postgres 16 and Kafka"]
+    integ["Integration: 14 files in 7 packages tagged integration, testcontainers Postgres 16 and Kafka"]
     unit["Unit: domain, use cases with fakes, HTTP handlers through httptest, consumers with fake readers"]
     unit --> integ --> bdd
     mut -.-> unit
@@ -64,22 +64,40 @@ Plain `go test`, no build tag, no I/O.
 
 ## Integration tests (testcontainers)
 
-Nine files carry `//go:build integration`:
+Fourteen files in seven packages carry `//go:build integration`:
 
-| Package | Files | Backing services |
+| Package | Files | Backing services and what the suite proves |
 | --- | --- | --- |
 | `internal/adapters/outbound/postgres` | `main_integration_test.go`, `repositories_integration_test.go` | Postgres: the same `repocontract` suite the memory adapters pass (`TestSlotPlanRepoContract`, `TestDemandLedgerContract`, `TestProfileDirectoryContract`, `TestSlotCatalogueContract`), one Approved plan per site enforced by the database, the unit of work committing or rolling back plan, outbox and claim together, claim-once, outbox drain order and failure handling |
+| `internal/adapters/outbound/postgres/pgtx` | `pgtx_integration_test.go` (its own `TestMain`) | Postgres: the transaction bracket every write relies on, through the real repositories and `postgres.UnitOfWork`. A plan save and its outbox rows commit together (`TestPgtx_SaveAndPublishCommitAtomically`); an error inside the scope rolls back the plan, the outbox rows and the processed-event claim (`TestPgtx_AnErrorInsideTheScopeRollsEverythingBack`); a reader on the pool sees nothing before commit (`TestPgtx_ReposOutsideTheScopeSeeNothingUntilCommit`); a nested `Do` joins the outer transaction (`TestPgtx_NestedUnitOfWorkJoinsTheOuterTransaction`); `pgtx.With`/`pgtx.From` carry a bare pgx transaction to the repositories (`TestPgtx_ExplicitWithFromCarriesTheTransactionToAnyQuerier`) |
 | `internal/adapters/outbound/outbox` | `main_integration_test.go`, `relay_integration_test.go` | Postgres + Kafka: `TestRelay_RealPostgresAndKafka_PublishesCloudEventsKeyedByPlanID` |
+| `internal/adapters/outbound/kafka` | `main_integration_test.go`, `publisher_integration_test.go` | Kafka: the production `Encoder` and `RelaySink` (the writer settings `cmd/api` builds) publish the aggregate's three event kinds, then the test reads them back from the broker and asserts the CloudEvents 1.0 envelope (`specversion`, `id`, `source`, the `com.warehouse.wms.slotting-optimization.slotplan.<Event>` type), the `content-type` header, the payloads pinned in `apis/asyncapi.yaml` and a re-sent outbox row carrying the same CloudEvents `id` (`TestKafkaPublisher_RealBrokerPublishesTheCloudEventsContract`); every event of one plan carries the plan id as the Kafka key (`TestKafkaPublisher_OnePlanSticksToOnePartitionKeysOrdering`) |
 | `internal/adapters/inbound/http` | `main_integration_test.go`, `helpers_integration_test.go`, `idempotency_integration_test.go` | Postgres: the `Idempotency-Key` middleware (400 without a key, replay of the original plan, 422 on a different body, different keys make different plans, a rejected request is cached too, concurrent requests with one key create one plan), approve end to end, racing approvals of one site leave one Approved plan |
 | `internal/adapters/inbound/kafka` | `main_integration_test.go`, `consumers_integration_test.go` | Postgres + Kafka: the demand, product and layout consumers end to end |
+| `internal/application/usecases` | `main_integration_test.go`, `wiring_integration_test.go` | Postgres: the write use cases wired like `cmd/api` (real Postgres repositories, unit of work, CloudEvents encoder and read-model adapters; only the clock is fixed). The local copies are seeded through the real ledger, profile directory and slot catalogue, then generate, approve, a second approval that supersedes the first, regeneration stickiness and a rejection are checked against the persisted state and the read models (`TestUsecases_WiringPlanLifecycleEndToEnd`). Every outbox row the lifecycle wrote is decoded as a CloudEvents 1.0 envelope with its pinned payload (`TestUsecases_WiringPublishedEventsCarryTheCloudEventsContract`) |
 
 `internal/testing/pgtest` starts one `postgres:16-alpine` container per test
-binary and clones a migrated template database per test;
-`internal/testing/kafkatest` starts `confluentinc/confluent-local:7.6.1`.
-Neither reads `DATABASE_URL` or `KAFKA_BROKERS` and neither skips: no Docker
-is a failure. Two fitness tests keep it that way
+binary and clones a migrated template database per test (`pgtest.NewPool(t)`);
+`internal/testing/kafkatest` starts one `confluentinc/confluent-local:7.6.1`
+broker per test binary and gives each test its own timestamp-suffixed topic
+(`kafkatest.Topic`). Both start their container lazily, on first use. Each
+integration package has a `TestMain` that runs the tests and then calls
+`pgtest.Shutdown()` and/or `kafkatest.Shutdown()`. Neither helper reads
+`DATABASE_URL` or `KAFKA_BROKERS` and neither skips, so a missing Docker
+daemon fails the run. Two fitness tests keep it that way
 (`TestPostgresIntegrationTestsUseTestcontainers`,
-`TestKafkaIntegrationTestsUseTestcontainers`).
+`TestKafkaIntegrationTestsUseTestcontainers`). They check imports, so a
+suite that only goes through the helpers still names the testcontainers
+module itself: the Kafka check wants `testcontainers-go/modules/kafka` in
+every Kafka-touching `_integration_test.go` file (the publisher suite keeps a
+`tckafka` reference for that), and the Postgres check wants
+`testcontainers-go/modules/postgres` somewhere in each package that uses
+pgx or `database/sql` (the `usecases` and `pgtx` suites keep a `tcpostgres`
+reference).
+
+`make integration` and the CI `integration` job both run
+`go test -tags=integration ./... -race -count=1`, so every package above runs
+in CI with no explicit package list to keep in sync.
 
 ## BDD (godog)
 
