@@ -246,7 +246,7 @@ func TestBuildAdapters_InMemoryWiresEveryPort(t *testing.T) {
 	if ad.idempotency != nil {
 		t.Fatal("the in-memory mode has no Idempotency-Key store")
 	}
-	s, err := buildServer(ad, config{defaultSite: "SITE-1", forwardZoneCodes: []string{"FWD"}}, nil, nil)
+	s, err := buildServer(ad, config{defaultSite: "SITE-1", forwardZoneCodes: []string{"FWD"}}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +264,7 @@ func TestBuildAdapters_InMemoryWiresEveryPort(t *testing.T) {
 // read the forward-slot map, with the configured default lookback applied.
 func TestInMemoryServiceEndToEnd(t *testing.T) {
 	ad := inMemory(t)
-	s, err := buildServer(ad, config{defaultSite: "SITE-1", lookbackDays: 7, forwardZoneCodes: []string{"FWD"}}, nil, nil)
+	s, err := buildServer(ad, config{defaultSite: "SITE-1", lookbackDays: 7, forwardZoneCodes: []string{"FWD"}}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
