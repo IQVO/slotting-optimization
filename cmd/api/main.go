@@ -99,8 +99,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("metrics handler: %w", err)
 	}
+	planDecisionMetrics, err := telemetry.NewPlanDecisionMetrics()
+	if err != nil {
+		return fmt.Errorf("plan decision metrics: %w", err)
+	}
 	readiness := &inboundhttp.Readiness{}
-	server, err := buildServer(ad, configFromEnv(logger), readiness, metrics)
+	server, err := buildServer(ad, configFromEnv(logger), readiness, metrics, planDecisionMetrics)
 	if err != nil {
 		return err
 	}
@@ -194,7 +198,7 @@ func parseZoneCodes(raw string) []string {
 	return codes
 }
 
-func buildServer(ad adapters, cfg config, readiness *inboundhttp.Readiness, metrics http.Handler) (*inboundhttp.Server, error) {
+func buildServer(ad adapters, cfg config, readiness *inboundhttp.Readiness, metrics http.Handler, planMetrics ports.PlanDecisionMetrics) (*inboundhttp.Server, error) {
 	planner, err := planning.NewPlanner(planning.LexicalRanking{})
 	if err != nil {
 		return nil, fmt.Errorf("planner: %w", err)
@@ -205,8 +209,8 @@ func buildServer(ad adapters, cfg config, readiness *inboundhttp.Readiness, metr
 			Writer: w, Demand: ad.demand, Profiles: ad.profiles, Catalogue: ad.catalogue, IDs: ids.UUID{}, Planner: planner,
 			DefaultSite: cfg.defaultSite, ForwardZoneCodes: cfg.forwardZoneCodes, DefaultLookback: cfg.lookbackDays,
 		},
-		ApprovePlan:      &usecases.ApprovePlan{Writer: w},
-		RejectPlan:       &usecases.RejectPlan{Writer: w},
+		ApprovePlan:      &usecases.ApprovePlan{Writer: w, Metrics: planMetrics},
+		RejectPlan:       &usecases.RejectPlan{Writer: w, Metrics: planMetrics},
 		GetPlan:          &usecases.GetPlan{Plans: ad.plans},
 		ListPlans:        &usecases.ListPlans{Plans: ad.plans},
 		ListForwardSlots: &usecases.ListForwardSlots{Plans: ad.plans, DefaultSite: cfg.defaultSite},

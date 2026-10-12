@@ -89,6 +89,18 @@ type EventEncoder interface {
 	Encode(events ...slotplan.Event) ([]outbox.Message, error)
 }
 
+// PlanDecisionMetrics is the outbound telemetry port for the Tier-2
+// business signal (ADR-0013) of a Draft SlotPlan being decided: how many of
+// the recommendation engine's draft plans operators actually put into
+// effect versus discard, and in which direction that balance is moving. A
+// nil PlanDecisionMetrics on ApprovePlan/RejectPlan means "record nothing".
+type PlanDecisionMetrics interface {
+	// SlotPlanApproved records a Draft plan approved into effect.
+	SlotPlanApproved(ctx context.Context)
+	// SlotPlanRejected records a Draft plan discarded.
+	SlotPlanRejected(ctx context.Context)
+}
+
 // ProcessedEvents is the inbound-consumer idempotency guard. Claim records
 // (consumer, CloudEvents id) INSIDE the same UnitOfWork as the event's
 // effect and reports false when an earlier committed handling already
