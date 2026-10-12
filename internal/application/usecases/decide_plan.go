@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/claudioed/slotting-optimization/internal/application/ports"
 	"github.com/claudioed/slotting-optimization/internal/application/repository"
 	"github.com/claudioed/slotting-optimization/internal/domain/slotplan"
 )
@@ -15,6 +16,9 @@ import (
 // SlotPlanApproved, carrying the full map and the moves, is enqueued.
 type ApprovePlan struct {
 	Writer
+	// Metrics is the Tier-2 business-metric port (ADR-0013). Optional:
+	// nil records nothing.
+	Metrics ports.PlanDecisionMetrics
 }
 
 // Handle runs the use case and returns the Approved plan. A plan that is not
@@ -52,6 +56,12 @@ func (uc *ApprovePlan) Handle(ctx context.Context, rawID string) (*slotplan.Slot
 	if err != nil {
 		return nil, err
 	}
+	// Recorded after the unit of work commits, so the metric tracks the
+	// real domain event -- a Draft actually turned Approved -- not the
+	// request that attempted it.
+	if uc.Metrics != nil {
+		uc.Metrics.SlotPlanApproved(ctx)
+	}
 	return out, nil
 }
 
@@ -81,6 +91,9 @@ func (uc *ApprovePlan) supersedePrevious(ctx context.Context, p *slotplan.SlotPl
 // RejectPlan rejects a Draft plan and enqueues SlotPlanRejected.
 type RejectPlan struct {
 	Writer
+	// Metrics is the Tier-2 business-metric port (ADR-0013). Optional:
+	// nil records nothing.
+	Metrics ports.PlanDecisionMetrics
 }
 
 // Handle runs the use case and returns the Rejected plan. The reason is
@@ -109,6 +122,12 @@ func (uc *RejectPlan) Handle(ctx context.Context, rawID, reason string) (*slotpl
 	})
 	if err != nil {
 		return nil, err
+	}
+	// Recorded after the unit of work commits, so the metric tracks the
+	// real domain event -- a Draft actually turned Rejected -- not the
+	// request that attempted it.
+	if uc.Metrics != nil {
+		uc.Metrics.SlotPlanRejected(ctx)
 	}
 	return out, nil
 }

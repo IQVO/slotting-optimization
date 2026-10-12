@@ -51,6 +51,31 @@ func TestApproveTheFirstPlanOfASite(t *testing.T) {
 	eq(t, "saves", len(h.repo.saves), 1)
 }
 
+// TestApprovePlan_RecordsTheTier2Metric: ADR-0013 -- approving a Draft plan
+// reports outcome=approved on ports.PlanDecisionMetrics exactly once, and
+// only after the unit of work actually commits.
+func TestApprovePlan_RecordsTheTier2Metric(t *testing.T) {
+	h := newHarness()
+	h.draft("plan-1", "SITE-1", t0)
+	m := &fakePlanMetrics{}
+	_, err := (&usecases.ApprovePlan{Writer: h.writer, Metrics: m}).Handle(context.Background(), "plan-1")
+	noErr(t, err)
+	eq(t, "approved", m.approved, 1)
+	eq(t, "rejected", m.rejected, 0)
+}
+
+// TestApprovePlan_FailureRecordsNothing: a failed approval must never be
+// mistaken for the real domain event.
+func TestApprovePlan_FailureRecordsNothing(t *testing.T) {
+	h := newHarness()
+	h.approved("plan-1", "SITE-1", t0)
+	m := &fakePlanMetrics{}
+	_, err := (&usecases.ApprovePlan{Writer: h.writer, Metrics: m}).Handle(context.Background(), "plan-1")
+	isErr(t, err, slotplan.ErrNotDraft)
+	eq(t, "approved", m.approved, 0)
+	eq(t, "rejected", m.rejected, 0)
+}
+
 func TestApproveNotADraftChangesNothing(t *testing.T) {
 	h := newHarness()
 	h.approved("plan-1", "SITE-1", t0)
@@ -147,4 +172,25 @@ func TestReject(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 	})
+}
+
+// TestRejectPlan_RecordsTheTier2Metric: ADR-0013 -- rejecting a Draft plan
+// reports outcome=rejected exactly once, and a failed attempt records
+// nothing.
+func TestRejectPlan_RecordsTheTier2Metric(t *testing.T) {
+	h := newHarness()
+	h.draft("plan-1", "SITE-1", t0)
+	m := &fakePlanMetrics{}
+	_, err := (&usecases.RejectPlan{Writer: h.writer, Metrics: m}).Handle(context.Background(), "plan-1", "")
+	noErr(t, err)
+	eq(t, "approved", m.approved, 0)
+	eq(t, "rejected", m.rejected, 1)
+
+	h2 := newHarness()
+	h2.draft("plan-2", "SITE-1", t0)
+	m2 := &fakePlanMetrics{}
+	_, err = (&usecases.RejectPlan{Writer: h2.writer, Metrics: m2}).Handle(context.Background(), "plan-2", strings.Repeat("x", 501))
+	isErr(t, err, slotplan.ErrRejectReasonTooLong)
+	eq(t, "approved", m2.approved, 0)
+	eq(t, "rejected", m2.rejected, 0)
 }

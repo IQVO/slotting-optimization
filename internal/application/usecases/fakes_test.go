@@ -201,6 +201,15 @@ type fixedClock struct{ t time.Time }
 
 func (c fixedClock) Now() time.Time { return c.t }
 
+// fakePlanMetrics records which outcomes ApprovePlan/RejectPlan reported
+// through ports.PlanDecisionMetrics (ADR-0013), so use-case tests can
+// assert the Tier-2 metric fires exactly on the real domain event and
+// never on a failed attempt.
+type fakePlanMetrics struct{ approved, rejected int }
+
+func (f *fakePlanMetrics) SlotPlanApproved(context.Context) { f.approved++ }
+func (f *fakePlanMetrics) SlotPlanRejected(context.Context) { f.rejected++ }
+
 type fakeProcessed struct {
 	seen map[string]bool
 	err  error
