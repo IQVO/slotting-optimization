@@ -22,6 +22,8 @@ CloudEvents subdomain `wms`; module `github.com/claudioed/slotting-optimization`
 | CloudEvents envelope and the type catalogue | [`docs/adr/0004`](docs/adr/0004-cloudevents-envelope-and-type-catalogue.md) |
 | REST contract | [`apis/openapi.yaml`](apis/openapi.yaml) |
 | Event contract | [`apis/asyncapi.yaml`](apis/asyncapi.yaml) |
+| MCP server (read-only tools, `cmd/mcp`) | [`docs/adr/0005`](docs/adr/0005-mcp-server-adoption.md), `.claude/rules/mcp.md` |
+| Image and Helm chart | `Dockerfile`, `charts/slotting-optimization`, `.claude/rules/chart.md` |
 | Domain code | `internal/domain/slotplan` (aggregate), `internal/domain/planning` (planner) |
 | Agent rules | `.claude/rules/` |
 
@@ -43,30 +45,58 @@ The documentation site is published at
 
 ## Status
 
-The service is built: `cmd/api` serves the REST API of `apis/openapi.yaml`,
-runs the three local-copy consumers (`DEMAND_MODE`, `PRODUCT_MODE`,
-`LAYOUT_MODE`) and the transactional-outbox relay (`EVENT_PUBLISHER`), on
-Postgres (`DATABASE_URL`) or in memory. It is not wired into the kind
-cluster yet: there is no `Dockerfile`, no Helm chart and no Kong route
-(see the [Runbook](docs/docs/operations/runbook.md)). No context consumes
-its events yet, and executing the moves of an approved plan is a planned,
-unbuilt edge.
+Contracts, ADRs, the domain packages and the service (use cases, Postgres
+persistence, the outbox, the three local-copy Kafka consumers and the REST
+API in `cmd/api`) are in place, packaged as one image with two binaries
+(`/app/api` and `/app/mcp`) and a Helm chart. Execution of the approved moves
+on the floor is a planned, not yet built, edge.
+
+## Binaries
+
+| Binary | Port | What it is |
+|---|---|---|
+| `cmd/api` | 8080 | REST API, outbox relay and local-copy consumers (the writer) |
+| `cmd/mcp` | 8090 | MCP server over Streamable HTTP, read-only, no Kafka (ADR 0005) |
+
+`cmd/mcp` serves four tools at `/` and `/mcp` (health at `/healthz`), no auth:
+
+| Tool | Reads |
+|---|---|
+| `get_slot_plan` | one plan by id: state, policy, window, assignments, moves, unassigned |
+| `list_slot_plans` | plans newest first, filter `site_id` and `state` (Draft, Approved, Rejected, Superseded), paged |
+| `get_forward_slots` | the CURRENT forward slot map of a site (its Approved plan) |
+| `get_sku_velocity` | order-line picks and units per SKU over `window_days`, fastest first, `limit` |
+
+Generating, approving and rejecting a plan stay on REST: the MCP surface has no
+write tool and the build fails if one appears.
 
 ## Working locally
 
 ```bash
 make check        # fmt, vet, build, lint, tests
-make check-all    # check + coverage gate + arch-test + bdd
-make integration  # testcontainers Postgres and Kafka (Docker only)
+make check-all    # check + coverage gate, arch tests, BDD
+make integration  # testcontainers Postgres/Kafka tests (needs Docker)
 make mutation     # gremlins on internal/domain/slotplan and internal/domain/planning
 go run ./cmd/api  # in-memory mode on :8080 (set DEFAULT_SITE_ID to omit siteId)
 spectral lint apis/openapi.yaml --ruleset .spectral.yaml
 spectral lint apis/asyncapi.yaml --ruleset .spectral.asyncapi.yaml
 ```
 
-Full walkthrough, including a local Postgres, seed data and the fleet
-Kafka broker on `localhost:9092`:
-[Quickstart](docs/docs/overview/quickstart.md).
+## Running it
+
+```bash
+docker build -t slotting-optimization:local .
+docker run --rm -p 8080:8080 slotting-optimization:local        # api, in-memory without DATABASE_URL
+docker run --rm -p 8090:8090 --entrypoint /app/mcp slotting-optimization:local   # MCP server
+helm lint charts/slotting-optimization -f charts/slotting-optimization/ci/default-values.yaml
+python3 charts/slotting-optimization/tests/test_service_selectors.py
+```
+
+The chart refuses to render without `database.url` or `database.existingSecret`
+and exposes a dedicated value for every environment variable `cmd/api` reads
+(`DEMAND_SITE_ID`, `LOOKBACK_DAYS`, `FORWARD_ZONE_CODES`, the `*_MODE` and
+`*_CONSUMER_GROUP` pairs, ...); the MCP Deployment is off unless
+`mcp.enabled=true`. Images and chart publish to `ghcr.io/iqvo/slotting-optimization`.
 
 ## Study project
 
