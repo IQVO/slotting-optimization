@@ -5,16 +5,14 @@ paths:
   - "apis/asyncapi*"
 ---
 
-<!-- TEMPLATE (warehouse-harness-template v2): fill in every "FILL IN" for
-     THIS repo, or delete this file if the repo publishes/consumes no Kafka
-     events. The "CloudEvents 1.0 is MANDATORY" section is NOT a
-     placeholder: keep it verbatim, only substitute the per-repo values. -->
 # Cross-service integration events (Kafka)
 
-FILL IN: state whether this service PUBLISHES, CONSUMES, or both, and
-to/from which topic(s). Fleet naming: `warehouse.<context>.events`
-(integration) and `warehouse.<context>.analytics` (consumed only by this
-service's own analytics projector).
+This service PUBLISHES slot-plan decisions on `warehouse.slotting-optimization.events`
+(through the transactional outbox) and CONSUMES, into durable local copies
+(ADR 0003), demand from `warehouse.order-management.events`, product facts from
+`warehouse.product-master.events` and zones/slots from `warehouse.facility.events`.
+`warehouse.slotting-optimization.analytics` is reserved for this service's own
+analytics read side (a later phase); nothing is published there yet.
 
 ## Events: CloudEvents 1.0 is MANDATORY
 
@@ -47,8 +45,8 @@ not a preference — there is nothing to "choose" here:
   `dataschema=urn:warehouse:<repo>:<events|analytics>:<EventName>:v<N>`.
   No custom extension attributes without an ADR.
 - `type` = `com.warehouse.<subdomain>.<bounded-context>.<entity>.<EventName>`
-  (subdomain `wms` or `wes`; FILL IN this repo's exact prefix, e.g.
-  `com.warehouse.wes.order-management`). The SAME `type` names the
+  (this repo: `com.warehouse.wms.slotting-optimization`; entity segment
+  `slotplan`). The SAME `type` names the
   occurrence on both the integration and the analytics topic; `dataschema`
   names the payload shape. Breaking payload change => new `.v2` type + new
   dataschema version, never mutate an existing one.
@@ -63,39 +61,62 @@ not a preference — there is nothing to "choose" here:
   consumer; Kafka integration tests via testcontainers only.
 
 Full standard, subdomain table and the fleet's cross-service type
-catalogue: warehouse-docs `docs/strategic-design/event-standard-cloudevents.md`.
-Record it in this repo as its own ADR "CloudEvents 1.0 as the mandatory
-event envelope" under `docs/docs/adr/`.
+catalogue: the warehouse-docs repo's Event Standard page
+(docs/strategic-design/event-standard-cloudevents.md there, not in this repo).
+This repo's ADR: `docs/adr/0004-cloudevents-envelope-and-type-catalogue.md`.
 
 ### Published types
 
-FILL IN: one row per published event, exact strings.
+Topic `warehouse.slotting-optimization.events`; `subject` and Kafka key = the
+plan id (`plan-<uuid>`). All `data` is snake_case, optional fields are omitted
+when unset, timestamps are RFC 3339 UTC.
 
-| `type` | topic(s) | `subject` | `dataschema` |
-| --- | --- | --- | --- |
-| `com.warehouse.<sub>.<ctx>.<entity>.<EventName>` | `warehouse.<ctx>.events` | aggregate id | `urn:warehouse:<repo>:events:<EventName>:v1` |
+| `type` | `dataschema` | `data` |
+| --- | --- | --- |
+| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated` | `urn:warehouse:slotting-optimization:events:SlotPlanGenerated:v1` | `{plan_id, site_id, window_from, window_to, policy, assignment_count, move_count, unassigned_count}` |
+| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved` | `urn:warehouse:slotting-optimization:events:SlotPlanApproved:v1` | `{plan_id, site_id, approved_at, supersedes_plan_id?, assignments:[{sku, slot}], moves:[{sku, from_slot?, to_slot, kind}]}`; `kind` = `Assign`, `Relocate`, `Vacate` (`Vacate`: `to_slot` omitted, `from_slot` set) |
+| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanRejected` | `urn:warehouse:slotting-optimization:events:SlotPlanRejected:v1` | `{plan_id, site_id, rejected_at, reason?}` |
+
+`SlotPlanApproved` carries the FULL assignment map, so a consumer needs no
+lookup. Golden exact-JSON tests pin every type.
 
 ### Consumed types
 
-FILL IN: one row per consumed event — the EXACT `type` string from the
-producer's catalogue (byte-identical; see the cross-service catalogue on the
-Event Standard page).
-
 | `type` | topic | producer |
 | --- | --- | --- |
+| `com.warehouse.wes.order-management.siteskudemand.SiteSkuDemandChanged` | `warehouse.order-management.events` | order-management (key/subject `<order>/line/<n>`; last writer wins per line, `REMOVED` deactivates) |
+| `com.warehouse.wms.product-master.product.ProductClassified` | `warehouse.product-master.events` | product-master (apply when `version` > stored) |
+| `com.warehouse.wms.product-master.product.ProductDimensionsDeclared` | `warehouse.product-master.events` | product-master (act on `effective`, apply when `version` > stored) |
+| `com.warehouse.wms.product-master.product.ProductMeasured` | `warehouse.product-master.events` | product-master (same payload and rule) |
+| `com.warehouse.wms.facility-layout.zone.ZoneRegistered` | `warehouse.facility.events` | facility-layout (key `zoneId`) |
+| `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` | `warehouse.facility.events` | facility-layout (key `locationCode`; absent `role` = Storage) |
+| `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | `warehouse.facility.events` | facility-layout (key `locationCode`; irreversible) |
 
-## Consumer group id
+Every other type on those topics is ignored. The CloudEvents `id` claim and the
+effect commit in ONE database transaction; the Kafka offset is committed only
+afterwards (`FetchMessage` + `CommitMessages`).
 
-If this service consumes Kafka: state where the consumer group id comes
-from. It MUST be env-configurable, never a hardcoded string literal --
+## Consumer group id and modes
+
+Each consumer has a mode env (`kafka` or `permissive`, default `permissive` =
+no consumer started) and a STABLE consumer group id read from the environment,
+never a hardcoded string literal:
+
+| Concern | Mode | Group id |
+| --- | --- | --- |
+| Demand | `DEMAND_MODE` | `DEMAND_CONSUMER_GROUP` |
+| Product | `PRODUCT_MODE` | `PRODUCT_CONSUMER_GROUP` |
+| Layout | `LAYOUT_MODE` | `LAYOUT_CONSUMER_GROUP` |
+
+Mode `kafka` with the group variable unset is a boot error.
 `internal/architecture/fitness_test.go`'s
-TestKafkaConsumerGroupNeverHardcodedInline enforces this (a real incident:
-wes-work-planning's hardcoded group id let a locally-run e2e-tests process
-silently collide with the live in-cluster Deployment's consumer group on
-the shared fleet Kafka broker).
+TestKafkaConsumerGroupNeverHardcodedInline enforces env-configurable group ids
+(a real incident: wes-work-planning's hardcoded group id let a locally-run
+e2e-tests process silently collide with the live in-cluster Deployment's
+consumer group on the shared fleet Kafka broker).
 
-If this consumer replays from FirstOffset on every start to build an
-in-memory read model (rather than resuming from a committed offset), the
-group id must additionally be UNIQUE PER PROCESS INSTANCE (hostname+PID+
-timestamp), not just configurable -- see HARNESS.md's Kafka section for
-why a shared group breaks that pattern specifically.
+These consumers resume from their committed offset (they feed a durable copy).
+If one ever replays from FirstOffset on every start to build an in-memory read
+model instead, its group id must additionally be UNIQUE PER PROCESS INSTANCE
+(hostname+PID+timestamp), not just configurable -- see HARNESS.md's Kafka
+section for why a shared group breaks that pattern specifically.

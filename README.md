@@ -1,38 +1,72 @@
-# warehouse-harness-template
+# slotting-optimization
 
-Canonical `harness-template: v2` for the [warehouse-systems](https://github.com/claudioed)
-fleet's Go bounded-context services: `Makefile`, CI workflow, lefthook
-hooks, linter/mutation-testing config, architecture fitness tests
-(hexagonal dependency rules + fleet-wide invariants learned from real
-incidents), and `.claude/` guides (rules, skills, commands).
+The WMS-tier planner of forward pick slots in the
+[warehouse-systems](https://github.com/IQVO) fleet: it proposes which SKUs get
+a forward pick slot and which slot (policy `abc-velocity-v1`: rank by order-line
+picks, ABC classes, eligibility by hazmat, temperature and capacity, stickiness
+to limit churn), and records the human decision on the proposal (Draft, then
+Approved or Rejected). Approved plans are published as CloudEvents with the full
+assignment map and the moves. Execution of the moves on the floor is a planned,
+not yet built, edge.
 
-This is a **template, not a runnable service** — it has no domain code,
-no `cmd/`, no OpenAPI spec. It exists to answer one question for every
-new (or drifting) bounded-context repo in the fleet: **what harness
-should this repo have, and why?**
+Built from `warehouse-harness-template` v2 (`HARNESS.md` documents the sensors).
+CloudEvents subdomain `wms`; module `github.com/claudioed/slotting-optimization`.
 
-Start with [`HARNESS.md`](HARNESS.md) — it documents every sensor's
-purpose, cost, and lifecycle position, and the specific incident each
-architecture fitness test was written to prevent from recurring.
+## Where to read
 
-## Instantiating this template into a new (or existing) repo
+| What | Where |
+|---|---|
+| Bounded context, classification, context map, exclusions | [`docs/adr/0001`](docs/adr/0001-slotting-optimization-bounded-context.md) |
+| The SlotPlan aggregate, invariants, the `abc-velocity-v1` policy, human approval | [`docs/adr/0002`](docs/adr/0002-slotplan-aggregate-and-abc-velocity-policy.md) |
+| Event-fed local copies, consumed contracts, modes and consumer groups | [`docs/adr/0003`](docs/adr/0003-local-copies-and-consumed-contracts.md) |
+| CloudEvents envelope and the type catalogue | [`docs/adr/0004`](docs/adr/0004-cloudevents-envelope-and-type-catalogue.md) |
+| REST contract | [`apis/openapi.yaml`](apis/openapi.yaml) |
+| Event contract | [`apis/asyncapi.yaml`](apis/asyncapi.yaml) |
+| Domain code | `internal/domain/slotplan` (aggregate), `internal/domain/planning` (planner) |
+| Agent rules | `.claude/rules/` |
+
+## Documentation
+
+The documentation site is published at
+[https://iqvo.github.io/slotting-optimization/](https://iqvo.github.io/slotting-optimization/)
+(sources in `docs/`, built by `.github/workflows/docs.yml`).
+
+| Area | Pages |
+| --- | --- |
+| Overview | [Introduction](docs/docs/overview/introduction.md), [Architecture](docs/docs/overview/architecture.md), [Quickstart](docs/docs/overview/quickstart.md) |
+| Operations | [Configuration](docs/docs/operations/configuration.md) (every env var), [Runbook](docs/docs/operations/runbook.md), [Observability](docs/docs/operations/observability.md), [Troubleshooting](docs/docs/operations/troubleshooting.md) |
+| Development | [Testing](docs/docs/development/testing.md) |
+| Ecosystem | [Integration](docs/docs/ecosystem/integration.md) |
+| Domain-Driven Design | [Use cases](docs/docs/ddd/use-cases.md), [Subdomain classification](docs/docs/ddd/subdomain-classification.md), [Ubiquitous language](docs/docs/ddd/ubiquitous-language.md), [DDD artifacts index](docs/docs/ddd/ddd-artifacts.md): [core domain chart](docs/docs/ddd/core-domain-chart.md), [bounded context canvas](docs/docs/ddd/bounded-context-canvas.md), [context map](docs/docs/ddd/context-map.md), [aggregate design canvas](docs/docs/ddd/aggregate-design-canvas.md), [domain message flow](docs/docs/ddd/domain-message-flow.md), [EventStorming](docs/docs/ddd/eventstorming.md), [class diagrams](docs/docs/ddd/class-diagram.md), [entity-relationship](docs/docs/ddd/entity-relationship.md), [sequence diagrams](docs/docs/ddd/sequence-diagrams.md), [domain events](docs/docs/ddd/domain-events.md) |
+| API | [API overview](docs/docs/api-reference/overview.md), [event catalogue](docs/docs/api-reference/events.md), generated REST reference (`docs/docs/api-reference/rest`, `npm run gen-api-docs`) |
+| Decisions | [ADR index](docs/adr/index.md) |
+
+## Status
+
+The service is built: `cmd/api` serves the REST API of `apis/openapi.yaml`,
+runs the three local-copy consumers (`DEMAND_MODE`, `PRODUCT_MODE`,
+`LAYOUT_MODE`) and the transactional-outbox relay (`EVENT_PUBLISHER`), on
+Postgres (`DATABASE_URL`) or in memory. It is not wired into the kind
+cluster yet: there is no `Dockerfile`, no Helm chart and no Kong route
+(see the [Runbook](docs/docs/operations/runbook.md)). No context consumes
+its events yet, and executing the moves of an approved plan is a planned,
+unbuilt edge.
+
+## Working locally
 
 ```bash
-git clone https://github.com/claudioed/warehouse-harness-template <new-repo>
-cd <new-repo>
-rm -rf .git && git init
-bash scripts/new-service.sh <service-name> <richest-domain-aggregate-pkg> [<wms|wes> <event-context>]
+make check        # fmt, vet, build, lint, tests
+make check-all    # check + coverage gate + arch-test + bdd
+make integration  # testcontainers Postgres and Kafka (Docker only)
+make mutation     # gremlins on internal/domain/slotplan and internal/domain/planning
+go run ./cmd/api  # in-memory mode on :8080 (set DEFAULT_SITE_ID to omit siteId)
+spectral lint apis/openapi.yaml --ruleset .spectral.yaml
+spectral lint apis/asyncapi.yaml --ruleset .spectral.asyncapi.yaml
 ```
 
-Kafka-publishing/consuming services pass the last two arguments: the
-script then generates the fleet-mandatory CloudEvents 1.0 helper
-(`internal/adapters/kafka/cloudevents/`). CloudEvents is the only event
-envelope in this fleet — there is no flat/dual mode to configure.
-
-See `scripts/new-service.sh`'s header comment, or `HARNESS.md`'s
-"Instantiating this template" section, for the full checklist —
-substitution is only step one; `.claude/rules/*.md` content and
-`.gremlins.yaml`'s measured thresholds still need real code to fill in.
+Full walkthrough, including a local Postgres, seed data and the fleet
+Kafka broker on `localhost:9092`:
+[Quickstart](docs/docs/overview/quickstart.md).
 
 ## Study project
 

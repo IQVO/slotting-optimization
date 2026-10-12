@@ -53,10 +53,11 @@ linter already catches.
    fleet-wide revert) — a reintroduced auth check is very likely
    accidental (an agent "helpfully" adding back something that looks
    missing) and should be flagged even if the code itself looks correct.
-8. **Anything that would surprise the sibling-context boundary.** If this
-   repo's `AGENTS.md`/`CLAUDE.md` documents a stricter rule (e.g. "no
-   outbound calls to sibling contexts"), check the diff doesn't
-   reintroduce exactly that.
+8. **Anything that would surprise the sibling-context boundary.** This
+   repo has a stricter rule (`.claude/rules/fleet/context-boundaries.md`
+   and `docs/adr/0001-slotting-optimization-bounded-context.md`: no
+   outbound calls to sibling contexts, local copies only); check the diff
+   doesn't reintroduce exactly that.
 
 ## Output format
 
