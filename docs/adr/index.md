@@ -17,7 +17,12 @@ section.
 | [0001](/docs/adr/0001-slotting-optimization-bounded-context) | slotting-optimization as the owner of forward-pick slotting decisions | Accepted (2026-10-08) |
 | [0002](/docs/adr/0002-slotplan-aggregate-and-abc-velocity-policy) | the SlotPlan aggregate, its invariants and the abc-velocity-v1 policy | Accepted (2026-10-08) |
 | [0003](/docs/adr/0003-local-copies-and-consumed-contracts) | event-fed local copies and the consumed contracts | Accepted (2026-10-08) |
-| [0004](/docs/adr/0004-cloudevents-envelope-and-type-catalogue) | CloudEvents envelope and type catalogue | Accepted (2026-10-08) |
+| [0004](/docs/adr/0004-cloudevents-envelope-and-type-catalogue) | CloudEvents envelope and type catalogue | Accepted (2026-10-08); per-key ordering amended by ADR 0008 |
+| [0005](/docs/adr/0005-mcp-server-adoption) | MCP server adoption (read-only, unauthenticated, additive) | Accepted (2026-10-08) |
+| 0006 | reserved by ADR 0004 for the analytics read side (not written yet) | — |
+| [0007](/docs/adr/0007-executing-an-approved-slot-plan) | executing an approved slot plan (options, undecided) | Proposed (2026-10-12) |
+| [0008](/docs/adr/0008-outbox-relay-attempt-cap) | outbox relay attempt cap | Accepted (2026-10-12) |
+| [0009](/docs/adr/0009-trace-context-crosses-the-outbox) | the W3C trace context crosses the outbox to Kafka | Accepted (2026-10-12) |
 
 Where the code on `develop` has moved past an ADR's wording (for example
 ADR 0001's "consumer built in the service phase" status column, now built),

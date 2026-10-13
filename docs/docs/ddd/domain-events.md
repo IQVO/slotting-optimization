@@ -25,8 +25,9 @@ Both are pinned in `apis/asyncapi.yaml` (`TestEventCatalogueMatchesContract`).
 | `time` | the domain occurred-at (UTC) |
 | `datacontenttype` | `application/json` |
 | `dataschema` | `urn:warehouse:slotting-optimization:events:<EventName>:v1` |
-| Kafka key | the plan id (one plan's events stay ordered on one partition) |
+| Kafka key | the plan id (one plan's events stay ordered on one partition; a row the relay excluded after `OUTBOX_MAX_ATTEMPTS` failures is overtaken, [ADR 0008](/docs/adr/0008-outbox-relay-attempt-cap)) |
 | Kafka header | `content-type: application/cloudevents+json; charset=UTF-8` |
+| Optional Kafka headers | `traceparent` (and `tracestate` / `baggage` when present): the W3C trace context of the request that wrote the outbox row ([ADR 0009](/docs/adr/0009-trace-context-crosses-the-outbox)). Consumers may extract it and must not require it |
 
 Mode: **structured** (the whole envelope is the Kafka value), built only by
 `cloudevents.New`; consumers only accept what `cloudevents.Decode` accepts.

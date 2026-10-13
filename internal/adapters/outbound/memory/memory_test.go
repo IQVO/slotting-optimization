@@ -110,11 +110,11 @@ func TestOutboxDrainPublishesInOrderAndStopsOnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	var sent []string
-	n, err := ob.Drain(ctx, 2, func(_ context.Context, m outbox.Message) error { sent = append(sent, m.EventType); return nil })
+	n, err := ob.Drain(ctx, 2, 0, func(_ context.Context, m outbox.Message) error { sent = append(sent, m.EventType); return nil })
 	if err != nil || n != 2 || len(sent) != 2 || sent[0] != "a" || sent[1] != "b" || ob.Unpublished() != 1 {
 		t.Fatalf("drain: n=%d err=%v sent=%v unpublished=%d", n, err, sent, ob.Unpublished())
 	}
-	n, err = ob.Drain(ctx, 10, func(context.Context, outbox.Message) error { return errBoom })
+	n, err = ob.Drain(ctx, 10, 0, func(context.Context, outbox.Message) error { return errBoom })
 	if !errors.Is(err, errBoom) || n != 0 || ob.Unpublished() != 1 || ob.LastError(2) == "" {
 		t.Fatalf("drain failure: n=%d err=%v unpublished=%d last=%q", n, err, ob.Unpublished(), ob.LastError(2))
 	}

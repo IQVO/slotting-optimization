@@ -10,6 +10,8 @@ sidebar_position: 2
 Every Kafka message this service produces or consumes is a CloudEvents 1.0
 event in **structured mode**: the Kafka value is the whole JSON envelope and
 the header `content-type` is `application/cloudevents+json; charset=UTF-8`.
+Published messages may also carry the optional W3C `traceparent` header of
+the request that wrote them (ADR 0009).
 Envelopes are built and decoded only in
 `internal/adapters/kafka/cloudevents` (ADR 0004). The contract is
 `apis/asyncapi.yaml`; field-level detail is on
