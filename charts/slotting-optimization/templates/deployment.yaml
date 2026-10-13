@@ -66,6 +66,10 @@ spec:
             - name: OUTBOX_RELAY_INTERVAL
               value: {{ . | quote }}
             {{- end }}
+            # D12 / ADR 0008: the relay excludes a row after this many
+            # failures (0 = unlimited).
+            - name: OUTBOX_MAX_ATTEMPTS
+              value: {{ .Values.config.outboxMaxAttempts | quote }}
             # Planning defaults (ADR 0002): the site plans default to (and,
             # as DEMAND_SITE_ID, the only site whose demand is ingested),
             # the default demand window and the forward-slot zone codes.

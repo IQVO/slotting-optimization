@@ -161,7 +161,7 @@ func TestOutboxDrainOrderAndFailureHandling(t *testing.T) {
 		t.Fatal(err)
 	}
 	var sent []string
-	n, err := ob.Drain(ctx, 2, func(_ context.Context, m outbox.Message) error {
+	n, err := ob.Drain(ctx, 2, 0, func(_ context.Context, m outbox.Message) error {
 		sent = append(sent, m.EventType)
 		if len(m.Headers) != 1 || m.Headers[0].Key != "content-type" || string(m.Key) != "k" {
 			t.Errorf("message lost data: %+v", m)
@@ -172,11 +172,11 @@ func TestOutboxDrainOrderAndFailureHandling(t *testing.T) {
 		t.Fatalf("drain: n=%d err=%v sent=%v", n, err, sent)
 	}
 	boom := errors.New("broker down")
-	n, err = ob.Drain(ctx, 10, func(context.Context, outbox.Message) error { return boom })
+	n, err = ob.Drain(ctx, 10, 0, func(context.Context, outbox.Message) error { return boom })
 	if !errors.Is(err, boom) || n != 0 {
 		t.Fatalf("failure: n=%d err=%v", n, err)
 	}
-	n, err = ob.Drain(ctx, 10, func(context.Context, outbox.Message) error { return nil })
+	n, err = ob.Drain(ctx, 10, 0, func(context.Context, outbox.Message) error { return nil })
 	if err != nil || n != 1 {
 		t.Fatalf("the failed row is retried: n=%d err=%v", n, err)
 	}

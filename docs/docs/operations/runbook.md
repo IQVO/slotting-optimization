@@ -139,12 +139,50 @@ the three topics are ignored silently.
   `x-dlq-source-offset`, `x-dlq-error` and `x-dlq-failed-at`. The DLQ write
   itself retries forever, so the partition blocks rather than drops a message.
   A failed offset commit is also retried forever.
-- **Relay: at-least-once, ordered.** Each pass claims up to 100 unpublished
-  rows `FOR UPDATE SKIP LOCKED` in id order, sends them one at a time, marks
-  each `published_at`, and stops at the first failure (recording `attempts`
-  and `last_error` on that row) so a later event never overtakes an earlier
-  one. The CloudEvents id is minted at encode time and stored, so a resend
-  carries the same id.
+- **Relay: at-least-once, ordered up to the attempt cap.** Each pass claims
+  up to 100 unpublished rows `FOR UPDATE SKIP LOCKED` in id order (skipping
+  rows whose `attempts` reached `OUTBOX_MAX_ATTEMPTS`, default 20), sends them
+  one at a time, marks each `published_at`, and stops at the first failure
+  (recording `attempts` and `last_error` on that row) so a later event never
+  overtakes an earlier one that is still being retried. The CloudEvents id is
+  minted at encode time and stored, so a resend carries the same id. A row
+  that reached the cap is overtaken by later rows, including rows of the same
+  plan ([ADR 0008](/docs/adr/0008-outbox-relay-attempt-cap)).
+
+### Outbox relay attempt cap
+
+A row the broker never accepts (for example a `SlotPlanApproved` over the
+broker's message size limit) fails every pass. After `OUTBOX_MAX_ATTEMPTS`
+failures (default 20, about 20 s with the 1 s interval) the relay logs once
+at ERROR
+
+```
+outbox relay: row reached the attempt cap and is excluded from future claims; re-arm it with attempts = 0 after fixing the cause
+```
+
+with `outbox_id`, `topic`, `event_type`, `key`, `attempts`, `max_attempts`
+and `error`, and stops claiming the row. The rows behind it publish again.
+The row is kept, not deleted. To find excluded rows (with the default cap):
+
+```sql
+SELECT id, topic, event_type, key, attempts, last_error
+FROM outbox_events
+WHERE published_at IS NULL AND attempts >= 20
+ORDER BY id;
+```
+
+Fix the cause (broker size limit, topic, ACLs), then re-arm the row; the next
+pass sends it with its original CloudEvents id:
+
+```sql
+UPDATE outbox_events SET attempts = 0 WHERE id = 42;
+```
+
+A broker outage longer than the cap excludes the rows at the head of the
+queue one per pass; re-arm all of them with
+`UPDATE outbox_events SET attempts = 0 WHERE published_at IS NULL;` once the
+broker is back. `OUTBOX_MAX_ATTEMPTS=0` restores unlimited retries (the
+relay then stalls behind a poison row instead).
 
 ## Housekeeping
 
@@ -165,7 +203,8 @@ There is **no sweeper** on `develop`. Three tables only grow:
   partitions; the idempotency middleware serialises on the
   `idempotency_keys` primary key; approvals of one site race on the partial
   unique index `uq_slot_plans_one_approved_per_site` (the loser gets
-  `409 approved-plan-conflict`). There is no HPA because there is no chart.
+  `409 approved-plan-conflict`). The chart has an optional HPA for the api
+  Deployment (`autoscaling.api`, off by default).
 - **Connections.** `MaxConns = 10` per process, every query bounded by
   `statement_timeout = 5s`. Size Postgres for `replicas x 10`.
 - **Plan generation** reads the whole demand window and every forward slot
@@ -196,7 +235,7 @@ committed offset starts at the first offset (kafka-go's default
 ### Re-publish plan events
 
 ```sql
-UPDATE outbox_events SET published_at = NULL, last_error = NULL
+UPDATE outbox_events SET published_at = NULL, last_error = NULL, attempts = 0
 WHERE subject = 'plan-...';
 ```
 
