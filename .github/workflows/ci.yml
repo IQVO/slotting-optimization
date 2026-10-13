@@ -306,7 +306,7 @@ jobs:
         run: ct lint --charts charts/slotting-optimization --validate-maintainers=false --check-version-increment=false
       - name: Chart wiring tests (each Service selects exactly one Deployment)
         run: |
-          pip install pyyaml
+          pip install --require-hashes -r .github/requirements/chart-tests.txt
           python3 charts/slotting-optimization/tests/test_service_selectors.py
 
   # ============================================================
