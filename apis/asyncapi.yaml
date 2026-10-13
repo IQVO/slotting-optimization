@@ -39,6 +39,10 @@ info:
 
     **Envelope (mandatory).** CloudEvents 1.0, structured content mode, Kafka
     header `content-type: application/cloudevents+json; charset=UTF-8`.
+    Optional W3C trace-context headers (`traceparent`, and `tracestate` /
+    `baggage` when present) carry the trace of the request that wrote the
+    outbox row (ADR 0009); consumers may extract them, and must not require
+    them.
     `specversion`, `id`, `source` (`/warehouse/slotting-optimization`), `type`,
     `subject` (the plan id), `time`, `datacontenttype` (`application/json`) and
     `dataschema` (`urn:warehouse:slotting-optimization:events:<EventName>:v1`)
@@ -69,8 +73,11 @@ channels:
   warehouse.slotting-optimization.events:
     description: |
       This service's integration topic. Written by the outbox relay; key = plan
-      id; every message carries the CloudEvents content-type header. Dispatch on
-      the full `type`, ignore unknown types, dedupe on `id`.
+      id; every message carries the CloudEvents content-type header (plus the
+      optional W3C `traceparent` of the writing request, ADR 0009). Dispatch on
+      the full `type`, ignore unknown types, dedupe on `id`. A row the relay
+      excluded after `OUTBOX_MAX_ATTEMPTS` failures (ADR 0008) is overtaken by
+      later events of the same plan.
     subscribe:
       operationId: receiveSlotPlanEvents
       summary: Receive SlotPlan events.

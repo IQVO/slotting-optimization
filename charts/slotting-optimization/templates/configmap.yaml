@@ -1,6 +1,8 @@
 # Non-secret configuration of the api component, mirrored from the env the
-# Deployment renders; the Deployment's checksum/config annotation rolls the
-# pods whenever any of it changes. DATABASE_URL never lands here: it lives in
+# Deployment renders and mounted into the api container with envFrom (the
+# explicit env entries win for the same key); the Deployment's
+# checksum/config annotation rolls the pods whenever any of it changes. Every
+# key is a variable cmd/api reads (tests/render_test.sh). DATABASE_URL never lands here: it lives in
 # the Secret (templates/secret.yaml or database.existingSecret).
 apiVersion: v1
 kind: ConfigMap
@@ -41,6 +43,7 @@ data:
   {{- with .Values.config.outboxRelayInterval }}
   OUTBOX_RELAY_INTERVAL: {{ . | quote }}
   {{- end }}
+  OUTBOX_MAX_ATTEMPTS: {{ .Values.config.outboxMaxAttempts | quote }}
   {{- with .Values.config.shutdownDrainDelay }}
   SHUTDOWN_DRAIN_DELAY: {{ . | quote }}
   {{- end }}

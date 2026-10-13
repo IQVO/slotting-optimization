@@ -4,6 +4,7 @@ database:
 config:
   eventPublisher: "kafka"
   outboxRelayInterval: "500ms"
+  outboxMaxAttempts: 20
   demandSiteId: "SITE-1"
   defaultSiteId: "SITE-1"
   lookbackDays: "28"

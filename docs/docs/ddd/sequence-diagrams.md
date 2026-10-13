@@ -139,12 +139,15 @@ sequenceDiagram
     participant S as RelaySink
     participant K as warehouse.slotting-optimization.events
     loop every OUTBOX_RELAY_INTERVAL, or at once after a full batch
-        R->>DB: BEGIN, SELECT up to 100 unpublished rows FOR UPDATE SKIP LOCKED
+        R->>DB: BEGIN, SELECT up to 100 unpublished rows with attempts below OUTBOX_MAX_ATTEMPTS, FOR UPDATE SKIP LOCKED
         loop each row in id order
             R->>S: Send(message)
             S->>K: WriteMessages, key plan id, RequireAll acks
             alt send failed
-                R->>DB: UPDATE attempts and last_error, COMMIT
+                R->>DB: UPDATE attempts and last_error RETURNING attempts, COMMIT
+                opt attempts reached OUTBOX_MAX_ATTEMPTS (ADR 0008)
+                    R->>R: log ERROR row reached the attempt cap (row excluded from later claims)
+                end
                 R->>R: log outbox relay pass failed, wait the interval
             else sent
                 R->>DB: UPDATE published_at

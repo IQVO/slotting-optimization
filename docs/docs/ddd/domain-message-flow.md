@@ -91,4 +91,8 @@ Not built. ADR 0001 and ADR 0002 describe the intended path: a consumer in
 `process-path-management` (or the WES) turns the moves of
 `SlotPlanApproved` into MOVE / REPLENISH work for `wes-work-planning` and
 `fulfillment-execution`. It needs ADRs in those contexts and a new task
-type, so no diagram is drawn here as if it existed.
+type, so no diagram is drawn here as if it existed. Who executes the moves is
+still undecided: [ADR 0007](/docs/adr/0007-executing-an-approved-slot-plan)
+(Proposed) compares wes-work-planning MOVE / REPLENISH tasks, an
+inventory-storage relocation command and a slotting-owned move list worked
+from the console, and lists the open questions.

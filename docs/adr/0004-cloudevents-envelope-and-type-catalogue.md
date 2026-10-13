@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted (2026-10-08).
+Accepted (2026-10-08). The per-key ordering consequence is amended by
+[ADR 0008](./0008-outbox-relay-attempt-cap.md) (outbox relay attempt cap).
 
 ## Context
 

@@ -70,10 +70,10 @@ Every other type on those topics (for example `FacilityLayoutImported` or
 
 | Consumer | Protocol | Contract | State on `develop` |
 | --- | --- | --- | --- |
-| any subscriber of `warehouse.slotting-optimization.events` | Kafka, CloudEvents 1.0 structured mode, key = plan id | `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated`, `...SlotPlanApproved` (full `{sku, slot}` map, the moves, `supersedes_plan_id`), `...SlotPlanRejected`; dataschema `urn:warehouse:slotting-optimization:events:<EventName>:v1` ([Domain events](/docs/ddd/domain-events)) | **no consumer exists**: a search of `warehouse-ops-agent`, `warehouse-console` and `wes-work-planning` on `origin/develop` finds none |
+| any subscriber of `warehouse.slotting-optimization.events` | Kafka, CloudEvents 1.0 structured mode, key = plan id, optional W3C `traceparent` header of the writing request ([ADR 0009](/docs/adr/0009-trace-context-crosses-the-outbox)) | `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated`, `...SlotPlanApproved` (full `{sku, slot}` map, the moves, `supersedes_plan_id`), `...SlotPlanRejected`; dataschema `urn:warehouse:slotting-optimization:events:<EventName>:v1` ([Domain events](/docs/ddd/domain-events)) | **no consumer exists**: a search of `warehouse-ops-agent`, `warehouse-console` and `wes-work-planning` on `origin/develop` finds none |
 | planners, `warehouse-console`, `warehouse-ops-agent` | REST (Open Host Service), unauthenticated | `apis/openapi.yaml`: `POST /slot-plans`, `GET /slot-plans`, `GET /slot-plans/{planId}`, `POST /slot-plans/{planId}/approve`, `POST /slot-plans/{planId}/reject`, `GET /forward-slots`, `GET /sku-velocity` | the API is built; no console remote and no agent tool call it yet. `CORS_ALLOWED_ORIGINS` defaults to the console's dev origin `http://localhost:5173`. |
-| `process-path-management`, `wes-work-planning`, `fulfillment-execution` | Kafka | turn the moves of `SlotPlanApproved` into MOVE / REPLENISH work | **planned, not built** (ADR 0001, ADR 0002): needs ADRs in those contexts and a new task type |
-| MCP clients | MCP (Streamable HTTP) | read tools | **planned** (ADR 0001); there is no `cmd/mcp` |
+| `process-path-management`, `wes-work-planning`, `fulfillment-execution` | Kafka | turn the moves of `SlotPlanApproved` into MOVE / REPLENISH work | **planned, not built** (ADR 0001, ADR 0002): needs ADRs in those contexts and a new task type. Who executes the moves is undecided; [ADR 0007](/docs/adr/0007-executing-an-approved-slot-plan) (Proposed) lays out the options (wes-work-planning MOVE / REPLENISH tasks, inventory-storage relocation, a slotting-owned move list worked from the console) and the open questions |
+| MCP clients | MCP (Streamable HTTP) | read tools `get_slot_plan`, `list_slot_plans`, `get_forward_slots`, `get_sku_velocity` | built: `cmd/mcp` (ADR 0005), unauthenticated, read-only |
 
 ### Failure behaviour (outbound)
 
@@ -81,7 +81,10 @@ The plan row and its outbox rows commit in one transaction, so a decision is
 never lost and never published without being stored. A broker outage only
 delays publication: the relay retries every `OUTBOX_RELAY_INTERVAL`, in id
 order, with the original CloudEvents ids, and stops at the first failing
-row so per-plan order holds. With `EVENT_PUBLISHER=log` (the default) the
+row so per-plan order holds. A row that fails `OUTBOX_MAX_ATTEMPTS` times
+(default 20) is excluded and logged at ERROR so the rows behind it move on;
+later events of the same plan then overtake it until an operator re-arms it
+([ADR 0008](/docs/adr/0008-outbox-relay-attempt-cap)). With `EVENT_PUBLISHER=log` (the default) the
 events are only logged; downstream sees nothing.
 
 ## Explicit non-edges
@@ -95,5 +98,6 @@ events are only logged; downstream sees nothing.
 ## Edge and infrastructure
 
 The fleet edge (Kong `:8000`, `/api/<context>`) has no route for this
-context yet, and there is no Helm chart; see
+context yet; the Helm chart (`charts/slotting-optimization`) exists but
+`warehouse-infra` does not deploy it yet; see
 [Runbook](/docs/operations/runbook#deployment).

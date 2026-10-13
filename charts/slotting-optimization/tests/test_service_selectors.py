@@ -53,6 +53,7 @@ API_ENV = (
     "DEMAND_SITE_ID", "DEFAULT_SITE_ID", "LOOKBACK_DAYS", "FORWARD_ZONE_CODES",
     "DEMAND_MODE", "DEMAND_CONSUMER_GROUP", "PRODUCT_MODE", "PRODUCT_CONSUMER_GROUP",
     "LAYOUT_MODE", "LAYOUT_CONSUMER_GROUP", "ENVIRONMENT", "SERVICE_VERSION", "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OUTBOX_MAX_ATTEMPTS",
 )
 
 
@@ -121,7 +122,7 @@ def check_components(docs: list[dict], failures: list[str]) -> None:
             failures.append("the MCP Deployment must run /app/mcp")
         mcp_env = set(env_names(deployments[mcp]))
         stray = {
-            "KAFKA_BROKERS", "EVENT_PUBLISHER", "OUTBOX_RELAY_INTERVAL",
+            "KAFKA_BROKERS", "EVENT_PUBLISHER", "OUTBOX_RELAY_INTERVAL", "OUTBOX_MAX_ATTEMPTS",
             "DEMAND_MODE", "DEMAND_CONSUMER_GROUP", "PRODUCT_MODE", "PRODUCT_CONSUMER_GROUP",
             "LAYOUT_MODE", "LAYOUT_CONSUMER_GROUP", "LOOKBACK_DAYS", "FORWARD_ZONE_CODES",
         } & mcp_env

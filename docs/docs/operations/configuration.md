@@ -7,11 +7,21 @@ sidebar_position: 1
 
 # Configuration
 
-`slotting-optimization` ships one binary, `cmd/api`, and it is configured
-only through environment variables. There is no config file and no flag.
-Every variable below is read in `cmd/api/main.go` unless the *Source* column
-says otherwise, and the list is complete: it comes from every `os.Getenv` /
-`getenv` call in `cmd/` and `internal/` outside `_test.go` files.
+`slotting-optimization` ships two binaries, `cmd/api` and `cmd/mcp`, and
+both are configured only through environment variables. There is no config
+file and no flag. Every variable below is read in `cmd/api/main.go` unless
+the *Source* column says otherwise, and the list is complete: it comes from
+every `os.Getenv` / `getenv` call in `cmd/` and `internal/` outside
+`_test.go` files.
+
+In the Helm chart every `cmd/api` variable has a `config.*` (or `kafka.*`,
+`otel.*`, `database.*`, `environment`) value, is rendered as explicit `env`
+on the api Deployment and is also in the chart ConfigMap, which the api
+Deployment mounts with `envFrom` (explicit `env` wins for the same key).
+`charts/slotting-optimization/tests/render_test.sh` (CI job `chart-tests`)
+reads the `os.Getenv` / `getenv` literals of `cmd/api/main.go` and
+`cmd/mcp/main.go` and fails when the chart does not render one of them, and
+when the ConfigMap has a key no binary reads.
 
 ## `cmd/api`
 
@@ -20,7 +30,7 @@ says otherwise, and the list is complete: it comes from every `os.Getenv` /
 | Variable | Default | Required | Meaning | Source |
 | --- | --- | --- | --- | --- |
 | `HTTP_ADDR` | `:8080` | no | Listen address of the REST API, `/healthz`, `/readyz` and `/metrics`. `ReadHeaderTimeout` is fixed at 5 s. | `cmd/api/main.go` (`run`) |
-| `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn` or `error` (case-insensitive). Any other value falls back to `info` silently. Logs are JSON lines on stdout (`log/slog`). | `cmd/api/main.go` (`newLogger`) |
+| `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn` (or `warning`, accepted like `warn` fleet-wide) or `error` (case-insensitive). Any other value falls back to `info` silently. `cmd/mcp` parses it the same way. Logs are JSON lines on stdout (`log/slog`). | `cmd/api/main.go` (`newLogger`) |
 | `SERVICE_VERSION` | `dev` | no | OTel resource attribute `service.version`. | `cmd/api/main.go` (`setupTelemetry`) |
 | `ENVIRONMENT` | `local` | no | OTel resource attribute `deployment.environment.name`. | `internal/adapters/outbound/telemetry/telemetry.go` (`Environment`) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | no | OTLP/gRPC endpoint (host:port, insecure) for traces and metrics. The exporters connect lazily: no Collector means telemetry is dropped, never a failed boot. | `cmd/api/main.go`, `telemetry.DefaultOTLPEndpoint` |
@@ -50,6 +60,7 @@ says otherwise, and the list is complete: it comes from every `os.Getenv` /
 | `EVENT_PUBLISHER` | `log` | no | Sink of the outbox relay. `log` writes `event published (log sink)` lines and marks rows published; `kafka` writes to `warehouse.slotting-optimization.events`. Any other value refuses to boot (`unknown EVENT_PUBLISHER`). | `cmd/api/main.go` (`parsePublisherMode`, `startOutboxRelay`) |
 | `KAFKA_BROKERS` | unset | when `EVENT_PUBLISHER=kafka` or any `*_MODE=kafka` | Comma-separated bootstrap brokers, shared by the relay writer, the three readers and the three DLQ writers. Missing when needed refuses to boot. The fleet broker is reachable at `localhost:9092` from a laptop. | `cmd/api/main.go` (`planConsumers`, `startOutboxRelay`) |
 | `OUTBOX_RELAY_INTERVAL` | `1s` | no | Sleep between relay passes that did not fill a batch of 100 rows. Go duration (`500ms`) or plain seconds (`0.5`); invalid or non-positive logs `invalid OUTBOX_RELAY_INTERVAL; using the default`. | `cmd/api/main.go` (`parseRelayInterval`), `outbox.DefaultInterval` |
+| `OUTBOX_MAX_ATTEMPTS` | `20` | no | How many times one outbox row may fail before the relay **excludes it from claims** ([ADR 0008](/docs/adr/0008-outbox-relay-attempt-cap)), so a poison row cannot block every row behind it forever. The excluded row stays in `outbox_events` with `attempts` and `last_error`; the failure that reaches the cap logs one ERROR (`outbox relay: row reached the attempt cap ...`). `0` = unlimited (the old behaviour); a negative or non-integer value logs `invalid OUTBOX_MAX_ATTEMPTS; using the default` and uses 20. Re-arm a row with `UPDATE outbox_events SET attempts = 0 WHERE id = ...` ([Runbook](/docs/operations/runbook#outbox-relay-attempt-cap)). Chart value `config.outboxMaxAttempts`. | `cmd/api/main.go` (`outboxMaxAttempts`), `outbox.DefaultMaxAttempts` |
 
 ### Kafka: consumers
 
@@ -67,6 +78,19 @@ hard-coded (`TestKafkaConsumerGroupNeverHardcodedInline`).
 | `LAYOUT_MODE` | `permissive` | no | `kafka` starts the layout consumer on `warehouse.facility.events`. | `cmd/api/main.go` (`consumerSpecs`) |
 | `LAYOUT_CONSUMER_GROUP` | unset | when `LAYOUT_MODE=kafka` | Consumer group id of the layout consumer. | `cmd/api/main.go` (`planConsumers`) |
 
+## `cmd/mcp`
+
+The read-only MCP server (ADR 0005). It runs no relay and no consumer and
+never dials Kafka. Chart: `mcp.enabled`, `mcp.httpAddr`; the rest is shared
+with the api values.
+
+| Variable | Default | Required | Meaning | Source |
+| --- | --- | --- | --- | --- |
+| `MCP_ADDR` | `:8090` | no | Listen address of the Streamable HTTP MCP endpoint and `GET /healthz`. | `cmd/mcp/main.go` (`run`) |
+| `DATABASE_URL`, `MIGRATIONS_DATABASE_URL` | unset / `DATABASE_URL` | no | As for `cmd/api`: unset = empty in-memory repositories; set = run the embedded migrations, then a pgx pool. | `cmd/mcp/main.go` (`buildDeps`) |
+| `DEMAND_SITE_ID`, `DEFAULT_SITE_ID` | unset | no | The site `get_forward_slots` and `get_sku_velocity` default to (`DEMAND_SITE_ID`, else `DEFAULT_SITE_ID`), matching `cmd/api`. | `cmd/mcp/main.go` (`defaultSite`) |
+| `LOG_LEVEL`, `SERVICE_VERSION`, `ENVIRONMENT`, `OTEL_EXPORTER_OTLP_ENDPOINT` | as for `cmd/api` | no | Logging and telemetry, parsed the same way. | `cmd/mcp/main.go`, `telemetry.go` |
+
 ## Fixed values (not configurable)
 
 These are constants in code; changing them is a code change.
@@ -74,7 +98,7 @@ These are constants in code; changing them is a code change.
 | Value | Constant | Source |
 | --- | --- | --- |
 | HTTP graceful drain budget 10 s; consumer and relay drain 10 s each; telemetry flush 5 s | `shutdownTimeout`, `workerDrainTimeout` | `cmd/api/main.go` |
-| Boot retry: 5 attempts with 1 s, 2 s, 4 s, 8 s waits for the migrations and the first ping | `bootretry.Retries`, `bootretry.Delay` | `internal/bootretry/bootretry.go` |
+| Boot retry: 5 attempts with 1 s, 2 s, 4 s, 8 s waits (15 s of backoff in total, no wait after the last attempt) for the migrations and the first ping | `bootretry.Retries`, `bootretry.Delay` | `internal/bootretry/bootretry.go` |
 | Pool: `MaxConns = 10`, `statement_timeout = 5s` | `postgres.MaxConns`, `postgres.StatementTimeout` | `internal/adapters/outbound/postgres/pool.go` |
 | Relay batch 100 rows | `outbox.DefaultBatchSize` | `internal/adapters/outbound/outbox/relay.go` |
 | Consumer retry: 200 ms doubling to 5 s, 5 handling attempts, then `<topic>.dlq` | `DefaultRetryInitial`, `DefaultRetryMax`, `domainMaxHandlerAttempts` | `internal/adapters/inbound/kafka/kafka.go`, `deadletter.go` |
@@ -89,4 +113,4 @@ These are constants in code; changing them is a code change.
 | Unit tests, BDD, a quick look | nothing (in-memory, log sink, no consumers); add `DEFAULT_SITE_ID=WH1` to omit `siteId` |
 | Local Postgres | `DATABASE_URL`, `DEFAULT_SITE_ID` |
 | Local Postgres + the fleet broker | the above plus `EVENT_PUBLISHER=kafka`, `KAFKA_BROKERS=localhost:9092` and, per copy you want filled, `*_MODE=kafka` with a `*_CONSUMER_GROUP` no deployed instance uses ([Quickstart](/docs/overview/quickstart#run-with-kafka)) |
-| A cluster deployment | everything above with real DSNs, plus `MIGRATIONS_DATABASE_URL` when `DATABASE_URL` goes through a pooler, `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` and `CORS_ALLOWED_ORIGINS`. No Helm chart exists yet ([Runbook](/docs/operations/runbook#deployment)). |
+| A cluster deployment | everything above with real DSNs, plus `MIGRATIONS_DATABASE_URL` when `DATABASE_URL` goes through a pooler, `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` and `CORS_ALLOWED_ORIGINS`, all set by `charts/slotting-optimization` from its values ([Runbook](/docs/operations/runbook#deployment)). |

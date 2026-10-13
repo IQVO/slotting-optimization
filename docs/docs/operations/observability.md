@@ -42,7 +42,7 @@ Source: `internal/adapters/outbound/telemetry/telemetry.go`,
 | Exporter | OTLP/gRPC, insecure, to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `localhost:4317`) for traces and metrics | `telemetry.Setup` |
 | Connection | lazy and non-blocking: no Collector means spans and metrics are dropped, the service still starts | `telemetry.Setup` |
 | Metric push interval | 30 s (`metricExportInterval`) | `telemetry.go` |
-| Propagation | W3C `traceparent` and `baggage` on HTTP; **not** propagated through Kafka (no trace context in the CloudEvents headers) | `telemetry.go`, `outbound/kafka/encoder.go` |
+| Propagation | W3C `traceparent` and `baggage` on HTTP. Through Kafka: the request span's `traceparent` (and `tracestate` / `baggage` when present) is stored in `outbox_events.headers` at insert and sent as Kafka headers by the relay ([ADR 0009](/docs/adr/0009-trace-context-crosses-the-outbox)); a consumer that extracts it continues the producing request's trace. This service's own consumers open no spans, so they do not extract | `telemetry.go`, `outbound/postgres/outbox_repository.go` (`traceHeaders`), `outbound/kafka/relay_sink.go` |
 | Resource | `service.name=slotting-optimization`, `service.version=$SERVICE_VERSION` (default `dev`), `deployment.environment.name=$ENVIRONMENT` (default `local`) plus the SDK defaults | `telemetry.newResource` |
 | Shutdown | providers flushed with a 5 s budget after everything else stopped | `cmd/api/main.go` (`setupTelemetry`) |
 
@@ -98,7 +98,7 @@ Trace ids are not injected into log lines.
 | `no consumer is in kafka mode; the local copies are whatever the database holds` | INFO | | `cmd/api/main.go` |
 | `consumer running` | INFO | `consumer`, `topic`, `group_id`, `brokers` | `cmd/api/main.go` |
 | `consumer stopped` | ERROR | `consumer`, `error` | `cmd/api/main.go` (reader failure) |
-| `outbox relay running` | INFO | `publisher`, `interval`, `topic` | `cmd/api/main.go` |
+| `outbox relay running` | INFO | `publisher`, `interval`, `max_attempts`, `topic` | `cmd/api/main.go` |
 | `http server listening` | INFO | `addr` | `cmd/api/main.go` |
 | `event processed` | INFO | `type`, `event_id`, `subject`, `outcome` (`applied`, `duplicate`, `stale`, `ignored`) | `inbound/kafka/consumer.go` (`logOutcome`) |
 | `skipping a message that is not a valid CloudEvent` | WARN | `consumer`, `topic`, `error` | `inbound/kafka/consumer.go` |
@@ -107,9 +107,10 @@ Trace ids are not injected into log lines.
 | `<consumer> handling failed after the maximum attempts; dead-lettering the message` | ERROR | `error`, `partition`, `offset`, `attempts` | `inbound/kafka/kafka.go` |
 | `<consumer> offset commit failed; retrying the same message` / `dead-letter publish failed; ...` | ERROR | `error`, `partition`, `offset`, `attempt`, `retry_in` | `inbound/kafka/kafka.go` (`retryUntilOK`) |
 | `event published (log sink)` | INFO | `topic`, `type`, `subject`, `id` | `outbound/outbox/relay.go` (`EVENT_PUBLISHER=log`) |
-| `outbox relay pass failed` | ERROR | `error` | `outbound/outbox/relay.go` |
+| `outbox relay pass failed` | ERROR | `error` (`outbox row <id> (<type>): <cause>`) | `outbound/outbox/relay.go` |
+| `outbox relay: row reached the attempt cap and is excluded from future claims; ...` | ERROR | `outbox_id`, `topic`, `event_type`, `key`, `attempts`, `max_attempts`, `error` (once per row, ADR 0008) | `outbound/outbox/relay.go` |
 | `request failed` | ERROR | `error`, `method`, `path` (only for a `500 internal-error`) | `inbound/http/response.go` |
-| `invalid LOOKBACK_DAYS; using the default`, `invalid OUTBOX_RELAY_INTERVAL; using the default`, `ignoring invalid SHUTDOWN_DRAIN_DELAY` | WARN | `value`, `default` | `cmd/api/main.go` |
+| `invalid LOOKBACK_DAYS; using the default`, `invalid OUTBOX_RELAY_INTERVAL; using the default`, `invalid OUTBOX_MAX_ATTEMPTS; using the default`, `ignoring invalid SHUTDOWN_DRAIN_DELAY` | WARN | `value`, `default` | `cmd/api/main.go` |
 | `shutdown: readiness flipped to not-ready; waiting for traffic to drain` | INFO | `drain_delay` | `cmd/api/main.go` |
 | `worker did not stop before the shutdown drain deadline` | WARN | `worker` | `cmd/api/main.go` |
 | `service exited with error` | ERROR | `error` | `cmd/api/main.go` (exit code 1) |
