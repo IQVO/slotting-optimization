@@ -5,6 +5,10 @@ metadata:
   name: {{ include "slotting-optimization.fullname" . }}
   labels:
     {{- include "slotting-optimization.labels" . | nindent 4 }}
+  {{- with include "slotting-optimization.kongPluginNames" . }}
+  annotations:
+    konghq.com/plugins: {{ . | quote }}
+  {{- end }}
 spec:
   parentRefs:
     {{- range .Values.gatewayApi.parentRefs }}

@@ -67,6 +67,21 @@ gatewayApi:
       pathType: PathPrefix
   stripPath: true
 
+# Kong plugins rendered by THIS chart (kong-plugins.yaml) and attached to
+# every HTTPRoute above via the konghq.com/plugins annotation. Fleet
+# decision 2026-10-13: Kong configuration belongs to the application
+# charts, not warehouse-infra Terraform. Defaults off; warehouse-infra's
+# values switch them on. NO auth plugin here, ever.
+kongPlugins:
+  cors:
+    enabled: false
+    origin: "http://localhost"
+  prometheus:
+    enabled: false
+  opentelemetry:
+    enabled: false
+    tracesEndpoint: "http://otel-collector.observability.svc.cluster.local:4318/v1/traces"
+
 resources:
   limits:
     cpu: 500m
@@ -246,6 +261,16 @@ mcp:
     type: ClusterIP
     port: 8090
     targetPort: 8090
+  # Kong exposure of the MCP server (mcp-route.yaml): host path
+  # /api/mcp/<context> rewritten to /mcp. Off by default; warehouse-infra
+  # turns it on with the real parentRefs and path.
+  route:
+    enabled: false
+    path: "/api/mcp/slotting-optimization"
+    parentRefs:
+      - name: ""
+        namespace: ""
+        sectionName: "http"
   extraEnv: []
   resources:
     limits:
