@@ -7,11 +7,21 @@ sidebar_position: 1
 
 # Configuration
 
-`slotting-optimization` ships one binary, `cmd/api`, and it is configured
-only through environment variables. There is no config file and no flag.
-Every variable below is read in `cmd/api/main.go` unless the *Source* column
-says otherwise, and the list is complete: it comes from every `os.Getenv` /
-`getenv` call in `cmd/` and `internal/` outside `_test.go` files.
+`slotting-optimization` ships two binaries, `cmd/api` and `cmd/mcp`, and
+both are configured only through environment variables. There is no config
+file and no flag. Every variable below is read in `cmd/api/main.go` unless
+the *Source* column says otherwise, and the list is complete: it comes from
+every `os.Getenv` / `getenv` call in `cmd/` and `internal/` outside
+`_test.go` files.
+
+In the Helm chart every `cmd/api` variable has a `config.*` (or `kafka.*`,
+`otel.*`, `database.*`, `environment`) value, is rendered as explicit `env`
+on the api Deployment and is also in the chart ConfigMap, which the api
+Deployment mounts with `envFrom` (explicit `env` wins for the same key).
+`charts/slotting-optimization/tests/render_test.sh` (CI job `chart-tests`)
+reads the `os.Getenv` / `getenv` literals of `cmd/api/main.go` and
+`cmd/mcp/main.go` and fails when the chart does not render one of them, and
+when the ConfigMap has a key no binary reads.
 
 ## `cmd/api`
 
@@ -68,6 +78,19 @@ hard-coded (`TestKafkaConsumerGroupNeverHardcodedInline`).
 | `LAYOUT_MODE` | `permissive` | no | `kafka` starts the layout consumer on `warehouse.facility.events`. | `cmd/api/main.go` (`consumerSpecs`) |
 | `LAYOUT_CONSUMER_GROUP` | unset | when `LAYOUT_MODE=kafka` | Consumer group id of the layout consumer. | `cmd/api/main.go` (`planConsumers`) |
 
+## `cmd/mcp`
+
+The read-only MCP server (ADR 0005). It runs no relay and no consumer and
+never dials Kafka. Chart: `mcp.enabled`, `mcp.httpAddr`; the rest is shared
+with the api values.
+
+| Variable | Default | Required | Meaning | Source |
+| --- | --- | --- | --- | --- |
+| `MCP_ADDR` | `:8090` | no | Listen address of the Streamable HTTP MCP endpoint and `GET /healthz`. | `cmd/mcp/main.go` (`run`) |
+| `DATABASE_URL`, `MIGRATIONS_DATABASE_URL` | unset / `DATABASE_URL` | no | As for `cmd/api`: unset = empty in-memory repositories; set = run the embedded migrations, then a pgx pool. | `cmd/mcp/main.go` (`buildDeps`) |
+| `DEMAND_SITE_ID`, `DEFAULT_SITE_ID` | unset | no | The site `get_forward_slots` and `get_sku_velocity` default to (`DEMAND_SITE_ID`, else `DEFAULT_SITE_ID`), matching `cmd/api`. | `cmd/mcp/main.go` (`defaultSite`) |
+| `LOG_LEVEL`, `SERVICE_VERSION`, `ENVIRONMENT`, `OTEL_EXPORTER_OTLP_ENDPOINT` | as for `cmd/api` | no | Logging and telemetry, parsed the same way. | `cmd/mcp/main.go`, `telemetry.go` |
+
 ## Fixed values (not configurable)
 
 These are constants in code; changing them is a code change.
@@ -90,4 +113,4 @@ These are constants in code; changing them is a code change.
 | Unit tests, BDD, a quick look | nothing (in-memory, log sink, no consumers); add `DEFAULT_SITE_ID=WH1` to omit `siteId` |
 | Local Postgres | `DATABASE_URL`, `DEFAULT_SITE_ID` |
 | Local Postgres + the fleet broker | the above plus `EVENT_PUBLISHER=kafka`, `KAFKA_BROKERS=localhost:9092` and, per copy you want filled, `*_MODE=kafka` with a `*_CONSUMER_GROUP` no deployed instance uses ([Quickstart](/docs/overview/quickstart#run-with-kafka)) |
-| A cluster deployment | everything above with real DSNs, plus `MIGRATIONS_DATABASE_URL` when `DATABASE_URL` goes through a pooler, `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` and `CORS_ALLOWED_ORIGINS`. No Helm chart exists yet ([Runbook](/docs/operations/runbook#deployment)). |
+| A cluster deployment | everything above with real DSNs, plus `MIGRATIONS_DATABASE_URL` when `DATABASE_URL` goes through a pooler, `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` and `CORS_ALLOWED_ORIGINS`, all set by `charts/slotting-optimization` from its values ([Runbook](/docs/operations/runbook#deployment)). |

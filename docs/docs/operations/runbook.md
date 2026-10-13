@@ -15,20 +15,21 @@ tooling does not exist yet the page says so.
 
 | Item | State on `develop` |
 | --- | --- |
-| Binaries | one, `cmd/api`: REST, the three local-copy consumers and the outbox relay in one process ([Architecture](/docs/overview/architecture)) |
-| Container image | the `docker-publish` job of `.github/workflows/ci.yml` pushes `ghcr.io/iqvo/slotting-optimization:{latest,<short-sha>}` on a push to `main`, built from `.` with Buildx. **There is no `Dockerfile` in the repository yet**, so that job cannot succeed until one is added. |
-| Helm chart | the `release` job packages `charts/slotting-optimization`. **There is no `charts/` directory yet**, and `warehouse-infra` (`origin/develop`) has no values file, Kong route or ArgoCD application for this context. ADR 0001 records the wiring as a later "wiring wave". |
+| Binaries | two in one image: `cmd/api` (`/app/api`: REST, the three local-copy consumers and the outbox relay in one process, [Architecture](/docs/overview/architecture)) and `cmd/mcp` (`/app/mcp`: the read-only MCP server, ADR 0005) |
+| Container image | built from the repository's `Dockerfile`; the `docker-publish` job of `.github/workflows/ci.yml` pushes `ghcr.io/iqvo/slotting-optimization:{latest,<short-sha>}` on a push to `main` |
+| Helm chart | `charts/slotting-optimization`: the api Deployment (always), the mcp Deployment and Service (`mcp.enabled`, off by default), an optional HPA, ingress or Gateway API route. The api Deployment renders every variable `cmd/api` reads as explicit `env` and also mounts the chart ConfigMap with `envFrom` (explicit `env` wins); `tests/render_test.sh` (CI job `chart-tests`) fails when a variable a binary reads is not rendered, when the mount disappears, or when the ConfigMap carries a key no binary reads. The `release` job packages and pushes the chart. `warehouse-infra` (`origin/develop`) has no values file, Kong route or ArgoCD application for this context yet (gap fix D10, infra part) |
 | Edge route | planned: Kong `:8000` under `/api/slotting-optimization` (ADR 0001). Not wired. |
 | Auth | none, by fleet decision (REST and MCP are unauthenticated; `TestNoAuthMiddlewareReintroduced`) |
 
-So today the service runs from source or a locally built binary
-([Quickstart](/docs/overview/quickstart)). The rest of this page describes the
-process behaviour any deployment must respect.
+Until `warehouse-infra` wires it the service runs from source, a locally
+built binary ([Quickstart](/docs/overview/quickstart)) or `helm install` of the
+chart. The rest of this page describes the process behaviour any deployment
+must respect.
 
 ### One Deployment, one port
 
-When a chart is added it needs exactly one Deployment (the binary has no
-role switch) and one Service port, `HTTP_ADDR` (default `:8080`), serving:
+`cmd/api` runs as exactly one Deployment (the binary has no role switch)
+with one Service port, `HTTP_ADDR` (default `:8080`), serving:
 
 | Path | Purpose | Answer |
 | --- | --- | --- |
@@ -53,14 +54,15 @@ as consumer and relay errors in the logs, not as an unready pod.
 1. Logger (`LOG_LEVEL`), then OpenTelemetry (`OTEL_EXPORTER_OTLP_ENDPOINT`, non-blocking).
 2. With `DATABASE_URL` set: run the embedded migrations through
    `MIGRATIONS_DATABASE_URL`, open the pool, ping it. Both steps retry 5 times
-   with 1 s, 2 s, 4 s, 8 s waits (`internal/bootretry`) because a pod's first
+   with 1 s, 2 s, 4 s, 8 s waits (15 s of backoff in total; `internal/bootretry`) because a pod's first
    outbound dial can be reset by its Istio sidecar. The last error is returned
    and the process exits 1 (`service exited with error`).
 3. Without `DATABASE_URL`: in-memory adapters (log line
    `DATABASE_URL not configured; using in-memory adapters`).
 4. Build the router, then start every consumer whose `*_MODE=kafka`
    (`consumer running` with `consumer`, `topic`, `group_id`, `brokers`), then
-   the relay (`outbox relay running` with `publisher`, `interval`, `topic`).
+   the relay (`outbox relay running` with `publisher`, `interval`,
+   `max_attempts`, `topic`).
 5. Listen (`http server listening`).
 
 A misconfiguration refuses to boot before the listener opens: an unknown

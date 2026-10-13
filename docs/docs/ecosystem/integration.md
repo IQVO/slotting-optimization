@@ -98,5 +98,6 @@ events are only logged; downstream sees nothing.
 ## Edge and infrastructure
 
 The fleet edge (Kong `:8000`, `/api/<context>`) has no route for this
-context yet, and there is no Helm chart; see
+context yet; the Helm chart (`charts/slotting-optimization`) exists but
+`warehouse-infra` does not deploy it yet; see
 [Runbook](/docs/operations/runbook#deployment).

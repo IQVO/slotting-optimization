@@ -115,7 +115,8 @@ forward slot, eligibility, stickiness, local copy. Full glossary:
 ## Open questions
 
 - Who executes the moves (planned edge through process-path-management, not
-  built)?
+  built)? The options and open questions are in
+  [ADR 0007](/docs/adr/0007-executing-an-approved-slot-plan) (Proposed).
 - Which consumer will read `SlotPlanApproved` first?
 - A travel-distance ranking needs layout geometry the consumer does not read
   yet (`LocationGeometryUpdated` is ignored today).
