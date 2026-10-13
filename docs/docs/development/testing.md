@@ -15,7 +15,7 @@ sensors, chart render test).
 
 ```mermaid
 flowchart TB
-    arch["Architecture fitness: internal/architecture (16 tests, arch-go + AST)"]
+    arch["Architecture fitness: internal/architecture (18 tests, arch-go + AST)"]
     mut["Mutation: gremlins on internal/domain/slotplan and internal/domain/planning (efficacy and mutant coverage at least 99 %)"]
     bdd["BDD: 5 features, 50 Scenario / Scenario Outline blocks, real router + real consumers over in-memory adapters"]
     integ["Integration: 17 files in 8 packages tagged integration, testcontainers Postgres 16 and Kafka"]
@@ -142,6 +142,7 @@ lived, `internal/domain/planning` 46 killed / 0 lived, both 100 %.
 | `TestNoEventEnvelopeToggleOrFlatEnvelope`, `TestCloudEventsOnly` | CloudEvents 1.0 only, built in one package |
 | `TestReplayConsumersSetCommitInterval` | a reader whose `GroupID` is a per-run unique group must set `CommitInterval` (no such reader exists here; the three consumers use env-provided groups and synchronous commits) |
 | `TestEventCatalogueMatchesContract`, `TestEventCatalogueDetector` | the published types match `apis/asyncapi.yaml` |
+| `TestKafkaWritersSetRequiredAcks`, `TestKafkaWriterAcksSensorBites` | Every kafka-go `Writer` composite literal in a non-test file under `internal/` or `cmd/` sets `RequiredAcks` (the import alias is resolved per file). kafka-go defaults it to `RequireNone` (acks=0): the broker never confirms the write, so a broker blip silently drops the message while `WriteMessages` returns nil. The twin proves the sensor flags a bad fixture under any alias. |
 
 ## Contract and API checks
 
