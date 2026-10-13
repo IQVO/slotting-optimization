@@ -103,10 +103,10 @@ erDiagram
         bytea key
         text dataschema
         bytea value
-        jsonb headers
+        jsonb headers "content-type, plus traceparent when written in a span (ADR 0009)"
         timestamptz created_at
         timestamptz published_at
-        integer attempts
+        integer attempts "relay skips the row at OUTBOX_MAX_ATTEMPTS (ADR 0008)"
         text last_error
     }
     processed_events {

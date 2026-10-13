@@ -42,7 +42,7 @@ Source: `internal/adapters/outbound/telemetry/telemetry.go`,
 | Exporter | OTLP/gRPC, insecure, to `OTEL_EXPORTER_OTLP_ENDPOINT` (default `localhost:4317`) for traces and metrics | `telemetry.Setup` |
 | Connection | lazy and non-blocking: no Collector means spans and metrics are dropped, the service still starts | `telemetry.Setup` |
 | Metric push interval | 30 s (`metricExportInterval`) | `telemetry.go` |
-| Propagation | W3C `traceparent` and `baggage` on HTTP; **not** propagated through Kafka (no trace context in the CloudEvents headers) | `telemetry.go`, `outbound/kafka/encoder.go` |
+| Propagation | W3C `traceparent` and `baggage` on HTTP. Through Kafka: the request span's `traceparent` (and `tracestate` / `baggage` when present) is stored in `outbox_events.headers` at insert and sent as Kafka headers by the relay ([ADR 0009](/docs/adr/0009-trace-context-crosses-the-outbox)); a consumer that extracts it continues the producing request's trace. This service's own consumers open no spans, so they do not extract | `telemetry.go`, `outbound/postgres/outbox_repository.go` (`traceHeaders`), `outbound/kafka/relay_sink.go` |
 | Resource | `service.name=slotting-optimization`, `service.version=$SERVICE_VERSION` (default `dev`), `deployment.environment.name=$ENVIRONMENT` (default `local`) plus the SDK defaults | `telemetry.newResource` |
 | Shutdown | providers flushed with a 5 s budget after everything else stopped | `cmd/api/main.go` (`setupTelemetry`) |
 
