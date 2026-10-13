@@ -181,7 +181,8 @@ func serveMCP(logger *slog.Logger, srv *http.Server) error {
 }
 
 // newLogger builds the process-wide JSON logger. LOG_LEVEL maps
-// debug|info|warn|error (case-insensitive), defaulting to Info.
+// debug|info|warn|warning|error (case-insensitive; "warning" is accepted
+// like "warn" fleet-wide), defaulting to Info.
 func newLogger(level string) *slog.Logger {
 	var lvl slog.Level
 	switch strings.ToLower(level) {

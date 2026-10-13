@@ -98,7 +98,7 @@ environment: "local"
 # Environment read by cmd/api/main.go. Every key maps 1:1 to one env var.
 config:
   httpAddr: ":8080"                  # HTTP_ADDR
-  logLevel: "info"                   # LOG_LEVEL: debug | info | warn | error
+  logLevel: "info"                   # LOG_LEVEL: debug | info | warn (or warning) | error
   # CORS_ALLOWED_ORIGINS (comma-separated). Empty = not rendered, so the
   # binary's own local-dev default applies. In the kind cluster Kong's global
   # CORS plugin handles browsers; set this only for a direct-to-pod caller.
@@ -194,7 +194,8 @@ otel:
 extraEnv: []
 
 # The Postgres dial (migrations + ping) at boot is wrapped in a bounded retry
-# (internal/bootretry). periodSeconds * failureThreshold gives a ~60s window
+# (internal/bootretry: 5 attempts, 1+2+4+8 = 15 s of backoff in total, no
+# sleep after the last attempt). periodSeconds * failureThreshold gives a ~60s window
 # before the kubelet gives up. Once startupProbe succeeds, liveness takes
 # over; readiness uses the separate /readyz endpoint (flipped to not-ready as
 # the FIRST step of graceful shutdown).

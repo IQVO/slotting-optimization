@@ -587,13 +587,14 @@ func setupTelemetry(logger *slog.Logger) (func(), error) {
 	}, nil
 }
 
-// newLogger builds the JSON logger; LOG_LEVEL debug|info|warn|error.
+// newLogger builds the JSON logger; LOG_LEVEL debug|info|warn|warning|error
+// (case-insensitive; "warning" is accepted like "warn" fleet-wide).
 func newLogger(level string) *slog.Logger {
 	var lvl slog.Level
 	switch strings.ToLower(level) {
 	case "debug":
 		lvl = slog.LevelDebug
-	case "warn":
+	case "warn", "warning":
 		lvl = slog.LevelWarn
 	case "error":
 		lvl = slog.LevelError

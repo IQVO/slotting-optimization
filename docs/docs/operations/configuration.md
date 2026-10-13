@@ -20,7 +20,7 @@ says otherwise, and the list is complete: it comes from every `os.Getenv` /
 | Variable | Default | Required | Meaning | Source |
 | --- | --- | --- | --- | --- |
 | `HTTP_ADDR` | `:8080` | no | Listen address of the REST API, `/healthz`, `/readyz` and `/metrics`. `ReadHeaderTimeout` is fixed at 5 s. | `cmd/api/main.go` (`run`) |
-| `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn` or `error` (case-insensitive). Any other value falls back to `info` silently. Logs are JSON lines on stdout (`log/slog`). | `cmd/api/main.go` (`newLogger`) |
+| `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn` (or `warning`, accepted like `warn` fleet-wide) or `error` (case-insensitive). Any other value falls back to `info` silently. `cmd/mcp` parses it the same way. Logs are JSON lines on stdout (`log/slog`). | `cmd/api/main.go` (`newLogger`) |
 | `SERVICE_VERSION` | `dev` | no | OTel resource attribute `service.version`. | `cmd/api/main.go` (`setupTelemetry`) |
 | `ENVIRONMENT` | `local` | no | OTel resource attribute `deployment.environment.name`. | `internal/adapters/outbound/telemetry/telemetry.go` (`Environment`) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | no | OTLP/gRPC endpoint (host:port, insecure) for traces and metrics. The exporters connect lazily: no Collector means telemetry is dropped, never a failed boot. | `cmd/api/main.go`, `telemetry.DefaultOTLPEndpoint` |
@@ -75,7 +75,7 @@ These are constants in code; changing them is a code change.
 | Value | Constant | Source |
 | --- | --- | --- |
 | HTTP graceful drain budget 10 s; consumer and relay drain 10 s each; telemetry flush 5 s | `shutdownTimeout`, `workerDrainTimeout` | `cmd/api/main.go` |
-| Boot retry: 5 attempts with 1 s, 2 s, 4 s, 8 s waits for the migrations and the first ping | `bootretry.Retries`, `bootretry.Delay` | `internal/bootretry/bootretry.go` |
+| Boot retry: 5 attempts with 1 s, 2 s, 4 s, 8 s waits (15 s of backoff in total, no wait after the last attempt) for the migrations and the first ping | `bootretry.Retries`, `bootretry.Delay` | `internal/bootretry/bootretry.go` |
 | Pool: `MaxConns = 10`, `statement_timeout = 5s` | `postgres.MaxConns`, `postgres.StatementTimeout` | `internal/adapters/outbound/postgres/pool.go` |
 | Relay batch 100 rows | `outbox.DefaultBatchSize` | `internal/adapters/outbound/outbox/relay.go` |
 | Consumer retry: 200 ms doubling to 5 s, 5 handling attempts, then `<topic>.dlq` | `DefaultRetryInitial`, `DefaultRetryMax`, `domainMaxHandlerAttempts` | `internal/adapters/inbound/kafka/kafka.go`, `deadletter.go` |
