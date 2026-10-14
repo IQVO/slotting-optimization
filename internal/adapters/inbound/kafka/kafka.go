@@ -20,6 +20,7 @@ package kafka
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -186,6 +187,13 @@ func (l *consumeLoop) handleWithDeadLetter(ctx context.Context, p RetryPolicy, s
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if errors.Is(err, errPoison) {
+			l.logger.ErrorContext(ctx, l.name+" message can never be applied; dead-lettering it without retry",
+				"error", err, "partition", msg.Partition, "offset", msg.Offset)
+			return l.retryUntilOK(ctx, p, sleep, "dead-letter publish", msg, func() error {
+				return l.deadLetter(ctx, msg, err)
+			})
 		}
 		if attempt == l.maxAttempts {
 			l.logger.ErrorContext(ctx, l.name+" handling failed after the maximum attempts; dead-lettering the message",

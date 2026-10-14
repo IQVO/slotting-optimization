@@ -130,6 +130,49 @@ sequenceDiagram
 Source: `internal/adapters/inbound/kafka/{kafka,consumer,deadletter}.go`,
 `internal/application/usecases/consumers.go`.
 
+## Record a relocation (execution progress)
+
+The StockRelocated consumer (ADR 0010) uses the same loop, with two
+differences: a `StockRelocated` that can never be applied is dead-lettered at
+once instead of skipped, and a relocation that matches no move is committed
+as `unmatched`.
+
+```mermaid
+sequenceDiagram
+    participant K as warehouse.inventory.events
+    participant L as consumeLoop
+    participant UC as RecordRelocation
+    participant DB as Postgres
+    participant DLQ as warehouse.inventory.events.dlq
+    K->>L: FetchMessage (StockRelocated)
+    alt data malformed or a required field missing
+        L->>DLQ: publish at once with x-dlq headers
+    else valid
+        L->>UC: Handle(eventId, relocation)
+        UC->>DB: BEGIN, claim processed_events (slotting-relocation, eventId)
+        alt source_ref is plan_id:move_seq
+            UC->>DB: load that plan, check site, position and SKU
+        else no move reference
+            UC->>DB: load the site's Approved plan, match SKU and bins
+        end
+        alt matched
+            UC->>DB: INSERT slot_plan_move_executions ON CONFLICT (relocation_id) DO NOTHING
+        else unmatched
+            UC->>UC: reason (unknown-plan, sku-mismatch, ...)
+        end
+        UC->>DB: COMMIT
+        UC-->>L: applied, duplicate or unmatched (counted)
+    end
+    L->>K: CommitMessages
+```
+
+A cancelled context (shutdown) returns before any dead-letter call: the
+offset stays uncommitted and the message is redelivered.
+
+Source: `internal/adapters/inbound/kafka/stock_consumer.go`,
+`internal/application/usecases/record_relocation.go`,
+`internal/domain/slotplan/execution.go`.
+
 ## Relay the outbox
 
 ```mermaid

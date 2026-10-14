@@ -11,7 +11,7 @@ sidebar_position: 1
 | --- | --- | --- |
 | REST | `apis/openapi.yaml` (OpenAPI 3.0.3, version 1.0.0) | The pages under *REST* are generated from the spec with `npm run gen-api-docs`; do not edit them by hand. Servers: `http://localhost:8080` (local) and `http://localhost:8000/api/slotting-optimization` (kind cluster through Kong, once the service is wired into the cluster; it is not yet). |
 | Events | `apis/asyncapi.yaml` (AsyncAPI 2.6.0, version 1.0.0) | Summarised on the [event catalogue](/docs/api-reference/events); every field on [Domain events](/docs/ddd/domain-events). |
-| MCP | none | **Planned, not built** (ADR 0001 names MCP read tools as a later phase). |
+| MCP | `cmd/mcp` (ADR 0005) | Read-only tools `get_slot_plan` (with the plan's `execution` progress, ADR 0010), `list_slot_plans`, `get_forward_slots`, `get_sku_velocity`; unauthenticated, Streamable HTTP. |
 
 ## Endpoints
 
@@ -19,7 +19,7 @@ sidebar_position: 1
 | --- | --- | --- | --- |
 | Slot plans | `POST /slot-plans` | `GeneratePlan` | `201`, `Location: /slot-plans/<planId>`, the Draft plan |
 | Slot plans | `GET /slot-plans` | `ListPlans` | `200 {items, nextCursor?}`, newest first |
-| Slot plans | `GET /slot-plans/{planId}` | `GetPlan` | `200`, the plan |
+| Slot plans | `GET /slot-plans/{planId}` | `GetPlan` | `200`, the plan with its `execution` progress (ADR 0010) |
 | Slot plans | `POST /slot-plans/{planId}/approve` | `ApprovePlan` | `200`, the Approved plan |
 | Slot plans | `POST /slot-plans/{planId}/reject` | `RejectPlan` | `200`, the Rejected plan |
 | Forward slots | `GET /forward-slots` | `ListForwardSlots` | `200 {siteId, planId?, approvedAt?, assignments}` |

@@ -25,6 +25,11 @@ const (
 // deterministic problem, never retried.
 var errBadPayload = errors.New("malformed event payload")
 
+// errPoison marks a message a DeadLetterInvalid consumer can never apply
+// (malformed payload, missing required field): the run loop dead-letters it
+// at once, without retrying, and commits past it.
+var errPoison = errors.New("poison message")
+
 // HandlerFunc applies one decoded CloudEvent. nil means done (or deterministic
 // and skippable); a non-nil error is transient unless it wraps errBadPayload
 // or usecases.ErrInvalidEvent.
@@ -46,6 +51,12 @@ type Consumer struct {
 	// published there instead of blocking the partition forever.
 	DLQ DeadLetterWriter
 
+	// DeadLetterInvalid, with a DLQ, dead-letters a CloudEvent of a handled
+	// type whose payload can never be applied at once instead of skipping it
+	// (the StockRelocated consumer, ADR 0010). Not-a-CloudEvent and unknown
+	// types are still skipped.
+	DeadLetterInvalid bool
+
 	sleep sleepFunc // test hook; nil => real, ctx-cancellable sleep
 }
 
@@ -59,7 +70,7 @@ func newConsumer(name string, brokers []string, topic, groupID string, handlers 
 		Reader:   kafkago.NewReader(readerConfig(brokers, topic, groupID)),
 		Handlers: handlers,
 		Logger:   defaultLogger(logger),
-		DLQ:      newDomainDLQWriter(brokers, topic),
+		DLQ:      newDomainDLQWriter(brokers),
 	}
 }
 
@@ -111,11 +122,15 @@ func (c *Consumer) HandleMessage(ctx context.Context, value []byte) error {
 		return nil
 	}
 	err = handle(ctx, e)
-	if errors.Is(err, errBadPayload) || errors.Is(err, usecases.ErrInvalidEvent) {
-		logger.WarnContext(ctx, "skipping an event that can never be applied", "consumer", c.Name, "type", e.Type(), "event_id", e.ID(), "error", err)
-		return nil
+	if !errors.Is(err, errBadPayload) && !errors.Is(err, usecases.ErrInvalidEvent) {
+		return err
 	}
-	return err
+	if c.DeadLetterInvalid && c.DLQ != nil {
+		logger.WarnContext(ctx, "dead-lettering an event that can never be applied", "consumer", c.Name, "type", e.Type(), "event_id", e.ID(), "error", err)
+		return fmt.Errorf("%w: %w", errPoison, err)
+	}
+	logger.WarnContext(ctx, "skipping an event that can never be applied", "consumer", c.Name, "type", e.Type(), "event_id", e.ID(), "error", err)
+	return nil
 }
 
 // decodeData decodes e's JSON `data` into a T.

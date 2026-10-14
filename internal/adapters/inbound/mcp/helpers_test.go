@@ -36,6 +36,7 @@ type harness struct {
 	profiles *memory.ProfileDirectory
 	slots    *memory.SlotCatalogue
 	outbox   *memory.OutboxRepo
+	execs    *memory.MoveExecutionLedger
 
 	generate *usecases.GeneratePlan
 	approve  *usecases.ApprovePlan
@@ -43,8 +44,14 @@ type harness struct {
 }
 
 func depsFor(plans ports.SlotPlanRepository, demand *memory.DemandLedger, site string) inboundmcp.Deps {
+	return depsWithExecutions(plans, nil, demand, site)
+}
+
+// depsWithExecutions is depsFor with the execution-progress ledger (ADR
+// 0010); a nil ledger leaves get_slot_plan without execution.
+func depsWithExecutions(plans ports.SlotPlanRepository, execs ports.MoveExecutionLedger, demand *memory.DemandLedger, site string) inboundmcp.Deps {
 	return inboundmcp.Deps{
-		GetPlan:          &usecases.GetPlan{Plans: plans},
+		GetPlan:          &usecases.GetPlan{Plans: plans, Executions: execs},
 		ListPlans:        &usecases.ListPlans{Plans: plans},
 		ListForwardSlots: &usecases.ListForwardSlots{Plans: plans, DefaultSite: site},
 		ListSkuVelocity:  &usecases.ListSkuVelocity{Demand: demand, Clock: fixedClock{}, DefaultSite: site},
@@ -84,9 +91,10 @@ func newHarnessWithSite(t *testing.T, defaultSite string) *harness {
 		Plans: plans, Outbox: ob, Encoder: outboundkafka.NewEncoder(),
 		UoW: memory.NewUnitOfWork(plans, ob, demand, profiles, slots), Clock: fixedClock{},
 	}
+	execs := memory.NewMoveExecutionLedger()
 	return &harness{
-		session: connectSession(t, depsFor(plans, demand, defaultSite)),
-		demand:  demand, profiles: profiles, slots: slots, outbox: ob,
+		session: connectSession(t, depsWithExecutions(plans, execs, demand, defaultSite)),
+		demand:  demand, profiles: profiles, slots: slots, outbox: ob, execs: execs,
 		generate: &usecases.GeneratePlan{
 			Writer: w, Demand: demand, Profiles: profiles, Catalogue: slots, IDs: ids.UUID{}, Planner: planner,
 			DefaultSite: "SITE-1", ForwardZoneCodes: []string{"FWD"},

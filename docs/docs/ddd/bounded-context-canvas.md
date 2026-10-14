@@ -80,7 +80,7 @@ flowchart LR
     BC["<b>slotting-optimization - Supporting subdomain - WMS tier</b>"]:::bc
     subgraph OUT["Outbound - whom it calls or notifies"]
         direction TB
-        out0["none yet (execution path<br/>planned, not built)"]:::none
+        out0["wes-work-planning<br/>(RELOCATE work per move)"]
     end
     BC ==>|"evt - Kafka<br/>warehouse.slotting-optimization.events<br/>SlotPlanGenerated,<br/>SlotPlanApproved,<br/>SlotPlanRejected"| out0
     linkStyle 0 stroke:#e8590c,stroke-width:2.5px
@@ -146,7 +146,8 @@ Source: `internal/adapters/inbound/kafka/{demand,product,layout}_consumer.go`,
 ```mermaid
 flowchart LR
     so["slotting-optimization"] -->|"SlotPlanGenerated, SlotPlanApproved, SlotPlanRejected (events)"| topic["warehouse.slotting-optimization.events"]
-    topic -.->|"planned: moves to MOVE or REPLENISH work"| exec["process-path-management, wes-work-planning, fulfillment-execution"]
+    topic -->|"SlotPlanApproved: RELOCATE work per move"| exec["wes-work-planning, fulfillment-execution"]
+    exec -->|"StockRelocated via inventory-storage"| so
 ```
 
 Source: `internal/adapters/outbound/kafka/encoder.go`, ADR 0001 (context map).
@@ -154,7 +155,7 @@ Source: `internal/adapters/outbound/kafka/encoder.go`, ADR 0001 (context map).
 | Message | Kind | Channel | Consumers |
 | --- | --- | --- | --- |
 | `SlotPlanGenerated` | event | `warehouse.slotting-optimization.events` | none yet |
-| `SlotPlanApproved` | event | same | none yet; the execution path is planned, not built |
+| `SlotPlanApproved` | event | same | wes-work-planning (RELOCATE work per move, its ADR 0040; ADR 0010) |
 | `SlotPlanRejected` | event | same | none yet |
 
 ## Ubiquitous language
@@ -197,9 +198,11 @@ forward slot, eligibility, stickiness, local copy. Full glossary:
 
 ## Open questions
 
-- Who executes the moves (planned edge through process-path-management, not
-  built)? The options and open questions are in
-  [ADR 0007](/docs/adr/0007-executing-an-approved-slot-plan) (Proposed).
+- Who executes the moves? Decided:
+  [ADR 0010](/docs/adr/0010-approved-slot-plans-are-executed-as-wes-relocation-work)
+  (wes-work-planning RELOCATE work, inventory-storage records it; progress
+  comes back as `StockRelocated`). Should a new proposal wait for the
+  previous plan's execution? Not in v1.
 - Which consumer will read `SlotPlanApproved` first?
 - A travel-distance ranking needs layout geometry the consumer does not read
   yet (`LocationGeometryUpdated` is ignored today).

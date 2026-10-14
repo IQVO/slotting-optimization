@@ -158,6 +158,34 @@ channels:
           - $ref: "#/components/messages/LocationSlotRegistered"
           - $ref: "#/components/messages/LocationSlotDecommissioned"
 
+  warehouse.inventory.events:
+    description: |
+      inventory-storage's integration topic (its ADR 0039). This service
+      consumes `StockRelocated` only (ADR 0010), under a stable consumer group
+      read from env `RELOCATION_CONSUMER_GROUP` when `RELOCATION_MODE=kafka`,
+      to record the execution progress of its slot plans. Every other type on
+      the topic is ignored.
+    publish:
+      operationId: consumeInventoryStorageRelocations
+      summary: Consume relocations to record slot-plan execution progress.
+      description: |
+        A relocation is matched to a plan's move by `source_ref` first: the
+        move reference `<plan_id>:<move_seq>` (fulfillment-execution's
+        `relocation_ref`, carried by inventory-storage as the relocation's
+        source_ref) names the move at that 0-based position of the plan's moves.
+        Only when `source_ref` is no move reference is it matched by
+        `site_code`, `sku` and the bins on the site's Approved plan. The
+        CloudEvents `id` is claimed with the effect in one transaction; a
+        relocation is recorded once per `relocation_id`. A relocation of no
+        known move is claimed and counted, never dead-lettered. A
+        `StockRelocated` whose data cannot be decoded or misses a required
+        field is dead-lettered at once to `warehouse.inventory.events.dlq`.
+      tags:
+        - name: consumed
+      message:
+        oneOf:
+          - $ref: "#/components/messages/StockRelocated"
+
 components:
   messages:
     SlotPlanGenerated:
@@ -509,6 +537,43 @@ components:
               occurredAt: "2026-10-01T08:00:00Z"
               locationCode: "WH1-FWD-A01-01-03-A"
 
+    StockRelocated:
+      name: StockRelocated
+      title: StockRelocated (consumed, inventory-storage)
+      summary: A quantity of one SKU moved from one bin to another bin of the same site.
+      description: |
+        `type` = `com.warehouse.wms.inventory-storage.stock.StockRelocated`,
+        dataschema `urn:warehouse:inventory-storage:events:StockRelocated:v1`.
+        Subject and Kafka key = `relocation_id`. Restated from
+        inventory-storage's contract (its ADR 0039), never imported.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/StockRelocatedEvent"
+      examples:
+        - name: slottingMoveFromATask
+          summary: Seven units of SKU-R1 moved between two WH1 bins by a completed RELOCATE task of plan-9's move 0.
+          payload:
+            specversion: "1.0"
+            id: "3c9e1a52-7b4d-4e18-a6f2-5d0b8c7e9f21"
+            source: "/warehouse/inventory-storage"
+            type: "com.warehouse.wms.inventory-storage.stock.StockRelocated"
+            subject: "rel-42"
+            time: "2026-10-13T12:00:00Z"
+            datacontenttype: "application/json"
+            dataschema: "urn:warehouse:inventory-storage:events:StockRelocated:v1"
+            data:
+              relocation_id: "rel-42"
+              site_code: "WH1"
+              sku: "SKU-R1"
+              from_bin: "WH1-STOR-AMB-A01-01-01-A"
+              to_bin: "WH1-STOR-AMB-A02-01-01-A"
+              quantity: 7
+              reason: "SLOTTING"
+              source_ref: "plan-9:0"
+              occurred_at: "2026-10-13T12:00:00Z"
+
   schemas:
     CloudEventEnvelope:
       type: object
@@ -704,3 +769,25 @@ components:
               required: [locationCode]
               properties:
                 locationCode: { type: string }
+
+    StockRelocatedEvent:
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            data:
+              type: object
+              required: [relocation_id, site_code, sku, from_bin, to_bin, quantity, reason, source_ref, occurred_at]
+              properties:
+                relocation_id: { type: string, description: "The relocation id; recorded once per id." }
+                site_code: { type: string, description: The site both bins belong to (this service's site id). }
+                sku: { type: string }
+                from_bin: { type: string }
+                to_bin: { type: string }
+                quantity: { type: integer, minimum: 1 }
+                reason: { type: string, enum: [SLOTTING, CONSOLIDATION, MANUAL] }
+                source_ref:
+                  type: string
+                  maxLength: 200
+                  description: "`<plan_id>:<move_seq>` on slot-plan moves (matched first); a task id, a ticket or \"\" otherwise."
+                occurred_at: { type: string, format: date-time }

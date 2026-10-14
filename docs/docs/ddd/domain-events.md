@@ -97,9 +97,12 @@ by `SlotPlan.Reject` through `POST /slot-plans/{planId}/reject`.
 `Supersede` raises **no** event: consumers learn it from
 `supersedes_plan_id` on the newer `SlotPlanApproved`.
 
-**Consumers:** none on `develop`. The planned execution path
-(process-path-management, then wes-work-planning and fulfillment-execution)
-is not built ([Integration](/docs/ecosystem/integration#downstream)).
+**Consumers:** `wes-work-planning` consumes `SlotPlanApproved` and plans one
+RELOCATE work unit per move (its ADR 0040; `move_seq` = the move's 0-based
+position in `moves`), executed by fulfillment-execution and recorded by
+inventory-storage ([ADR 0010](/docs/adr/0010-approved-slot-plans-are-executed-as-wes-relocation-work),
+[Integration](/docs/ecosystem/integration#downstream)). Nothing consumes
+`SlotPlanGenerated` or `SlotPlanRejected`.
 
 ## Consumed
 
@@ -112,11 +115,28 @@ is not built ([Integration](/docs/ecosystem/integration#downstream)).
 | `com.warehouse.wms.facility-layout.zone.ZoneRegistered` | `warehouse.facility.events` | facility-layout | `zoneId`, `siteCode`, `areaCode`, `zoneCode`, `temperatureClass`, `hazmat` | `ApplyZoneRegistered` |
 | `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` | `warehouse.facility.events` | facility-layout | `locationCode`, `zoneId`, `role`, `maxWeightKg`, `maxVolumeM3` (`aisleId`, `locationType`, `dockFlow`, `activities` ignored) | `ApplyLocationSlotRegistered` |
 | `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | `warehouse.facility.events` | facility-layout | `locationCode` | `ApplyLocationSlotDecommissioned` |
+| `com.warehouse.wms.inventory-storage.stock.StockRelocated` | `warehouse.inventory.events` | inventory-storage (its ADR 0039) | `relocation_id`, `site_code`, `sku`, `from_bin`, `to_bin`, `quantity`, `source_ref`, `occurred_at` (`reason` decoded, not acted on) | `RecordRelocation` (ADR 0010) |
 
 Dispatch is on the full `type` string; every other type on those topics is
-ignored. Note the casing: order-management and product-master payloads are
-snake_case, facility-layout payloads are camelCase, exactly as each producer
-publishes them.
+ignored. Note the casing: order-management, product-master and
+inventory-storage payloads are snake_case, facility-layout payloads are
+camelCase, exactly as each producer publishes them.
+
+### `StockRelocated` and the execution progress
+
+A relocation executes a move of a plan when its `source_ref` is the move
+reference `<plan_id>:<move_seq>` of an Approved or Superseded plan of
+`site_code` whose move at `move_seq` is for `sku`; when `source_ref` is no
+move reference (empty, a task id), the move of the site's Approved plan with
+that `sku` whose bins agree with its kind matches (`Relocate`: both slots,
+`Assign`: `to_bin`, `Vacate`: `from_bin`). A match is recorded once per
+`relocation_id` in `slot_plan_move_executions`; anything else is
+`unmatched` with a reason (`unknown-plan`, `no-current-plan`,
+`plan-not-approved`, `site-mismatch`, `unknown-move`, `sku-mismatch`,
+`no-matching-move`), counted and logged, never dead-lettered. A
+`StockRelocated` missing a required field is dead-lettered at once.
+Nothing is published in response: the progress is a read model, shown on
+`GET /slot-plans/{planId}` and the MCP `get_slot_plan` tool.
 
 ## Event flow
 
@@ -128,6 +148,7 @@ flowchart LR
     d --> gen["GeneratePlan"]
     p --> gen
     s --> gen
+    is["inventory-storage"] -->|StockRelocated| x[("slot_plan_move_executions")]
     gen -->|SlotPlanGenerated| ob[("outbox_events")]
     ap["ApprovePlan"] -->|SlotPlanApproved| ob
     rj["RejectPlan"] -->|SlotPlanRejected| ob

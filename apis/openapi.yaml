@@ -13,8 +13,10 @@ info:
     A plan is created as a `Draft`. Only `approve` makes it the site's forward
     slot map (at most one `Approved` plan per site; approving a new one
     supersedes the previous one in the same transaction). Approval publishes
-    `SlotPlanApproved` with the full assignment map and the moves; nothing moves
-    stock (execution of the moves is a planned, unbuilt edge, ADR 0002).
+    `SlotPlanApproved` with the full assignment map and the moves. This service
+    moves no stock itself: wes-work-planning plans the moves as RELOCATE work and
+    inventory-storage records them; the resulting `StockRelocated` comes back as
+    the plan's `execution` progress on `GET /slot-plans/{planId}` (ADR 0010).
 
     Plans are computed from local copies fed by events (ADR 0003); this API never
     calls a sibling context. Events are published as CloudEvents on
@@ -160,7 +162,12 @@ paths:
     get:
       operationId: getSlotPlan
       summary: Get a slot plan
-      description: "Returns the full plan, with its assignments, moves, unassigned SKUs and reasons, state and timestamps."
+      description: |
+        Returns the full plan, with its assignments, moves, unassigned SKUs and
+        reasons, state and timestamps, plus `execution`: how far the floor has
+        executed its moves (ADR 0010), derived from the relocations
+        inventory-storage recorded (`StockRelocated`). Only this operation
+        carries `execution`; proposals are not gated on it.
       tags: [Slot plans]
       responses:
         "200":
@@ -653,6 +660,36 @@ components:
           type: array
           description: In SKU order.
           items: { $ref: "#/components/schemas/Unassigned" }
+        execution:
+          $ref: "#/components/schemas/ExecutionProgress"
+    ExecutionProgress:
+      type: object
+      description: |
+        Execution progress of the plan (ADR 0010, additive): which of its moves
+        the floor has executed, from inventory-storage's `StockRelocated`
+        matched to the move (by the move reference `<planId>:<moveSeq>`, else
+        by SKU and bins on the site's Approved plan). Present on
+        `GET /slot-plans/{planId}` only. Only Approved and Superseded plans can
+        gain executions.
+      required: [movesTotal, movesExecuted, moves]
+      properties:
+        movesTotal: { type: integer, format: int32, minimum: 0, description: The plan's moves. }
+        movesExecuted: { type: integer, format: int32, minimum: 0, description: Moves with at least one relocation recorded. }
+        lastExecutedAt: { type: string, format: date-time, description: The latest relocation's instant; absent until one is recorded. }
+        moves:
+          type: array
+          description: One entry per move, in moveSeq order (the plan's moves, SKU order).
+          items: { $ref: "#/components/schemas/MoveExecution" }
+    MoveExecution:
+      type: object
+      required: [moveSeq, sku, kind, executed, executedQuantity]
+      properties:
+        moveSeq: { type: integer, format: int32, minimum: 0, description: "0-based position of the move in the plan's moves (the `move_seq` of SlotPlanApproved's consumers)." }
+        sku: { type: string }
+        kind: { $ref: "#/components/schemas/MoveKind" }
+        executed: { type: boolean, description: At least one relocation of this move is recorded. }
+        executedQuantity: { type: integer, format: int64, minimum: 0, description: "Units moved, summed over the move's relocations." }
+        lastExecutedAt: { type: string, format: date-time, description: Absent until the move is executed. }
     SlotPlanSummary:
       type: object
       required: [planId, siteId, state, policy, windowFrom, windowTo, generatedAt, assignmentCount, moveCount, unassignedCount, version]

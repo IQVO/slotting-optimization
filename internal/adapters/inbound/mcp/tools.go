@@ -85,6 +85,24 @@ type slotPlanView struct {
 	Assignments      []assignmentView `json:"assignments"`
 	Moves            []moveView       `json:"moves"`
 	Unassigned       []unassignedView `json:"unassigned"`
+	Execution        *executionView   `json:"execution,omitempty"`
+}
+
+// executionView is a plan's execution progress (ADR 0010).
+type executionView struct {
+	MovesTotal     int                 `json:"moves_total"`
+	MovesExecuted  int                 `json:"moves_executed"`
+	LastExecutedAt string              `json:"last_executed_at,omitempty"`
+	Moves          []moveExecutionView `json:"moves"`
+}
+
+type moveExecutionView struct {
+	MoveSeq          int    `json:"move_seq"`
+	SKU              string `json:"sku"`
+	Kind             string `json:"kind"`
+	Executed         bool   `json:"executed"`
+	ExecutedQuantity int64  `json:"executed_quantity"`
+	LastExecutedAt   string `json:"last_executed_at,omitempty"`
 }
 
 type slotPlanSummaryView struct {
@@ -166,6 +184,25 @@ func toSlotPlan(p *slotplan.SlotPlan) slotPlanView {
 	return out
 }
 
+func toSlotPlanView(v usecases.PlanView) slotPlanView {
+	out := toSlotPlan(v.Plan)
+	if v.Execution == nil {
+		return out
+	}
+	e := *v.Execution
+	out.Execution = &executionView{
+		MovesTotal: e.MovesTotal, MovesExecuted: e.MovesExecuted, LastExecutedAt: instant(e.LastExecutedAt),
+		Moves: make([]moveExecutionView, len(e.Moves)),
+	}
+	for i, m := range e.Moves {
+		out.Execution.Moves[i] = moveExecutionView{
+			MoveSeq: m.Seq, SKU: string(m.SKU), Kind: string(m.Kind), Executed: m.Executed,
+			ExecutedQuantity: m.ExecutedQuantity, LastExecutedAt: instant(m.LastExecutedAt),
+		}
+	}
+	return out
+}
+
 func toSlotPlanPage(page usecases.PlanPage) slotPlanPageView {
 	out := slotPlanPageView{Items: make([]slotPlanSummaryView, len(page.Items)), NextCursor: page.NextCursor}
 	for i, p := range page.Items {
@@ -209,11 +246,11 @@ func velocityItem(v planning.SkuVelocity) skuVelocityItemView {
 // --- handlers -----------------------------------------------------------------
 
 func (d Deps) getSlotPlan(ctx context.Context, in planIDInput) (slotPlanView, error) {
-	p, err := d.GetPlan.Handle(ctx, in.PlanID)
+	v, err := d.GetPlan.View(ctx, in.PlanID)
 	if err != nil {
 		return slotPlanView{}, mapError(err)
 	}
-	return toSlotPlan(p), nil
+	return toSlotPlanView(v), nil
 }
 
 func (d Deps) listSlotPlans(ctx context.Context, in listPlansInput) (slotPlanPageView, error) {
@@ -255,7 +292,9 @@ func (d Deps) registerTools(server *mcp.Server) {
 			"the demand window (window_from, window_to), generated_at and the decision instants (approved_at, rejected_at, " +
 			"superseded_at, each omitted until it happens), reject_reason and supersedes_plan_id (omitted when none), " +
 			"the assignments (sku, slot, abc_class, picks, units), the moves against the previous plan (sku, from_slot, " +
-			"to_slot, kind) and the unassigned SKUs with their reason, plus version. Read-only; fails with plan-not-found " +
+			"to_slot, kind) and the unassigned SKUs with their reason, plus version, and the execution progress (execution: " +
+			"moves_total, moves_executed, last_executed_at and per move move_seq, sku, kind, executed, executed_quantity, " +
+			"last_executed_at) recorded from inventory-storage's relocations. Read-only; fails with plan-not-found " +
 			"for an unknown id and invalid-plan-id for a malformed one.",
 		Annotations: readOnly,
 	}, d.getSlotPlan)
