@@ -32,11 +32,9 @@ func (r MoveRef) String() string { return string(r.Plan) + ":" + strconv.Itoa(r.
 // false when s is anything else (empty, a task id, a ticket number): the
 // caller then falls back to matching on the bins.
 func ParseMoveRef(s string) (MoveRef, bool) {
+	// Without a ':' i is -1 and the plan part is empty, which NewPlanID refuses.
 	i := strings.LastIndexByte(s, ':')
-	if i < 0 {
-		return MoveRef{}, false
-	}
-	plan, err := NewPlanID(s[:i])
+	plan, err := NewPlanID(s[:max(i, 0)])
 	if err != nil {
 		return MoveRef{}, false
 	}

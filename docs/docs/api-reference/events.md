@@ -43,6 +43,8 @@ carried by `supersedes_plan_id` on the new `SlotPlanApproved`.
 | `com.warehouse.wms.facility-layout.zone.ZoneRegistered` | `warehouse.facility.events` | layout consumer (`LAYOUT_MODE`) |
 | `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` | `warehouse.facility.events` | layout consumer |
 | `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | `warehouse.facility.events` | layout consumer |
+| `com.warehouse.wms.inventory-storage.stock.StockRelocated` | `warehouse.inventory.events` | relocation consumer (`RELOCATION_MODE`): slot-plan execution progress (ADR 0010) |
 
 Dead-letter topics: `<topic>.dlq` for each consumed topic
-([Runbook](/docs/operations/runbook#delivery-semantics)).
+([Runbook](/docs/operations/runbook#delivery-semantics)). A malformed
+`StockRelocated` goes there at once; a relocation of no known move does not.

@@ -37,12 +37,12 @@ memory:
 | `order-management` | Generic/Supporting | `wes` | upstream: demand (`SiteSkuDemandChanged`) |
 | `product-master` | Supporting | `wms` | upstream: classification and physical profile |
 | `facility-layout` | Generic | `wms` | upstream: zones and location slots |
-| `inventory-storage` | Core | `wms` | no edge (ADR 0001: an approved plan moves no stock) |
+| `inventory-storage` | Core | `wms` | upstream: `StockRelocated` feeds the execution progress (ADR 0010); no command edge |
 | `inbound-receiving` | Supporting | `wms` | no edge |
 | `warehouse-planning` | Core | `wes` | no edge |
-| `process-path-management` | Generic | `wes` | planned downstream for executing the moves (not built) |
-| `wes-work-planning` | Core | `wes` | planned downstream (not built) |
-| `fulfillment-execution` | Core | `wes` | planned downstream (not built) |
+| `process-path-management` | Generic | `wes` | indirect: its `RELOCATE` path (intake `SLOT_RELOCATION`) routes the moves (its ADR 0033/0034) |
+| `wes-work-planning` | Core | `wes` | downstream: `SlotPlanApproved` -> RELOCATE work (its ADR 0040, ADR 0010) |
+| `fulfillment-execution` | Core | `wes` | indirect: executes the RELOCATE tasks (its ADR 0047) |
 | `warehouse-ops-agent` | Supporting | `wes` | planned REST/MCP reader (not built) |
 
 ## Tier is not classification

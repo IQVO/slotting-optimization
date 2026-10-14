@@ -7,9 +7,10 @@ sidebar_position: 18
 
 # Entity-relationship diagram
 
-The OLTP schema created by the single migration
-`internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.sql`,
-applied at boot (see [Runbook](/docs/operations/runbook#migrations)). Text
+The OLTP schema created by the migrations
+`internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.sql`
+and `0002_slot_plan_move_executions.up.sql` (ADR 0010, additive), applied at
+boot (see [Runbook](/docs/operations/runbook#migrations)). Text
 keys compared or ordered in Go (plan ids, SKUs, slot codes) use the `"C"`
 collation so database order equals the in-memory adapters' byte order.
 
@@ -18,6 +19,7 @@ erDiagram
     slot_plans ||--o{ slot_plan_assignments : "assigns"
     slot_plans ||--o{ slot_plan_moves : "implies"
     slot_plans ||--o{ slot_plan_unassigned : "could not place"
+    slot_plans ||--o{ slot_plan_move_executions : "executed by"
     zones ||--o{ slots : "zone_id (no FK)"
 
     slot_plans {
@@ -56,6 +58,17 @@ erDiagram
         text plan_id PK, FK
         text sku PK
         text reason "NoEligibleSlot, NoPhysicalProfile, NoCapacityFit"
+    }
+    slot_plan_move_executions {
+        text relocation_id PK "inventory-storage relocation id"
+        text plan_id FK
+        integer move_seq "0-based position in the plan's moves"
+        text sku
+        text from_bin
+        text to_bin
+        bigint quantity "at least 1"
+        timestamptz executed_at "StockRelocated occurred_at"
+        timestamptz recorded_at
     }
     demand_lines {
         text source_order_id PK
@@ -127,7 +140,8 @@ erDiagram
     }
 ```
 
-Source: `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.sql`.
+Source: `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.sql`,
+`0002_slot_plan_move_executions.up.sql`.
 
 ## Which table backs what
 
@@ -138,6 +152,7 @@ Source: `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.
 | `demand_lines` | the demand copy | `ApplyDemandChanged` (upsert by order and line) | `DemandLedger.Velocity` |
 | `product_profiles` | the product copy | `ApplyProductClassified`, `ApplyPhysicalProfile` (upsert `WHERE version <` new) | `ProfileDirectory.Many` |
 | `zones`, `slots` | the layout copy | `ApplyZoneRegistered`, `ApplyLocationSlotRegistered` (upsert `WHERE slots.active`), `ApplyLocationSlotDecommissioned` | `SlotCatalogue.ForwardSlots` (join on `zone_id`) |
+| `slot_plan_move_executions` | the execution-progress read model (ADR 0010) | `RecordRelocation` (`INSERT ... ON CONFLICT (relocation_id) DO NOTHING`), in its unit of work | `GetPlan.View` (`GET /slot-plans/{planId}`, MCP `get_slot_plan`) through `slotplan.Progress` |
 | `outbox_events` | the transactional outbox | every write use case, in its unit of work | the relay (`FOR UPDATE SKIP LOCKED`) |
 | `processed_events` | consumer idempotency | every consumer use case, in its unit of work | the same claim |
 | `idempotency_keys` | REST idempotency of `POST /slot-plans` | the middleware, in the same transaction as the use case | the middleware on a repeated key |
@@ -157,6 +172,8 @@ Source: `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.
 | `outbox_events_event_id_topic_key` (unique `event_id, topic`) | one row per CloudEvent per topic |
 | `idx_outbox_events_unpublished` (partial, `published_at IS NULL`) | the relay scans only the unpublished tail |
 | `idx_idempotency_keys_created_at` | age-based cleanup ([Runbook](/docs/operations/runbook#housekeeping)) |
+| `slot_plan_move_executions_pkey` (`relocation_id`) | a relocation counts once, whatever its CloudEvents id |
+| `idx_slot_plan_move_executions_plan` (`plan_id, move_seq`) | the progress read of one plan |
 
 `slots.zone_id` has no foreign key on purpose: zone and slot events may
 arrive in any order, and the join happens at plan time.

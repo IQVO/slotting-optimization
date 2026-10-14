@@ -13,8 +13,10 @@ info:
     A plan is created as a `Draft`. Only `approve` makes it the site's forward
     slot map (at most one `Approved` plan per site; approving a new one
     supersedes the previous one in the same transaction). Approval publishes
-    `SlotPlanApproved` with the full assignment map and the moves; nothing moves
-    stock (execution of the moves is a planned, unbuilt edge, ADR 0002).
+    `SlotPlanApproved` with the full assignment map and the moves. This service
+    moves no stock itself: wes-work-planning plans the moves as RELOCATE work and
+    inventory-storage records them; the resulting `StockRelocated` comes back as
+    the plan's `execution` progress on `GET /slot-plans/{planId}` (ADR 0010).
 
     Plans are computed from local copies fed by events (ADR 0003); this API never
     calls a sibling context. Events are published as CloudEvents on

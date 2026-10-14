@@ -45,17 +45,18 @@ insert the raised events into the outbox. Consumer use cases share another
 
 | Use case | Trigger | Inputs | Checks | Result |
 | --- | --- | --- | --- | --- |
-| `GetPlan` | `GET /slot-plans/{planId}` | `planId` | valid id; exists | the plan |
+| `GetPlan` | `GET /slot-plans/{planId}`, MCP `get_slot_plan` | `planId` | valid id; exists | the plan plus its `execution` progress (`GetPlan.View`, ADR 0010): moves total and executed, last executed at, per move executed flag and quantity, derived from `slot_plan_move_executions` |
 | `ListPlans` | `GET /slot-plans` | `limit?` (1 to 500, default 100), `cursor?`, `siteId?`, `state?` | each parameter (`invalid-limit`, `invalid-cursor`, `invalid-site-id`, `invalid-state`) | a page newest first (`generated_at`, then id, descending) and `nextCursor` while more remain |
 | `ListForwardSlots` | `GET /forward-slots` | `siteId?` (default site) | site resolvable | the Approved plan's `{sku, slot, abcClass}` list; an empty list (not an error) when the site has none |
 | `ListSkuVelocity` | `GET /sku-velocity` | `siteId?`, `limit?`, `windowDays?` (1 to 365, default 28) | site, limit and window (an invalid window reports `invalid-limit`) | the velocity of the window, truncated to `limit` |
 
 ## Consumers (Kafka)
 
-All six return an `Outcome` (`applied`, `duplicate`, `stale`, `ignored`)
-that the adapter logs as `event processed`. A payload that can never be
-applied is wrapped in `ErrInvalidEvent` **before** anything is claimed and is
-skipped by the adapter. None of them raises a domain event or writes to the
+All seven return an `Outcome` (`applied`, `duplicate`, `stale`, `ignored`,
+and for `RecordRelocation` also `unmatched`) that the adapter logs. A payload
+that can never be applied is wrapped in `ErrInvalidEvent` **before** anything
+is claimed; the adapter skips it, except the StockRelocated consumer, which
+dead-letters it at once. None of them raises a domain event or writes to the
 outbox.
 
 | Use case | Trigger (type on topic) | Claim name | Checks | Effect |
@@ -66,6 +67,7 @@ outbox.
 | `ApplyZoneRegistered` | `ZoneRegistered` on `warehouse.facility.events` | `slotting-layout` | temperature class known; `zoneId`, `siteCode`, `zoneCode` present | upsert of the zone |
 | `ApplyLocationSlotRegistered` | `LocationSlotRegistered` on `warehouse.facility.events` | `slotting-layout` | location code token; `zoneId` present; capacities not negative; empty role means `Storage` | upsert of the slot; a decommissioned slot stays decommissioned |
 | `ApplyLocationSlotDecommissioned` | `LocationSlotDecommissioned` on `warehouse.facility.events` | `slotting-layout` | location code token | `active = false` for good, also for a slot never seen before |
+| `RecordRelocation` (ADR 0010) | `StockRelocated` on `warehouse.inventory.events` | `slotting-relocation` | `relocation_id`, `site_code`, `sku`, `from_bin`, `to_bin` present; `quantity >= 1`; `occurred_at` present (else `ErrInvalidEvent`, dead-lettered) | matches the move (`source_ref` = `<plan_id>:<move_seq>` of an Approved or Superseded plan of the site whose move there is for the SKU; else the site's Approved plan's move for the SKU whose bins fit its kind) and records it in `slot_plan_move_executions` once per `relocation_id` (`applied`, or `duplicate` for a replayed relocation); no match is `unmatched` with a reason, claimed and counted, never dead-lettered. Proposals are not gated on it. |
 
 ## Not use cases
 

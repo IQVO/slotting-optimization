@@ -19,21 +19,24 @@ flowchart LR
     fl["facility-layout (wms, Generic)"]
     so["slotting-optimization (wms, Supporting)"]
     ui["warehouse-console, warehouse-ops-agent"]
-    ppm["process-path-management"]
     wwp["wes-work-planning"]
     fe["fulfillment-execution"]
+    is["inventory-storage (wms)"]
     om -->|"U: Published Language / D: Conformist (Kafka)"| so
     pm -->|"U: Published Language / D: Conformist (Kafka)"| so
     fl -->|"U: Open Host Service + Published Language / D: Conformist (Kafka)"| so
-    so -.->|"U: Open Host Service (REST, MCP later), planned"| ui
-    so -.->|"U: Published Language SlotPlanApproved, planned"| ppm
-    ppm -.-> wwp -.-> fe
+    so -.->|"U: Open Host Service (REST, MCP), no caller yet"| ui
+    so -->|"U: Published Language SlotPlanApproved / D: Conformist"| wwp
+    wwp --> fe
+    fe --> is
+    is -->|"U: Published Language StockRelocated / D: Conformist"| so
 ```
 
 Source: `internal/adapters/inbound/kafka/consumer.go` (topics),
 `internal/adapters/outbound/kafka/encoder.go`,
 `docs/adr/0001-slotting-optimization-bounded-context.md` (context map),
-`docs/adr/0003-local-copies-and-consumed-contracts.md`.
+`docs/adr/0003-local-copies-and-consumed-contracts.md`,
+`docs/adr/0010-approved-slot-plans-are-executed-as-wes-relocation-work.md`.
 
 ## Edges
 
@@ -43,12 +46,13 @@ Source: `internal/adapters/inbound/kafka/consumer.go` (topics),
 | product-master -> slotting-optimization | Published Language / **Conformist**, local product copy | Kafka `warehouse.product-master.events`, group `PRODUCT_CONSUMER_GROUP` | `ProductClassified`, `ProductDimensionsDeclared`, `ProductMeasured` v1 | built (`PRODUCT_MODE=kafka`) |
 | facility-layout -> slotting-optimization | Open Host Service + Published Language / **Conformist**, local slot copy | Kafka `warehouse.facility.events`, group `LAYOUT_CONSUMER_GROUP` | `ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned` v1 | built (`LAYOUT_MODE=kafka`) |
 | slotting-optimization -> console, ops-agent | **Open Host Service** | REST (`apis/openapi.yaml`); MCP read tools later | the seven REST operations | API built, no caller yet |
-| slotting-optimization -> process-path-management -> wes-work-planning -> fulfillment-execution | Published Language | Kafka `warehouse.slotting-optimization.events` | `SlotPlanApproved` (moves) | **planned, not built** (ADR 0001, ADR 0002) |
+| slotting-optimization -> wes-work-planning (-> fulfillment-execution -> inventory-storage) | Published Language / **Conformist** | Kafka `warehouse.slotting-optimization.events`; RELOCATE work on the process-path-management `RELOCATE` path (intake `SLOT_RELOCATION`) | `SlotPlanApproved` v1 (moves) | built in the siblings (wes-work-planning ADR 0040, fulfillment-execution ADR 0047, inventory-storage ADR 0039, process-path-management ADR 0033/0034); decided by ADR 0010 |
+| inventory-storage -> slotting-optimization | Published Language / **Conformist**, execution-progress read model | Kafka `warehouse.inventory.events`, group `RELOCATION_CONSUMER_GROUP` | `StockRelocated` v1 | built (`RELOCATION_MODE=kafka`, ADR 0010) |
 
 ## Why Conformist upstream
 
-The three producers own facts this context only reads (demand, product
-facts, slot facts). Restating their payloads in local structs
+The four producers own facts this context only reads (demand, product
+facts, slot facts, executed relocations). Restating their payloads in local structs
 (`siteSkuDemandChangedData`, `productClassifiedData`,
 `physicalProfileData`, `zoneRegisteredData`, `locationSlotRegisteredData`,
 `locationSlotDecommissionedData`) and acting only on the fields it needs is
@@ -65,5 +69,6 @@ request time (ADR 0001). Siblings learn about plans only from
 
 ## Explicit non-edges
 
-`inventory-storage` (an approved plan moves no stock and does not change
-stow), `inbound-receiving` and `warehouse-planning` (ADR 0001).
+No command edge to `inventory-storage`: this context never moves stock or
+changes stow; it only reads `StockRelocated` (ADR 0010). No edge to
+`inbound-receiving` or `warehouse-planning` (ADR 0001).

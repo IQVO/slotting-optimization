@@ -99,7 +99,7 @@ Source: `internal/application/usecases/consumers.go`,
 
 | Hotspot | Why it is open | Where it shows |
 | --- | --- | --- |
-| Who executes the moves? | `SlotPlanApproved` carries the moves, but no context consumes it; the execution path through process-path-management is planned only (ADR 0001, ADR 0002); the options are compared in ADR 0007 (Proposed) | an approved plan changes nothing on the floor |
+| Who executes the moves? | decided by ADR 0010 (supersedes ADR 0007): wes-work-planning plans one RELOCATE work unit per move of `SlotPlanApproved`, fulfillment-execution executes it, inventory-storage records `StockRelocated`, and this context records the progress per move | resolved; open follow-up: gating new proposals on unfinished execution is out of scope in v1 |
 | Demand site id equals facility site code? | `ForwardSlots` joins `zones.site_code` to the plan's site, which comes from demand `site_id`; ADR 0003 calls for verifying this against live data | a mismatch makes every SKU `NoEligibleSlot` |
 | Lexical slot ranking | layout events carry no travel distance, so v1 ranks slots by location code; `LocationGeometryUpdated` is ignored | "best" slot means "first code", not "closest" |
 | No consumer, no Kong route, no chart | the service is built but not wired into the cluster | [Runbook](/docs/operations/runbook#deployment) |

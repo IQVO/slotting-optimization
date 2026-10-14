@@ -53,6 +53,7 @@ Source: `internal/adapters/outbound/telemetry/telemetry.go`,
 | Instrument | Type | Unit | Attributes | Emitted by |
 | --- | --- | --- | --- | --- |
 | `http.server.request.duration` | Float64 histogram, buckets 5 ms to 10 s | `s` | `http.method`, `http.scheme`, `http.route` (the chi pattern, e.g. `/slot-plans/{planId}`) | `otelchimetric.NewServerRequestDuration` (riandyrn/otelchi v0.12.3), installed in `NewRouter` |
+| `slotting_optimization.relocations.observed` | Int64 counter | `{relocation}` | `outcome` (`applied`, `duplicate`, `unmatched`), `reason` on `unmatched` (`unknown-plan`, `no-current-plan`, `plan-not-approved`, `site-mismatch`, `unknown-move`, `sku-mismatch`, `no-matching-move`) | `telemetry.RelocationMetrics`, recorded by `RecordRelocation` after its commit (ADR 0010) |
 | `go.memory.used`, `go.memory.limit`, `go.memory.allocated`, `go.memory.allocations`, `go.memory.gc.goal`, `go.goroutine.count`, `go.processor.limit`, `go.config.gogc` | runtime gauges and counters | per semconv | per semconv | `go.opentelemetry.io/contrib/instrumentation/runtime` v0.72.0, started in `telemetry.Setup` |
 
 `http.server.request.duration` carries **no status-code attribute** in this
@@ -70,9 +71,9 @@ scrapeable without a Collector (`telemetry.NewMetricsHandler`).
 
 ### What is not measured
 
-No counter exists for plans generated or decided, outbox lag, consumer lag,
-consumer outcomes or dead-lettered messages. Use the database and the broker
-for those (queries below) or the log lines.
+No counter exists for plans generated, outbox lag, consumer lag, the outcomes
+of the demand, product and layout consumers, or dead-lettered messages. Use
+the database and the broker for those (queries below) or the log lines.
 
 ## Traces
 
@@ -139,11 +140,15 @@ SELECT 'demand' AS copy, max(updated_at) FROM demand_lines
 UNION ALL SELECT 'product', max(updated_at) FROM product_profiles
 UNION ALL SELECT 'zones', max(updated_at) FROM zones
 UNION ALL SELECT 'slots', max(updated_at) FROM slots;
+
+-- Execution progress (ADR 0010): moves executed per plan, newest first
+SELECT plan_id, count(DISTINCT move_seq) AS moves_executed, max(executed_at) AS last_executed_at
+FROM slot_plan_move_executions GROUP BY plan_id ORDER BY last_executed_at DESC LIMIT 20;
 ```
 
-Consumer lag lives in the broker: describe the three groups set in
-`DEMAND_CONSUMER_GROUP`, `PRODUCT_CONSUMER_GROUP` and `LAYOUT_CONSUMER_GROUP`
-with `kafka-consumer-groups.sh --describe`.
+Consumer lag lives in the broker: describe the groups set in
+`DEMAND_CONSUMER_GROUP`, `PRODUCT_CONSUMER_GROUP`, `LAYOUT_CONSUMER_GROUP` and
+`RELOCATION_CONSUMER_GROUP` with `kafka-consumer-groups.sh --describe`.
 
 ## Suggested alerts
 
@@ -151,6 +156,8 @@ with `kafka-consumer-groups.sh --describe`.
 | --- | --- | --- |
 | Outbox backlog | `count(*)` of unpublished `outbox_events` older than 5 minutes greater than 0 | the relay is failing; plan decisions are not reaching Kafka |
 | Dead letters | any message on `warehouse.order-management.events.dlq`, `warehouse.product-master.events.dlq` or `warehouse.facility.events.dlq` | a copy is missing data the next plan needs |
+| Relocation poison | any message on `warehouse.inventory.events.dlq` from this consumer (`x-dlq-error` mentions `relocation`) | inventory-storage published a `StockRelocated` that misses a field; a move's progress is missing |
+| Unmatched relocations | rate of `slotting_optimization.relocations.observed` with `outcome="unmatched"` and `reason` one of `unknown-plan`, `unknown-move`, `sku-mismatch` above 0 | RELOCATE tasks refer to moves this context does not know: the move numbering of the plan and of wes-work-planning disagree |
 | Consumer stuck | `handling failed; retrying the same message` logged for more than 1 minute, or growing group lag | a blocked partition |
 | Readiness | `/readyz` 503 outside a rollout | the pod is shutting down or wedged in the drain |
 | Latency | p95 of `http.server.request.duration` for `http.route=/slot-plans` above 2 s | plan generation approaching the 5 s statement timeout |

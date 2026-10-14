@@ -33,6 +33,8 @@ func TestParseMoveRef(t *testing.T) {
 		{"plan-7:0", MoveRef{Plan: "plan-7", Seq: 0}, true},
 		{"plan-1b4e28ba-2fa1:12", MoveRef{Plan: "plan-1b4e28ba-2fa1", Seq: 12}, true},
 		{"plan-a:b:4", MoveRef{Plan: "plan-a:b", Seq: 4}, true},
+		{"plan-7:9", MoveRef{Plan: "plan-7", Seq: 9}, true},
+		{"plan-7:90", MoveRef{Plan: "plan-7", Seq: 90}, true},
 		{"", MoveRef{}, false},
 		{"task-1", MoveRef{}, false},
 		{"plan-9#3", MoveRef{}, false},
