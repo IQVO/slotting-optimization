@@ -76,14 +76,42 @@ mcp_vars=($(binary_env mcp))
 (( ${#mcp_vars[@]} >= 5 )) || fail "found only ${#mcp_vars[@]} env literals in cmd/mcp/main.go; the scan is looking in the wrong place"
 assert_env_rendered deployment.yaml "${api_vars[@]}" \
   DEMAND_MODE DEMAND_CONSUMER_GROUP PRODUCT_MODE PRODUCT_CONSUMER_GROUP LAYOUT_MODE LAYOUT_CONSUMER_GROUP \
-  ENVIRONMENT CORS_ALLOWED_ORIGINS
+  RELOCATION_MODE RELOCATION_CONSUMER_GROUP ENVIRONMENT CORS_ALLOWED_ORIGINS
 assert_env_rendered mcp-deployment.yaml "${mcp_vars[@]}" ENVIRONMENT
 
 # Every key the ConfigMap renders is a variable cmd/api reads (no dead keys).
 full_configmap="$(helm template "$release" "$chart_dir" "${everything[@]}" --show-only templates/configmap.yaml)"
-api_known=" ${api_vars[*]} DEMAND_MODE DEMAND_CONSUMER_GROUP PRODUCT_MODE PRODUCT_CONSUMER_GROUP LAYOUT_MODE LAYOUT_CONSUMER_GROUP ENVIRONMENT CORS_ALLOWED_ORIGINS "
+api_known=" ${api_vars[*]} DEMAND_MODE DEMAND_CONSUMER_GROUP PRODUCT_MODE PRODUCT_CONSUMER_GROUP LAYOUT_MODE LAYOUT_CONSUMER_GROUP RELOCATION_MODE RELOCATION_CONSUMER_GROUP ENVIRONMENT CORS_ALLOWED_ORIGINS "
 while read -r key; do
   [[ "$api_known" == *" $key "* ]] || fail "ConfigMap key $key is read by no binary"
 done < <(awk '/^data:/ {d=1; next} d && /^  [A-Z]/ {sub(/:.*/, ""); sub(/^  /, ""); print}' <<<"$full_configmap")
+
+# ADR 0010: the StockRelocated consumer (slot-plan execution progress). It is
+# off by default (permissive, no group), renders its stable group from values
+# on warehouse.inventory.events, and the chart refuses the two crash-loop
+# combinations (kafka without a group, kafka without brokers) and a group
+# that would silently not start.
+grep -q 'RELOCATION_MODE: "permissive"' <<<"$configmap" || fail "RELOCATION_MODE must default to permissive"
+if grep -q 'RELOCATION_CONSUMER_GROUP' <<<"$configmap"; then
+  fail "RELOCATION_CONSUMER_GROUP must not render while it is empty"
+fi
+relocation=(--set config.relocationMode=kafka --set config.relocationConsumerGroup=slotting-optimization-relocation --set kafka.enabled=true)
+relocating_cm="$(helm template "$release" "$chart_dir" "${base[@]}" "${relocation[@]}" --show-only templates/configmap.yaml)"
+grep -q 'RELOCATION_MODE: "kafka"' <<<"$relocating_cm" || fail "config.relocationMode is not rendered into the ConfigMap"
+grep -q 'RELOCATION_CONSUMER_GROUP: "slotting-optimization-relocation"' <<<"$relocating_cm" \
+  || fail "config.relocationConsumerGroup is not rendered into the ConfigMap"
+relocating_dep="$(helm template "$release" "$chart_dir" "${base[@]}" "${relocation[@]}" --show-only templates/deployment.yaml)"
+grep -A1 'name: RELOCATION_CONSUMER_GROUP' <<<"$relocating_dep" | grep -q 'value: "slotting-optimization-relocation"' \
+  || fail "api Deployment does not set RELOCATION_CONSUMER_GROUP"
+expect_render_failure() {
+  local why="$1"; shift
+  if helm template "$release" "$chart_dir" "${base[@]}" "$@" >/dev/null 2>&1; then
+    fail "the chart must refuse to render: $why"
+  fi
+}
+expect_render_failure "relocationMode=kafka without a group" --set config.relocationMode=kafka --set kafka.enabled=true
+expect_render_failure "relocationMode=kafka without kafka" --set config.relocationMode=kafka --set config.relocationConsumerGroup=g
+expect_render_failure "a relocation group in permissive mode" --set config.relocationConsumerGroup=g
+expect_render_failure "an unknown relocationMode" --set config.relocationMode=bogus
 
 echo "PASS: slotting-optimization chart render assertions"

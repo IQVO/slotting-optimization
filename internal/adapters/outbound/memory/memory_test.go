@@ -29,6 +29,32 @@ func TestSlotCatalogueContract(t *testing.T) {
 	repocontract.SlotCatalogue(t, func(*testing.T) ports.SlotCatalogue { return memory.NewSlotCatalogue() })
 }
 
+func TestMoveExecutionLedgerContract(t *testing.T) {
+	repocontract.MoveExecutionLedger(t, func(*testing.T) repocontract.ExecutionStores {
+		return repocontract.ExecutionStores{Ledger: memory.NewMoveExecutionLedger(), Plans: memory.NewSlotPlanRepo()}
+	})
+}
+
+// TestMoveExecutionLedgerRollsBack proves the ledger takes part in the unit
+// of work: a failing unit forgets the execution it recorded.
+func TestMoveExecutionLedgerRollsBack(t *testing.T) {
+	ledger := memory.NewMoveExecutionLedger()
+	uow := memory.NewUnitOfWork(ledger)
+	ctx := context.Background()
+	err := uow.Do(ctx, func(ctx context.Context) error {
+		if _, err := ledger.Record(ctx, "plan-a", slotplan.MoveExecution{RelocationID: "rel-1", Quantity: 1}); err != nil {
+			return err
+		}
+		return errBoom
+	})
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("Do = %v", err)
+	}
+	if got, _ := ledger.ForPlan(ctx, "plan-a"); len(got) != 0 {
+		t.Fatalf("rolled back unit left %+v", got)
+	}
+}
+
 var errBoom = errors.New("boom")
 
 // TestUnitOfWorkRollsEverythingBack proves the all-or-nothing behaviour the

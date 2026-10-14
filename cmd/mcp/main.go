@@ -102,8 +102,9 @@ func defaultSite() string {
 // readRepositories is the set of read ports cmd/mcp wires, whichever adapter
 // family backs them.
 type readRepositories struct {
-	plans  ports.SlotPlanRepository
-	demand ports.DemandLedger
+	plans      ports.SlotPlanRepository
+	demand     ports.DemandLedger
+	executions ports.MoveExecutionLedger
 }
 
 // buildDeps selects the repositories the way cmd/api does: no DATABASE_URL
@@ -124,7 +125,7 @@ func buildDeps(ctx context.Context, logger *slog.Logger, databaseURL, migrations
 	)
 	if databaseURL == "" {
 		logger.Info("DATABASE_URL not configured; using the in-memory repositories")
-		repos = readRepositories{plans: memory.NewSlotPlanRepo(), demand: memory.NewDemandLedger()}
+		repos = readRepositories{plans: memory.NewSlotPlanRepo(), demand: memory.NewDemandLedger(), executions: memory.NewMoveExecutionLedger()}
 	} else {
 		// The first outbound dial of an injected pod can be reset (Istio
 		// native sidecars), so migrations and the first ping retry with
@@ -143,11 +144,11 @@ func buildDeps(ctx context.Context, logger *slog.Logger, databaseURL, migrations
 			return inboundmcp.Deps{}, noop, err
 		}
 		logger.Info("postgres repositories configured")
-		repos = readRepositories{plans: postgres.NewSlotPlanRepo(pool), demand: postgres.NewDemandLedger(pool)}
+		repos = readRepositories{plans: postgres.NewSlotPlanRepo(pool), demand: postgres.NewDemandLedger(pool), executions: postgres.NewMoveExecutionLedger(pool)}
 		closeFn = pool.Close
 	}
 	return inboundmcp.Deps{
-		GetPlan:          &usecases.GetPlan{Plans: repos.plans},
+		GetPlan:          &usecases.GetPlan{Plans: repos.plans, Executions: repos.executions},
 		ListPlans:        &usecases.ListPlans{Plans: repos.plans},
 		ListForwardSlots: &usecases.ListForwardSlots{Plans: repos.plans, DefaultSite: site},
 		ListSkuVelocity:  &usecases.ListSkuVelocity{Demand: repos.demand, Clock: clock.System{}, DefaultSite: site},

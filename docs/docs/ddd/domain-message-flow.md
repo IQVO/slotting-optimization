@@ -47,7 +47,7 @@ sequenceDiagram
     actor P as Planner
     participant SO as slotting-optimization
     participant K as warehouse.slotting-optimization.events
-    participant D as downstream (none yet)
+    participant D as wes-work-planning
     P->>SO: GET /sku-velocity (query)
     SO-->>P: picks and units per SKU
     P->>SO: POST /slot-plans with Idempotency-Key (command GenerateSlotPlan)
@@ -59,7 +59,7 @@ sequenceDiagram
     SO->>SO: supersede the previous Approved plan, approve this one
     SO-->>P: 200 Approved plan
     SO->>K: SlotPlanApproved (event, full map, moves, supersedes_plan_id)
-    K-->>D: no consumer subscribed on develop
+    K-->>D: SlotPlanApproved plans RELOCATE work (flow 4)
     P->>SO: GET /forward-slots (query)
     SO-->>P: the new forward-slot map
 ```
@@ -85,14 +85,46 @@ sequenceDiagram
 
 Source: `internal/application/usecases/decide_plan.go` (`RejectPlan`).
 
-## 4. Planned: execute the moves
+## 4. Execute the moves and record the progress
 
-Not built. ADR 0001 and ADR 0002 describe the intended path: a consumer in
-`process-path-management` (or the WES) turns the moves of
-`SlotPlanApproved` into MOVE / REPLENISH work for `wes-work-planning` and
-`fulfillment-execution`. It needs ADRs in those contexts and a new task
-type, so no diagram is drawn here as if it existed. Who executes the moves is
-still undecided: [ADR 0007](/docs/adr/0007-executing-an-approved-slot-plan)
-(Proposed) compares wes-work-planning MOVE / REPLENISH tasks, an
-inventory-storage relocation command and a slotting-owned move list worked
-from the console, and lists the open questions.
+Decided by [ADR 0010](/docs/adr/0010-approved-slot-plans-are-executed-as-wes-relocation-work)
+(supersedes [ADR 0007](/docs/adr/0007-executing-an-approved-slot-plan)).
+The middle of the flow lives in the sibling contexts; this context publishes
+the plan and reads back what the ledger recorded.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SO as slotting-optimization
+    participant WWP as wes-work-planning
+    participant FE as fulfillment-execution
+    participant IS as inventory-storage
+    SO->>WWP: SlotPlanApproved (event, moves)
+    WWP->>WWP: one RELOCATE work unit per move, sequenced
+    WWP->>FE: WorkReleased on the RELOCATE path (event)
+    FE->>FE: operator counts and scans the bins
+    FE->>IS: TaskCompleted RELOCATE (event, relocation_ref plan:seq)
+    IS->>IS: RelocateStock moves the stock between bins
+    IS->>SO: StockRelocated (event, source_ref plan:seq)
+    SO->>SO: RecordRelocation matches the move, records it once
+```
+
+Source here: `internal/adapters/inbound/kafka/stock_consumer.go`,
+`internal/application/usecases/record_relocation.go`,
+`internal/domain/slotplan/execution.go`. The other steps are
+wes-work-planning ADR 0040, fulfillment-execution ADR 0047 and
+inventory-storage ADR 0039.
+
+## 5. Read the execution progress
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor P as Planner or agent
+    participant SO as slotting-optimization
+    P->>SO: GET /slot-plans/{planId} or get_slot_plan (query)
+    SO->>SO: load the plan and its recorded relocations
+    SO-->>P: plan + execution (moves executed / total, last executed at, per move)
+```
+
+Source: `internal/application/usecases/queries.go` (`GetPlan.View`).

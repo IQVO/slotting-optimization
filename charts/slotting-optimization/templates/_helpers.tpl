@@ -121,13 +121,14 @@ kafka.enabled is true -- so that combination would crash-loop. Fail at render.
 {{- end -}}
 
 {{/*
-DEMAND_MODE / PRODUCT_MODE / LAYOUT_MODE (ADR 0003) must be permissive or
+DEMAND_MODE / PRODUCT_MODE / LAYOUT_MODE (ADR 0003) and RELOCATION_MODE
+(ADR 0010) must be permissive or
 kafka, and a kafka mode starts a consumer: it needs a stable consumer group id
 (cmd/api planConsumers refuses to boot without one) and KAFKA_BROKERS. Without
 a group the pod would crash-loop; without brokers it would too. Fail at render.
 */}}
 {{- define "slotting-optimization.requireConsumerConfig" -}}
-{{- range $c := list (dict "mode" "demandMode" "group" "demandConsumerGroup" "env" "DEMAND") (dict "mode" "productMode" "group" "productConsumerGroup" "env" "PRODUCT") (dict "mode" "layoutMode" "group" "layoutConsumerGroup" "env" "LAYOUT") -}}
+{{- range $c := list (dict "mode" "demandMode" "group" "demandConsumerGroup" "env" "DEMAND") (dict "mode" "productMode" "group" "productConsumerGroup" "env" "PRODUCT") (dict "mode" "layoutMode" "group" "layoutConsumerGroup" "env" "LAYOUT") (dict "mode" "relocationMode" "group" "relocationConsumerGroup" "env" "RELOCATION") -}}
 {{- $mode := index $.Values.config $c.mode -}}
 {{- if not (has $mode (list "permissive" "kafka")) -}}
 {{- fail (printf "config.%s is %q — want \"permissive\" or \"kafka\" (the binary exits at boot otherwise)." $c.mode $mode) -}}
@@ -139,8 +140,8 @@ a group the pod would crash-loop; without brokers it would too. Fail at render.
 {{- fail (printf "config.%s is set but config.%s is not \"kafka\" — the %s consumer would silently not start. Set %s=kafka or clear the group." $c.group $c.mode (lower $c.env) $c.mode) -}}
 {{- end -}}
 {{- end -}}
-{{- if and (or (eq .Values.config.demandMode "kafka") (eq .Values.config.productMode "kafka") (eq .Values.config.layoutMode "kafka")) (not .Values.kafka.enabled) -}}
-{{- fail "config.demandMode/productMode/layoutMode is \"kafka\" but kafka.enabled is false — the binary exits at boot (a consumer in kafka mode requires KAFKA_BROKERS). Set kafka.enabled=true and kafka.brokers." -}}
+{{- if and (or (eq .Values.config.demandMode "kafka") (eq .Values.config.productMode "kafka") (eq .Values.config.layoutMode "kafka") (eq .Values.config.relocationMode "kafka")) (not .Values.kafka.enabled) -}}
+{{- fail "config.demandMode/productMode/layoutMode/relocationMode is \"kafka\" but kafka.enabled is false — the binary exits at boot (a consumer in kafka mode requires KAFKA_BROKERS). Set kafka.enabled=true and kafka.brokers." -}}
 {{- end -}}
 {{- end -}}
 

@@ -18,6 +18,7 @@ data:
   DEMAND_MODE: {{ .Values.config.demandMode | quote }}
   PRODUCT_MODE: {{ .Values.config.productMode | quote }}
   LAYOUT_MODE: {{ .Values.config.layoutMode | quote }}
+  RELOCATION_MODE: {{ .Values.config.relocationMode | quote }}
   ENVIRONMENT: {{ .Values.environment | quote }}
   {{- with .Values.config.demandConsumerGroup }}
   DEMAND_CONSUMER_GROUP: {{ . | quote }}
@@ -27,6 +28,9 @@ data:
   {{- end }}
   {{- with .Values.config.layoutConsumerGroup }}
   LAYOUT_CONSUMER_GROUP: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.relocationConsumerGroup }}
+  RELOCATION_CONSUMER_GROUP: {{ . | quote }}
   {{- end }}
   {{- with .Values.config.demandSiteId }}
   DEMAND_SITE_ID: {{ . | quote }}

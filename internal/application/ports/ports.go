@@ -108,3 +108,24 @@ type PlanDecisionMetrics interface {
 type ProcessedEvents interface {
 	Claim(ctx context.Context, consumer, eventID string) (claimed bool, err error)
 }
+
+// MoveExecutionLedger is the execution-progress read model of the plans
+// (ADR 0010): one entry per relocation inventory-storage recorded that
+// executes a move of a plan. Inside a UnitOfWork it joins the transaction
+// carried in ctx.
+type MoveExecutionLedger interface {
+	// Record stores e against plan; false when e's relocation id is
+	// already recorded (a replayed relocation never counts twice).
+	Record(ctx context.Context, plan slotplan.PlanID, e slotplan.MoveExecution) (recorded bool, err error)
+	// ForPlan returns every execution recorded against plan, in no
+	// particular order.
+	ForPlan(ctx context.Context, plan slotplan.PlanID) ([]slotplan.MoveExecution, error)
+}
+
+// RelocationMetrics is the outbound telemetry port of the StockRelocated
+// consumer (ADR 0010): every relocation it handled, by outcome (applied,
+// duplicate, unmatched) and, for unmatched ones, why. A nil
+// RelocationMetrics means "record nothing".
+type RelocationMetrics interface {
+	RelocationObserved(ctx context.Context, outcome, reason string)
+}

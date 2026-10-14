@@ -77,6 +77,8 @@ hard-coded (`TestKafkaConsumerGroupNeverHardcodedInline`).
 | `PRODUCT_CONSUMER_GROUP` | unset | when `PRODUCT_MODE=kafka` | Consumer group id of the product consumer. | `cmd/api/main.go` (`planConsumers`) |
 | `LAYOUT_MODE` | `permissive` | no | `kafka` starts the layout consumer on `warehouse.facility.events`. | `cmd/api/main.go` (`consumerSpecs`) |
 | `LAYOUT_CONSUMER_GROUP` | unset | when `LAYOUT_MODE=kafka` | Consumer group id of the layout consumer. | `cmd/api/main.go` (`planConsumers`) |
+| `RELOCATION_MODE` | `permissive` | no | `kafka` starts the StockRelocated consumer on `warehouse.inventory.events`: the execution progress of the slot plans (ADR 0010). Chart value `config.relocationMode`. | `cmd/api/main.go` (`consumerSpecs`) |
+| `RELOCATION_CONSUMER_GROUP` | unset | when `RELOCATION_MODE=kafka` | Consumer group id of the StockRelocated consumer (e.g. `slotting-optimization-relocation`). Chart value `config.relocationConsumerGroup`. | `cmd/api/main.go` (`planConsumers`) |
 
 ## `cmd/mcp`
 
