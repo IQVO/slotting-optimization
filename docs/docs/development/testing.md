@@ -172,7 +172,7 @@ into them, weekly schedule, manual dispatch):
 | `lint` | golangci-lint `v2.14.0` | blocking |
 | `guide-lint` | `scripts/harness/guide_lint.py` and `test_hook.py` | advisory (`continue-on-error`) |
 | `complexity` | golangci-lint with only `gocyclo,gocognit,cyclop,funlen,nestif`, plus an informational gocyclo report | blocking |
-| `test` | `go build`, `go vet`, `go test ./... -race` with coverage over domain and application, 90 % gate | blocking |
+| `test` | `go build`, `go vet`, then `make coverage` (`go test ./... -race` with the Makefile's coverage scope, domain and application, and the 90 % gate) | blocking |
 | `bdd` | `go test ./... -run TestFeatures -v` | blocking |
 | `integration` | `go test -tags=integration ./... -race -count=1` (testcontainers on the runner's Docker) | blocking |
 | `mutation-fast` | gremlins on `slotplan` and `planning` | blocking |
