@@ -166,3 +166,21 @@ func TestHandleWithDeadLetter_ZeroValuePreservesUnboundedRetry(t *testing.T) {
 		t.Fatalf("handle called %d times, want 10 (no bound without maxAttempts/deadLetter)", calls)
 	}
 }
+
+// TestDomainDLQWriter_TopicComesFromTheMessage pins the writer shape a real
+// broker accepts: publishDeadLetter sets the message's Topic, so the writer
+// must not set one too (kafka-go rejects both), and the write stays
+// synchronous with RequireAll acks.
+func TestDomainDLQWriter_TopicComesFromTheMessage(t *testing.T) {
+	w, ok := newDomainDLQWriter([]string{"127.0.0.1:1"}).(*kafkago.Writer)
+	if !ok {
+		t.Fatal("the dead-letter writer must be a *kafkago.Writer")
+	}
+	defer func() { _ = w.Close() }()
+	if w.Topic != "" {
+		t.Fatalf("writer Topic = %q, want none: the message names the DLQ topic", w.Topic)
+	}
+	if w.RequiredAcks != kafkago.RequireAll || w.Async || !w.AllowAutoTopicCreation {
+		t.Fatalf("writer = acks %v async %v autocreate %v", w.RequiredAcks, w.Async, w.AllowAutoTopicCreation)
+	}
+}
