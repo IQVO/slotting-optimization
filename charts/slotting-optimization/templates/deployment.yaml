@@ -125,6 +125,14 @@ spec:
             - name: LAYOUT_CONSUMER_GROUP
               value: {{ . | quote }}
             {{- end }}
+            # ADR 0010: inventory-storage's StockRelocated -> slot-plan
+            # execution progress (warehouse.inventory.events).
+            - name: RELOCATION_MODE
+              value: {{ .Values.config.relocationMode | quote }}
+            {{- with .Values.config.relocationConsumerGroup }}
+            - name: RELOCATION_CONSUMER_GROUP
+              value: {{ . | quote }}
+            {{- end }}
             {{- with .Values.config.shutdownDrainDelay }}
             - name: SHUTDOWN_DRAIN_DELAY
               value: {{ . | quote }}

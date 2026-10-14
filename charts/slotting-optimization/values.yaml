@@ -169,6 +169,15 @@ config:
   # LAYOUT_CONSUMER_GROUP: the layout consumer's STABLE group id. Required
   # when layoutMode is "kafka"; refused otherwise.
   layoutConsumerGroup: ""
+  # RELOCATION_MODE (ADR 0010): "permissive" (default; not started) or
+  # "kafka" (inventory-storage's StockRelocated on warehouse.inventory.events
+  # records the execution progress of the slot plans, shown on
+  # GET /slot-plans/{planId} and the MCP get_slot_plan tool). "kafka" needs
+  # relocationConsumerGroup and kafka.enabled=true.
+  relocationMode: "permissive"
+  # RELOCATION_CONSUMER_GROUP: the relocation consumer's STABLE group id.
+  # Required when relocationMode is "kafka"; refused otherwise.
+  relocationConsumerGroup: ""
   # SHUTDOWN_DRAIN_DELAY: wait after /readyz flips before closing the
   # listener. Empty = not rendered; the binary defaults to 5s.
   shutdownDrainDelay: ""
@@ -192,7 +201,8 @@ database:
 # true. Without it EVENT_PUBLISHER must stay "log" and the local-copy
 # consumers cannot run. Produced topic: warehouse.slotting-optimization.events;
 # consumed (only in the kafka modes): warehouse.order-management.events,
-# warehouse.product-master.events and warehouse.facility.events.
+# warehouse.product-master.events, warehouse.facility.events and
+# warehouse.inventory.events (RELOCATION_MODE, ADR 0010).
 kafka:
   enabled: false
   brokers: "kafka:9092"
