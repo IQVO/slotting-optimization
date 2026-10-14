@@ -95,12 +95,12 @@ func (s *Server) handleGetSlotPlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	p, err := s.GetPlan.Handle(r.Context(), id)
+	v, err := s.GetPlan.View(r.Context(), id)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, toSlotPlan(p))
+	writeJSON(w, http.StatusOK, toSlotPlanView(v))
 }
 
 // handleApproveSlotPlan backs POST /slot-plans/{planId}/approve.

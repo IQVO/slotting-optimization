@@ -15,10 +15,11 @@
 //	DEMAND_SITE_ID              the site plans default to; when set, demand for other sites is ignored
 //	LOOKBACK_DAYS               default demand window of a new plan (default 28)
 //	FORWARD_ZONE_CODES          comma-separated zone codes of the forward pick slots (default FWD)
-//	DEMAND_MODE, PRODUCT_MODE, LAYOUT_MODE
+//	DEMAND_MODE, PRODUCT_MODE, LAYOUT_MODE, RELOCATION_MODE
 //	                            kafka | permissive (default permissive = consumer not started)
-//	DEMAND_CONSUMER_GROUP, PRODUCT_CONSUMER_GROUP, LAYOUT_CONSUMER_GROUP
+//	DEMAND_CONSUMER_GROUP, PRODUCT_CONSUMER_GROUP, LAYOUT_CONSUMER_GROUP, RELOCATION_CONSUMER_GROUP
 //	                            stable group ids; required when the mode is kafka
+//	                            (RELOCATION_*: inventory-storage's StockRelocated -> plan execution progress, ADR 0010)
 //	OTEL_EXPORTER_OTLP_ENDPOINT OTLP/gRPC collector (default localhost:4317)
 //	SHUTDOWN_DRAIN_DELAY        wait after flipping /readyz before closing (default 5s)
 //	LOG_LEVEL, SERVICE_VERSION, ENVIRONMENT, CORS_ALLOWED_ORIGINS
@@ -136,6 +137,7 @@ type adapters struct {
 	outbox      ports.OutboxRepository
 	outboxStore outboxrelay.Store
 	processed   ports.ProcessedEvents
+	executions  ports.MoveExecutionLedger
 	uow         ports.UnitOfWork
 	// idempotency is the Idempotency-Key middleware of POST /slot-plans; nil
 	// in the in-memory development mode.
@@ -212,7 +214,7 @@ func buildServer(ad adapters, cfg config, readiness *inboundhttp.Readiness, metr
 		},
 		ApprovePlan:      &usecases.ApprovePlan{Writer: w, Metrics: planMetrics},
 		RejectPlan:       &usecases.RejectPlan{Writer: w, Metrics: planMetrics},
-		GetPlan:          &usecases.GetPlan{Plans: ad.plans},
+		GetPlan:          &usecases.GetPlan{Plans: ad.plans, Executions: ad.executions},
 		ListPlans:        &usecases.ListPlans{Plans: ad.plans},
 		ListForwardSlots: &usecases.ListForwardSlots{Plans: ad.plans, DefaultSite: cfg.defaultSite},
 		ListSkuVelocity:  &usecases.ListSkuVelocity{Demand: ad.demand, Clock: clock.System{}, DefaultSite: cfg.defaultSite},
@@ -230,10 +232,11 @@ func buildAdapters(ctx context.Context, databaseURL string, logger *slog.Logger)
 		logger.Info("DATABASE_URL not configured; using in-memory adapters")
 		plans, ob, processed := memory.NewSlotPlanRepo(), memory.NewOutboxRepo(), memory.NewProcessedEventRepo()
 		demand, profiles, catalogue := memory.NewDemandLedger(), memory.NewProfileDirectory(), memory.NewSlotCatalogue()
+		executions := memory.NewMoveExecutionLedger()
 		return adapters{
 			plans: plans, demand: demand, profiles: profiles, catalogue: catalogue,
-			outbox: ob, outboxStore: ob, processed: processed,
-			uow: memory.NewUnitOfWork(plans, ob, demand, profiles, catalogue, processed),
+			outbox: ob, outboxStore: ob, processed: processed, executions: executions,
+			uow: memory.NewUnitOfWork(plans, ob, demand, profiles, catalogue, processed, executions),
 		}, noop, nil
 	}
 
@@ -264,6 +267,7 @@ func postgresAdapters(pool *pgxpool.Pool) adapters {
 		plans: postgres.NewSlotPlanRepo(pool), demand: postgres.NewDemandLedger(pool),
 		profiles: postgres.NewProfileDirectory(pool), catalogue: postgres.NewSlotCatalogue(pool),
 		outbox: ob, outboxStore: ob, processed: postgres.NewProcessedEventRepo(pool),
+		executions:  postgres.NewMoveExecutionLedger(pool),
 		uow:         postgres.NewUnitOfWork(pool),
 		idempotency: inboundhttp.RequireIdempotencyKey(pool, pgtx.With),
 	}
@@ -283,7 +287,7 @@ type worker struct {
 	done chan struct{}
 }
 
-// Consumer modes (DEMAND_MODE, PRODUCT_MODE, LAYOUT_MODE).
+// Consumer modes (DEMAND_MODE, PRODUCT_MODE, LAYOUT_MODE, RELOCATION_MODE).
 const (
 	modePermissive = "permissive"
 	modeKafka      = "kafka"
@@ -327,7 +331,22 @@ func consumerSpecs(ad adapters, cfg config) []consumerSpec {
 				&usecases.ApplyLocationSlotRegistered{Intake: intake, Catalogue: ad.catalogue},
 				&usecases.ApplyLocationSlotDecommissioned{Intake: intake, Catalogue: ad.catalogue}, logger)
 		}},
+		{"RELOCATION_MODE", "RELOCATION_CONSUMER_GROUP", func(brokers []string, group string, logger *slog.Logger) *inboundkafka.Consumer {
+			uc := &usecases.RecordRelocation{Intake: intake, Plans: ad.plans, Executions: ad.executions, Metrics: relocationMetrics()}
+			return inboundkafka.NewStockConsumer(brokers, group, uc, logger)
+		}},
 	}
+}
+
+// relocationMetrics is the StockRelocated consumer's outcome counter, or
+// nil (record nothing) in the impossible case the instrument cannot be
+// registered; never a typed nil inside the interface.
+func relocationMetrics() ports.RelocationMetrics {
+	m, err := telemetry.NewRelocationMetrics()
+	if err != nil {
+		return nil
+	}
+	return m
 }
 
 // plannedConsumer is a consumer whose mode is kafka, with its resolved group.

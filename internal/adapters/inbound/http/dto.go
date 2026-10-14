@@ -58,6 +58,26 @@ type slotPlanBody struct {
 	Assignments      []assignmentBody `json:"assignments"`
 	Moves            []moveBody       `json:"moves"`
 	Unassigned       []unassignedBody `json:"unassigned"`
+	// Execution is set on GET /slot-plans/{planId} only (ADR 0010).
+	Execution *executionBody `json:"execution,omitempty"`
+}
+
+// executionBody is a plan's execution progress (ADR 0010): moves executed
+// out of the plan's moves, from the relocations inventory-storage recorded.
+type executionBody struct {
+	MovesTotal     int                 `json:"movesTotal"`
+	MovesExecuted  int                 `json:"movesExecuted"`
+	LastExecutedAt string              `json:"lastExecutedAt,omitempty"`
+	Moves          []moveExecutionBody `json:"moves"`
+}
+
+type moveExecutionBody struct {
+	MoveSeq          int    `json:"moveSeq"`
+	SKU              string `json:"sku"`
+	Kind             string `json:"kind"`
+	Executed         bool   `json:"executed"`
+	ExecutedQuantity int64  `json:"executedQuantity"`
+	LastExecutedAt   string `json:"lastExecutedAt,omitempty"`
 }
 
 type slotPlanSummaryBody struct {
@@ -133,6 +153,30 @@ func toSlotPlan(p *slotplan.SlotPlan) slotPlanBody {
 	}
 	for i, u := range s.Unassigned {
 		out.Unassigned[i] = unassignedBody{SKU: string(u.SKU), Reason: string(u.Reason)}
+	}
+	return out
+}
+
+// toSlotPlanView is toSlotPlan plus the execution progress, when the view
+// carries one.
+func toSlotPlanView(v usecases.PlanView) slotPlanBody {
+	out := toSlotPlan(v.Plan)
+	if v.Execution != nil {
+		out.Execution = toExecution(*v.Execution)
+	}
+	return out
+}
+
+func toExecution(e slotplan.ExecutionProgress) *executionBody {
+	out := &executionBody{
+		MovesTotal: e.MovesTotal, MovesExecuted: e.MovesExecuted, LastExecutedAt: ts(e.LastExecutedAt),
+		Moves: make([]moveExecutionBody, len(e.Moves)),
+	}
+	for i, m := range e.Moves {
+		out.Moves[i] = moveExecutionBody{
+			MoveSeq: m.Seq, SKU: string(m.SKU), Kind: string(m.Kind), Executed: m.Executed,
+			ExecutedQuantity: m.ExecutedQuantity, LastExecutedAt: ts(m.LastExecutedAt),
+		}
 	}
 	return out
 }
