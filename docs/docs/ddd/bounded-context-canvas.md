@@ -12,10 +12,10 @@ filled from the code on `develop` and ADR 0001.
 
 ## Canvas at a glance
 
-One picture of the sections below, laid out like the ddd-crew canvas:
-inbound collaborators on the left, this context in the middle (purpose,
-domain roles and the business decisions it enforces), outbound
-collaborators on the right. Arrows follow the message type: **solid blue**
+Two pictures of the sections below, laid out like the ddd-crew canvas:
+first the inbound collaborators feeding this context (purpose, domain roles
+and the business decisions it enforces), then the outbound collaborators it
+calls or notifies. Arrows follow the message type: **solid blue**
 commands (`cmd`), **dotted green** queries (`qry`), **thick orange** events
 (`evt`); each arrow names its channel and the messages it carries. Box shapes
 mark the collaborator kind: rounded = people, UI or any client; blue =
@@ -26,8 +26,10 @@ abbreviated (REST, MCP, Kafka, HTTP, port); the Inbound and Outbound
 Communication tables carry the exact route, tool, topic and CloudEvents
 type for every message.
 
+### Inbound
+
 ```mermaid
-%%{init: {"flowchart": {"nodeSpacing": 18, "rankSpacing": 36, "padding": 8}}}%%
+%%{init: {"flowchart": {"nodeSpacing": 14, "rankSpacing": 40, "padding": 6}}}%%
 flowchart LR
     classDef bc fill:#fff3bf,stroke:#e67700,stroke-width:1.5px,color:#000
     classDef card fill:#fff9db,stroke:#f08c00,color:#000,text-align:left
@@ -38,35 +40,50 @@ flowchart LR
     classDef none fill:#f8f9fa,stroke:#adb5bd,stroke-dasharray:5 5,color:#495057
     subgraph IN["Inbound - who commands, queries or feeds it"]
         direction TB
-        in0(["Planner (human, console, agent)"]):::actor
+        in0(["Planner (human, console,<br/>agent)"]):::actor
         in1["order-management"]:::ctx
         in2["product-master"]:::ctx
         in3["facility-layout"]:::ctx
     end
     subgraph BC["slotting-optimization - Supporting subdomain - WMS tier"]
         direction TB
-        purpose["<b>Purpose</b><br/>Decide, explainably and repeatably,<br/>which SKUs get a forward pick slot<br/>and which slot each one gets; let a<br/>person approve or reject the<br/>proposal; publish the approved<br/>assignment map with the physical<br/>moves it implies."]:::card
-        roles["<b>Domain roles</b><br/>- Policy engine (planning.Planner, abc-velocity-v1)<br/>- Approval workflow (Draft to Approved or Rejected; previous Approved becomes Superseded)"]:::card
-        rules["<b>Business decisions it enforces</b><br/>- Candidates: SKUs with at least one<br/>ACTIVE demand line due in the window<br/>- Rank: picks desc, units desc, SKU<br/>asc; ABC by cumulative pick share<br/>(80 / 95 %)<br/>- Forward slots: active Storage slots<br/>in the FORWARD_ZONE_CODES zones of<br/>the site<br/>- Eligibility: hazmat and temperature<br/>match, one unit fits volume and<br/>weight<br/>- Churn limit: keep the previous slot<br/>when still eligible and free<br/>- Nothing becomes the site map without<br/>approve; one Approved plan per site"]:::card
+        purpose["<b>Purpose</b><br/>Decide, explainably and repeatably, which SKUs get a<br/>forward pick slot and which slot each one gets; let a<br/>person approve or reject the proposal; publish the<br/>approved assignment map with the physical moves it<br/>implies."]:::card
+        roles["<b>Domain roles</b><br/>- Policy engine (planning.Planner, abc-velocity-v1)<br/>- Approval workflow (Draft to Approved or Rejected; previous<br/>Approved becomes Superseded)"]:::card
+        rules["<b>Business decisions it enforces</b><br/>- Candidates: SKUs with at least one ACTIVE demand line due<br/>in the window<br/>- Rank: picks desc, units desc, SKU asc; ABC by cumulative<br/>pick share (80 / 95 %)<br/>- Forward slots: active Storage slots in the<br/>FORWARD_ZONE_CODES zones of the site<br/>- Eligibility: hazmat and temperature match, one unit fits<br/>volume and weight<br/>- Churn limit: keep the previous slot when still eligible<br/>and free<br/>- Nothing becomes the site map without approve; one Approved<br/>plan per site"]:::card
         purpose ~~~ roles ~~~ rules
-    end
-    subgraph OUT["Outbound - whom it calls or notifies"]
-        direction TB
-        out0["none yet (execution path planned, not built)"]:::none
     end
     in0 -->|"cmd - REST<br/>Generate slot plan, Approve,<br/>Reject"| BC
     in0 -.->|"qry - REST<br/>Get plan, List plans, Forward<br/>slots, SKU velocity"| BC
     in1 ==>|"evt - Kafka<br/>warehouse.order-management.events<br/>SiteSkuDemandChanged"| BC
     in2 ==>|"evt - Kafka<br/>warehouse.product-master.events<br/>ProductClassified,<br/>ProductDimensionsDeclared,<br/>ProductMeasured"| BC
     in3 ==>|"evt - Kafka<br/>warehouse.facility.events<br/>ZoneRegistered,<br/>LocationSlotRegistered,<br/>LocationSlotDecommissioned"| BC
-    BC ==>|"evt - Kafka<br/>warehouse.slotting-optimization.events<br/>SlotPlanGenerated,<br/>SlotPlanApproved,<br/>SlotPlanRejected"| out0
     linkStyle 0 stroke:#1971c2,stroke-width:1.5px
     linkStyle 1 stroke:#2f9e44,stroke-width:1.5px
     linkStyle 2 stroke:#e8590c,stroke-width:2.5px
     linkStyle 3 stroke:#e8590c,stroke-width:2.5px
     linkStyle 4 stroke:#e8590c,stroke-width:2.5px
-    linkStyle 5 stroke:#e8590c,stroke-width:2.5px
     class BC bc
+```
+
+### Outbound
+
+```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 14, "rankSpacing": 40, "padding": 6}}}%%
+flowchart LR
+    classDef bc fill:#fff3bf,stroke:#e67700,stroke-width:1.5px,color:#000
+    classDef card fill:#fff9db,stroke:#f08c00,color:#000,text-align:left
+    classDef ctx fill:#e7f5ff,stroke:#1c7ed6,color:#000
+    classDef actor fill:#fff4e6,stroke:#e8590c,color:#000
+    classDef ext fill:#ffe3e3,stroke:#c92a2a,color:#000
+    classDef self fill:#f1f3f5,stroke:#868e96,color:#000
+    classDef none fill:#f8f9fa,stroke:#adb5bd,stroke-dasharray:5 5,color:#495057
+    BC["<b>slotting-optimization - Supporting subdomain - WMS tier</b>"]:::bc
+    subgraph OUT["Outbound - whom it calls or notifies"]
+        direction TB
+        out0["none yet (execution path<br/>planned, not built)"]:::none
+    end
+    BC ==>|"evt - Kafka<br/>warehouse.slotting-optimization.events<br/>SlotPlanGenerated,<br/>SlotPlanApproved,<br/>SlotPlanRejected"| out0
+    linkStyle 0 stroke:#e8590c,stroke-width:2.5px
 ```
 
 Source: the Inbound Communication and Outbound Communication tables of this
