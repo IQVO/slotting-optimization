@@ -44,8 +44,10 @@ It does **not** own demand, product facts or the slot layout. It keeps three
 event-fed local copies of them (demand from `order-management`, product
 classification and unit size from `product-master`, zones and slots from
 `facility-layout`) and never calls a sibling at request time. It moves no
-stock: executing the moves on the floor is a planned, not built, edge
-(ADR 0002).
+stock itself: wes-work-planning plans the moves of an Approved plan as
+RELOCATE work, fulfillment-execution executes them and inventory-storage
+records them; this context reads the resulting `StockRelocated` back as the
+plan's execution progress (ADR 0010).
 
 ## Main capabilities
 

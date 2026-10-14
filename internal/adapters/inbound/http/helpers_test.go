@@ -67,6 +67,7 @@ type fixture struct {
 	profiles  *memory.ProfileDirectory
 	catalogue *memory.SlotCatalogue
 	outbox    *memory.OutboxRepo
+	execs     *memory.MoveExecutionLedger
 	server    *httptest.Server
 	readiness *inboundhttp.Readiness
 }
@@ -76,6 +77,7 @@ func newFixture(t *testing.T) *fixture {
 	plans, ob := memory.NewSlotPlanRepo(), memory.NewOutboxRepo()
 	demand, profiles, cat := memory.NewDemandLedger(), memory.NewProfileDirectory(), memory.NewSlotCatalogue()
 	repo := &faultyRepo{SlotPlanRepo: plans}
+	execs := memory.NewMoveExecutionLedger()
 	planner, err := planning.NewPlanner(planning.LexicalRanking{})
 	if err != nil {
 		t.Fatal(err)
@@ -89,7 +91,7 @@ func newFixture(t *testing.T) *fixture {
 		},
 		ApprovePlan:      &usecases.ApprovePlan{Writer: w},
 		RejectPlan:       &usecases.RejectPlan{Writer: w},
-		GetPlan:          &usecases.GetPlan{Plans: repo},
+		GetPlan:          &usecases.GetPlan{Plans: repo, Executions: execs},
 		ListPlans:        &usecases.ListPlans{Plans: repo},
 		ListForwardSlots: &usecases.ListForwardSlots{Plans: repo, DefaultSite: "SITE-1"},
 		ListSkuVelocity:  &usecases.ListSkuVelocity{Demand: demand, Clock: fixedClock{}, DefaultSite: "SITE-1"},
@@ -98,7 +100,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	srv := httptest.NewServer(inboundhttp.NewRouter(s))
 	t.Cleanup(srv.Close)
-	return &fixture{repo: repo, demand: demand, profiles: profiles, catalogue: cat, outbox: ob, server: srv, readiness: readiness}
+	return &fixture{repo: repo, demand: demand, profiles: profiles, catalogue: cat, outbox: ob, execs: execs, server: srv, readiness: readiness}
 }
 
 // seed gives SITE-1 two SKUs with demand, dimensions and two forward slots.

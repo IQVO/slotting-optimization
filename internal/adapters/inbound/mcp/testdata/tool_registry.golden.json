@@ -143,7 +143,7 @@
       "openWorldHint": false,
       "readOnlyHint": true
     },
-    "description": "Read one forward pick slot plan by id: site_id, state (Draft, Approved, Rejected or Superseded), policy, the demand window (window_from, window_to), generated_at and the decision instants (approved_at, rejected_at, superseded_at, each omitted until it happens), reject_reason and supersedes_plan_id (omitted when none), the assignments (sku, slot, abc_class, picks, units), the moves against the previous plan (sku, from_slot, to_slot, kind) and the unassigned SKUs with their reason, plus version. Read-only; fails with plan-not-found for an unknown id and invalid-plan-id for a malformed one.",
+    "description": "Read one forward pick slot plan by id: site_id, state (Draft, Approved, Rejected or Superseded), policy, the demand window (window_from, window_to), generated_at and the decision instants (approved_at, rejected_at, superseded_at, each omitted until it happens), reject_reason and supersedes_plan_id (omitted when none), the assignments (sku, slot, abc_class, picks, units), the moves against the previous plan (sku, from_slot, to_slot, kind) and the unassigned SKUs with their reason, plus version, and the execution progress (execution: moves_total, moves_executed, last_executed_at and per move move_seq, sku, kind, executed, executed_quantity, last_executed_at) recorded from inventory-storage's relocations. Read-only; fails with plan-not-found for an unknown id and invalid-plan-id for a malformed one.",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
@@ -196,6 +196,66 @@
           "type": [
             "null",
             "array"
+          ]
+        },
+        "execution": {
+          "additionalProperties": false,
+          "properties": {
+            "last_executed_at": {
+              "type": "string"
+            },
+            "moves": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "executed": {
+                    "type": "boolean"
+                  },
+                  "executed_quantity": {
+                    "type": "integer"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "last_executed_at": {
+                    "type": "string"
+                  },
+                  "move_seq": {
+                    "type": "integer"
+                  },
+                  "sku": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "move_seq",
+                  "sku",
+                  "kind",
+                  "executed",
+                  "executed_quantity"
+                ],
+                "type": "object"
+              },
+              "type": [
+                "null",
+                "array"
+              ]
+            },
+            "moves_executed": {
+              "type": "integer"
+            },
+            "moves_total": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "moves_total",
+            "moves_executed",
+            "moves"
+          ],
+          "type": [
+            "null",
+            "object"
           ]
         },
         "generated_at": {

@@ -90,13 +90,13 @@ cover the worst case.
 
 | Fact | Value |
 | --- | --- |
-| Files | `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.{up,down}.sql`, embedded with `//go:embed` |
+| Files | `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.{up,down}.sql` and `0002_slot_plan_move_executions.{up,down}.sql` (additive, ADR 0010), embedded with `//go:embed` |
 | Runner | golang-migrate (`postgres.RunMigrations`), `Up()`; `ErrNoChange` is success |
 | When | at every boot, before the pool opens, only when `DATABASE_URL` is set |
 | DSN | `MIGRATIONS_DATABASE_URL`, falling back to `DATABASE_URL`. Use a direct connection: the migrate advisory lock does not survive PgBouncer transaction pooling. |
 | Concurrency | several replicas booting together serialise on the advisory lock; the losers find `ErrNoChange` |
 | Bookkeeping | `schema_migrations` (golang-migrate's table) |
-| Tables created | `slot_plans`, `slot_plan_assignments`, `slot_plan_moves`, `slot_plan_unassigned`, `demand_lines`, `product_profiles`, `zones`, `slots`, `outbox_events`, `processed_events`, `idempotency_keys` ([Entity-relationship](/docs/ddd/entity-relationship)) |
+| Tables created | `slot_plans`, `slot_plan_assignments`, `slot_plan_moves`, `slot_plan_unassigned`, `demand_lines`, `product_profiles`, `zones`, `slots`, `outbox_events`, `processed_events`, `idempotency_keys` (0001); `slot_plan_move_executions` (0002) ([Entity-relationship](/docs/ddd/entity-relationship)) |
 
 There is no separate migrate command or Job. A failed migration leaves
 `schema_migrations.dirty = true` and every later boot fails with the same error
@@ -122,9 +122,14 @@ message is a CloudEvents 1.0 structured-mode JSON value with the header
 | `warehouse.order-management.events` | `com.warehouse.wes.order-management.siteskudemand.SiteSkuDemandChanged` | `DEMAND_MODE`, `DEMAND_CONSUMER_GROUP` | `slotting-demand` | `warehouse.order-management.events.dlq` |
 | `warehouse.product-master.events` | `com.warehouse.wms.product-master.product.ProductClassified`, `...ProductDimensionsDeclared`, `...ProductMeasured` | `PRODUCT_MODE`, `PRODUCT_CONSUMER_GROUP` | `slotting-product` | `warehouse.product-master.events.dlq` |
 | `warehouse.facility.events` | `com.warehouse.wms.facility-layout.zone.ZoneRegistered`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`, `...LocationSlotDecommissioned` | `LAYOUT_MODE`, `LAYOUT_CONSUMER_GROUP` | `slotting-layout` | `warehouse.facility.events.dlq` |
+| `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.StockRelocated` (ADR 0010) | `RELOCATION_MODE`, `RELOCATION_CONSUMER_GROUP` | `slotting-relocation` | `warehouse.inventory.events.dlq` |
 
-There are no default group ids: the deployment chooses them. Other types on
-the three topics are ignored silently.
+There are no default group ids: the deployment chooses them (the chart's
+`config.relocationConsumerGroup`, e.g. `slotting-optimization-relocation`).
+Other types on the four topics are ignored silently. A new relocation group
+replays `warehouse.inventory.events` from the start; only `StockRelocated`
+is acted on, and a replayed relocation is recorded once per
+`relocation_id`.
 
 ### Delivery semantics
 
@@ -134,7 +139,14 @@ the three topics are ignored silently.
   (`usecases.Intake`), so a redelivery is a no-op (`outcome=duplicate`).
 - **Deterministic problems are skipped**: not a CloudEvent, malformed `data`,
   or values the use case refuses (`ErrInvalidEvent`) are logged at WARN and
-  committed past. They never reach the DLQ.
+  committed past. They never reach the DLQ. **Exception (ADR 0010):** a
+  `StockRelocated` whose data cannot be decoded or misses a required field is
+  dead-lettered at once to `warehouse.inventory.events.dlq` (no retry), then
+  committed past. A relocation that matches no slot-plan move is not a
+  problem: it is claimed, logged (`relocation matched no slot-plan move`,
+  with `reason`) and counted.
+- **Shutdown is never a dead letter**: a cancelled context returns before any
+  dead-letter call and leaves the offset uncommitted.
 - **Transient failures** retry the same message (200 ms doubling to 5 s) up to
   5 handling attempts, then the message goes to `<topic>.dlq` with its key,
   value and headers plus `x-dlq-source-topic`, `x-dlq-source-partition`,
@@ -244,12 +256,39 @@ WHERE subject = 'plan-...';
 The relay sends them again with their original CloudEvents ids, so
 consumers that dedupe by id see duplicates, not new events.
 
+### Turn on the execution progress (ADR 0010)
+
+1. Set `config.relocationMode: "kafka"` and
+   `config.relocationConsumerGroup: "slotting-optimization-relocation"` in the
+   deployment's values (warehouse-infra: `helm-values/slotting-optimization.yaml`
+   there); `kafka.enabled` must be true. The chart refuses the mode without a
+   group or without Kafka.
+2. The consumer starts at the first offset of `warehouse.inventory.events`
+   and records every `StockRelocated` that executes a move of a known plan.
+3. Check: `GET /slot-plans/{planId}` shows `execution.movesExecuted` growing;
+   `slotting_optimization.relocations.observed` counts `applied` /
+   `unmatched` / `duplicate`.
+
+Progress per plan, straight from the table:
+
+```sql
+SELECT plan_id, count(DISTINCT move_seq) AS moves_executed, sum(quantity) AS units, max(executed_at) AS last_executed_at
+FROM slot_plan_move_executions GROUP BY plan_id ORDER BY last_executed_at DESC;
+```
+
+To rebuild it, stop the consumer, then
+`DELETE FROM processed_events WHERE consumer = 'slotting-relocation'; TRUNCATE slot_plan_move_executions;`
+in one transaction and start it with a new `RELOCATION_CONSUMER_GROUP`.
+
 ### Replay a dead-lettered message
 
 There is no tool. Read the message from `<topic>.dlq`, check `x-dlq-error`,
 fix the cause, and produce the original value (with its key) back onto the
 source topic. Its claim was rolled back with the failed transaction, so it
-is applied normally.
+is applied normally. A `StockRelocated` on `warehouse.inventory.events.dlq`
+was malformed at the producer (`x-dlq-error` names the missing field):
+replaying the same bytes dead-letters it again, so raise it with
+inventory-storage instead.
 
 ### Rotate database credentials
 

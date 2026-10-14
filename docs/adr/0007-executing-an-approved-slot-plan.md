@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-10-12, ecosystem gap fix D11). Nothing is decided and nothing
+Superseded by ADR 0010 (2026-10-14; proposed 2026-10-12, ecosystem gap fix D11). Nothing is decided and nothing
 is built by this ADR. It lays out the options for turning the moves of an
 Approved plan into work on the floor, so the decision can be taken with the
 owners of the other contexts. [ADR 0001](./0001-slotting-optimization-bounded-context.md)

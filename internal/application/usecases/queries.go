@@ -15,6 +15,34 @@ import (
 // GetPlan returns one plan.
 type GetPlan struct {
 	Plans ports.SlotPlanRepository
+	// Executions, when set, adds the plan's execution progress to View
+	// (ADR 0010); nil leaves it out.
+	Executions ports.MoveExecutionLedger
+}
+
+// PlanView is a plan with its execution progress (nil when the use case
+// has no execution ledger).
+type PlanView struct {
+	Plan      *slotplan.SlotPlan
+	Execution *slotplan.ExecutionProgress
+}
+
+// View loads the plan like Handle and derives its execution progress from
+// the relocations recorded against it.
+func (uc *GetPlan) View(ctx context.Context, rawID string) (PlanView, error) {
+	p, err := uc.Handle(ctx, rawID)
+	if err != nil {
+		return PlanView{}, err
+	}
+	if uc.Executions == nil {
+		return PlanView{Plan: p}, nil
+	}
+	execs, err := uc.Executions.ForPlan(ctx, p.ID())
+	if err != nil {
+		return PlanView{}, fmt.Errorf("read execution progress: %w", err)
+	}
+	progress := p.Progress(execs)
+	return PlanView{Plan: p, Execution: &progress}, nil
 }
 
 // Handle validates the plan id and loads the plan

@@ -176,7 +176,7 @@ func inMemory(t *testing.T) adapters {
 
 func clearConsumerEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"DEMAND_MODE", "PRODUCT_MODE", "LAYOUT_MODE", "DEMAND_CONSUMER_GROUP", "PRODUCT_CONSUMER_GROUP", "LAYOUT_CONSUMER_GROUP", "KAFKA_BROKERS"} {
+	for _, k := range []string{"DEMAND_MODE", "PRODUCT_MODE", "LAYOUT_MODE", "RELOCATION_MODE", "DEMAND_CONSUMER_GROUP", "PRODUCT_CONSUMER_GROUP", "LAYOUT_CONSUMER_GROUP", "RELOCATION_CONSUMER_GROUP", "KAFKA_BROKERS"} {
 		t.Setenv(k, "")
 	}
 }
@@ -188,6 +188,14 @@ func TestStartConsumers_PermissiveByDefaultStartsNothing(t *testing.T) {
 		t.Fatalf("workers=%d err=%v, want none", len(workers), err)
 	}
 	stop()
+}
+
+func TestStartConsumers_RelocationModeNeedsItsGroup(t *testing.T) {
+	clearConsumerEnv(t)
+	t.Setenv("RELOCATION_MODE", "kafka")
+	if _, _, err := startConsumers(inMemory(t), quietLogger()); err == nil || !strings.Contains(err.Error(), "RELOCATION_CONSUMER_GROUP") {
+		t.Fatalf("RELOCATION_MODE=kafka without its group must be a boot error, got %v", err)
+	}
 }
 
 func TestStartConsumers_KafkaModeNeedsItsGroupAndBrokers(t *testing.T) {
@@ -210,15 +218,15 @@ func TestStartConsumers_KafkaModeNeedsItsGroupAndBrokers(t *testing.T) {
 // Every consumer in kafka mode starts without dialling the broker, and stops.
 func TestStartConsumers_StartsOneWorkerPerKafkaModeAndStops(t *testing.T) {
 	clearConsumerEnv(t)
-	for _, c := range []string{"DEMAND", "PRODUCT", "LAYOUT"} {
+	for _, c := range []string{"DEMAND", "PRODUCT", "LAYOUT", "RELOCATION"} {
 		t.Setenv(c+"_MODE", "kafka")
 		t.Setenv(c+"_CONSUMER_GROUP", "slotting-"+strings.ToLower(c)+"-test")
 	}
 	t.Setenv("KAFKA_BROKERS", "127.0.0.1:1")
 	start := time.Now()
 	workers, stop, err := startConsumers(inMemory(t), quietLogger())
-	if err != nil || len(workers) != 3 {
-		t.Fatalf("workers=%d err=%v, want 3", len(workers), err)
+	if err != nil || len(workers) != 4 {
+		t.Fatalf("workers=%d err=%v, want 4", len(workers), err)
 	}
 	if time.Since(start) > time.Second {
 		t.Fatal("starting the consumers must not dial Kafka")
@@ -238,6 +246,7 @@ func TestBuildAdapters_InMemoryWiresEveryPort(t *testing.T) {
 	for name, wired := range map[string]bool{
 		"plans": ad.plans != nil, "demand": ad.demand != nil, "profiles": ad.profiles != nil, "catalogue": ad.catalogue != nil,
 		"outbox": ad.outbox != nil, "outboxStore": ad.outboxStore != nil, "processed": ad.processed != nil, "uow": ad.uow != nil,
+		"executions": ad.executions != nil,
 	} {
 		if !wired {
 			t.Errorf("port %s not wired", name)
@@ -245,6 +254,9 @@ func TestBuildAdapters_InMemoryWiresEveryPort(t *testing.T) {
 	}
 	if ad.idempotency != nil {
 		t.Fatal("the in-memory mode has no Idempotency-Key store")
+	}
+	if relocationMetrics() == nil {
+		t.Fatal("the relocation consumer must count its outcomes")
 	}
 	s, err := buildServer(ad, config{defaultSite: "SITE-1", forwardZoneCodes: []string{"FWD"}}, nil, nil, nil)
 	if err != nil {
@@ -278,6 +290,9 @@ func TestInMemoryServiceEndToEnd(t *testing.T) {
 	call(t, srv, http.MethodGet, "/forward-slots", http.StatusOK)
 	call(t, srv, http.MethodGet, "/sku-velocity", http.StatusOK)
 	call(t, srv, http.MethodPost, "/slot-plans/"+plan.id+"/approve", http.StatusConflict)
+	if got := call(t, srv, http.MethodGet, "/slot-plans/"+plan.id, http.StatusOK); !strings.Contains(got.body, `"execution":{"movesTotal":`) {
+		t.Fatalf("GET /slot-plans/{planId} must carry the execution progress: %s", got.body)
+	}
 }
 
 func TestMigrationsDatabaseURL(t *testing.T) {

@@ -80,13 +80,17 @@ console's origin to `CORS_ALLOWED_ORIGINS`.
 | Consumer group lag grows; `handling failed; retrying the same message` repeats | a transient error (database down, statement timeout) on one message | the `error` field | fix the dependency; after 5 attempts the message is dead-lettered and the partition moves on |
 | Messages on `<topic>.dlq` | a message failed 5 times with a transient error | the `x-dlq-error` and `x-dlq-source-*` headers | fix the cause, then [replay it](/docs/operations/runbook#replay-a-dead-lettered-message) |
 | `dead-letter publish failed; retrying the same message` forever | the DLQ topic cannot be written (ACLs, auto-creation disabled) | broker logs | create `<topic>.dlq` or grant access; the partition stays blocked until then, by design |
+| `dead-letter publish failed` with `Topic must not be specified for both Writer and Message` | a build from before ADR 0010: the dead-letter writer had a fixed topic and kafka-go refused every dead letter, wedging the partition | the image tag | deploy a build with ADR 0010 (the writer carries no topic; `TestDomainDLQWriter_TopicComesFromTheMessage`) |
+| `dead-lettering an event that can never be applied` / `message can never be applied; dead-lettering it without retry` (relocation consumer) | a `StockRelocated` without a required field or with an undecodable `data` (ADR 0010) | `x-dlq-error` on `warehouse.inventory.events.dlq` | a producer defect in inventory-storage; the progress of that move stays missing until it publishes a valid relocation |
+| `relocation matched no slot-plan move` | a relocation of no known move: `reason=unknown-plan` / `unknown-move` / `sku-mismatch` (the move reference names something this context does not have), `no-current-plan` / `no-matching-move` (no reference and the bins match no move of the site's Approved plan), `plan-not-approved`, `site-mismatch` | the `source_ref`, `plan_id`, `reason` fields; `GET /slot-plans/{planId}` | expected for manual and consolidation relocations; for slot-plan moves compare the RELOCATE task's `relocation_ref` with the plan's moves (`move_seq` is the 0-based position in the plan's SKU-ordered moves) |
+| `GET /slot-plans/{planId}` shows `movesExecuted: 0` although moves were done on the floor | the StockRelocated consumer is off (`RELOCATION_MODE=permissive`, the default) or behind | `consumer running ... topic=warehouse.inventory.events`; group lag of `RELOCATION_CONSUMER_GROUP` | [turn it on](/docs/operations/runbook#turn-on-the-execution-progress-adr-0010) |
 | `skipping a message that is not a valid CloudEvent` | a producer sent a non-CloudEvents value (e.g. the retired flat envelope) | the `topic` field | fix the producer; the message is committed past and lost for this copy |
 | `skipping an event that can never be applied` | the payload decoded but failed validation (bad SKU, unknown `state`, `version` below 1, unknown temperature class, negative capacity) | `type`, `event_id`, `error` | fix the producer's data; it is not retried |
-| A new group id replays nothing | claims in `processed_events` are keyed by consumer name (`slotting-demand`, `slotting-product`, `slotting-layout`), not by group | `outcome=duplicate` for every message | follow [Rebuild a local copy](/docs/operations/runbook#rebuild-a-local-copy-from-the-producers-topics) |
+| A new group id replays nothing | claims in `processed_events` are keyed by consumer name (`slotting-demand`, `slotting-product`, `slotting-layout`, `slotting-relocation`), not by group | `outcome=duplicate` for every message | follow [Rebuild a local copy](/docs/operations/runbook#rebuild-a-local-copy-from-the-producers-topics) |
 | A laptop consumer "steals" partitions from the cluster | the same group id on the shared broker | `kafka-consumer-groups.sh --describe` shows your host | use a group id nobody else uses |
 
 ## What does not exist
 
-There is no circuit breaker, no outbound HTTP client, no MCP server and no
-analytics read side in this service on `develop`, so none of their failure
-modes apply.
+There is no circuit breaker, no outbound HTTP client and no analytics read
+side in this service on `develop`, so none of their failure modes apply. The
+MCP server (`cmd/mcp`, ADR 0005) is read-only.

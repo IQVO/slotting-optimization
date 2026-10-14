@@ -45,6 +45,38 @@ func TestSlotCatalogueContract(t *testing.T) {
 	})
 }
 
+func TestMoveExecutionLedgerContract(t *testing.T) {
+	repocontract.MoveExecutionLedger(t, func(t *testing.T) repocontract.ExecutionStores {
+		pool := pgtest.NewPool(t)
+		return repocontract.ExecutionStores{Ledger: postgres.NewMoveExecutionLedger(pool), Plans: postgres.NewSlotPlanRepo(pool)}
+	})
+}
+
+// TestMoveExecutionLedgerJoinsTheUnitOfWork proves the ledger writes on the
+// transaction in ctx: a failing unit leaves no execution row behind.
+func TestMoveExecutionLedgerJoinsTheUnitOfWork(t *testing.T) {
+	ctx := context.Background()
+	pool := pgtest.NewPool(t)
+	if err := postgres.NewSlotPlanRepo(pool).Save(ctx, repocontract.Draft(t, "plan-a", "SITE-1", repocontract.T0), 0); err != nil {
+		t.Fatal(err)
+	}
+	ledger := postgres.NewMoveExecutionLedger(pool)
+	boom := errors.New("boom")
+	err := postgres.NewUnitOfWork(pool).Do(ctx, func(ctx context.Context) error {
+		if _, err := ledger.Record(ctx, "plan-a", slotplan.MoveExecution{RelocationID: "rel-1", SKU: "SKU-1", FromBin: "A", ToBin: "B", Quantity: 1, At: repocontract.T0}); err != nil {
+			return err
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("Do = %v", err)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM slot_plan_move_executions`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("rows after rollback = %d, %v", n, err)
+	}
+}
+
 // TestOneApprovedPlanPerSiteIsEnforcedByTheDatabase proves the partial unique
 // index, not just the use case: raw approvals racing for one site leave
 // exactly one Approved plan and every loser sees ErrApprovedPlanConflict.
