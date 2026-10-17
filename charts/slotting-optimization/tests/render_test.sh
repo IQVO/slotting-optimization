@@ -156,4 +156,33 @@ fi
 expect_render_failure "analytics without a DSN source" --set analytics.enabled=true --set kafka.enabled=true
 expect_render_failure "analytics without kafka" --set analytics.enabled=true --set analytics.url=postgres://u@example.invalid:5432/analytics
 
+# The web remote (slotting_mfe): off by default; with frontend.enabled=true
+# its own Deployment + ClusterIP Service render (component=frontend), it gets
+# none of the api's OLTP/Kafka env (it serves static bytes), and this chart
+# renders no route for it (warehouse-infra's Nginx web gateway owns
+# /mfes/slotting-optimization/).
+if grep -q 'app.kubernetes.io/component: frontend' <<<"$default_render"; then
+  fail "the frontend must not render while frontend.enabled is false"
+fi
+frontend_dep="$(helm template "$release" "$chart_dir" "${base[@]}" --set frontend.enabled=true --show-only templates/frontend-deployment.yaml)"
+frontend_svc="$(helm template "$release" "$chart_dir" "${base[@]}" --set frontend.enabled=true --show-only templates/frontend-service.yaml)"
+grep -q 'app.kubernetes.io/component: frontend' <<<"$frontend_dep" || fail "the frontend Deployment was not rendered with frontend.enabled=true"
+grep -q 'app.kubernetes.io/component: frontend' <<<"$frontend_svc" || fail "the frontend Service was not rendered with frontend.enabled=true"
+grep -q 'type: ClusterIP' <<<"$frontend_svc" || fail "the frontend Service must stay ClusterIP"
+if grep -Eq 'name: (DATABASE_URL|KAFKA_BROKERS)$' <<<"$frontend_dep"; then
+  fail "the frontend Deployment must not get database/Kafka env (it serves static bytes)"
+fi
+
+# ALL optional components render TOGETHER (ct lint's values file): api + mcp +
+# projector + reports + frontend, and no route in this chart targets the
+# frontend.
+together="$(helm template "$release" "$chart_dir" "${base[@]}" "${everything[@]}")"
+for component in api mcp analytics-projector analytics-reports frontend; do
+  grep -q "app.kubernetes.io/component: $component" <<<"$together" \
+    || fail "every optional component must render together; $component is missing"
+done
+if grep -E 'kind: (Ingress|HTTPRoute)' <<<"$together" | grep -q frontend; then
+  fail "frontend routing must not live in this chart (the Nginx web gateway owns it)"
+fi
+
 echo "PASS: slotting-optimization chart render assertions"
