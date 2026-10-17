@@ -11,8 +11,10 @@ This service PUBLISHES slot-plan decisions on `warehouse.slotting-optimization.e
 (through the transactional outbox) and CONSUMES, into durable local copies
 (ADR 0003), demand from `warehouse.order-management.events`, product facts from
 `warehouse.product-master.events` and zones/slots from `warehouse.facility.events`.
-`warehouse.slotting-optimization.analytics` is reserved for this service's own
-analytics read side (a later phase); nothing is published there yet.
+The same three published events are ALSO written, under the same CloudEvents
+`id` and type, to `warehouse.slotting-optimization.analytics` (ADR 0006): the
+service's own analytics stream, consumed only by cmd/slotting-projector into
+the analytical database that cmd/slotting-reports serves.
 
 ## Events: CloudEvents 1.0 is MANDATORY
 
