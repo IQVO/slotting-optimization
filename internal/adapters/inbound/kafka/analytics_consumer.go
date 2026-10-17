@@ -134,10 +134,12 @@ func (c *AnalyticsConsumer) HandleMessage(ctx context.Context, msg kafkago.Messa
 	}
 	pe, err := toReportEvent(kind, evt)
 	if err != nil {
+		//dlq:deterministic toReportEvent is a pure decode/validate of the message bytes (no ctx): the same message can never pass
 		return c.deadLetter(ctx, msg, err)
 	}
 	if _, err := c.Projection.Apply(ctx, pe); err != nil {
 		if errors.Is(err, report.ErrRejected) {
+			//dlq:deterministic ErrRejected is minted only by the pure event validation or a Postgres SQLSTATE 22/23 rejection (analyticsstore.classify) -- never by a cancelled context
 			return c.deadLetter(ctx, msg, err)
 		}
 		return fmt.Errorf("analytics: project %s %s: %w", kind, evt.ID(), err)
