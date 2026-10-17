@@ -11,9 +11,13 @@ Deployment. This test fails if that ever stops being true.
 
 It mirrors inbound-receiving's charts/.../tests/test_service_selectors.py (and
 warehouse-infra's scripts/check-chart-selectors.py), restricted to the
-components this chart has: api (always), mcp (optional, default off) and the
+components this chart has: api (always), mcp (optional, default off), the
 analytics read side of ADR 0006 -- analytics-projector and analytics-reports
-(optional, default off; run with every other component enabled TOGETHER).
+-- and the frontend (optional, default off), run with every other component
+enabled TOGETHER. The frontend is the nginx pod serving the slotting_mfe
+remote: its own workload, component=frontend, a ClusterIP Service, never
+routed by this chart (warehouse-infra's Nginx web gateway owns
+/mfes/slotting-optimization/).
 
 Run: python3 charts/slotting-optimization/tests/test_service_selectors.py
 Needs: helm, PyYAML.
@@ -32,6 +36,7 @@ RELEASE = "slotting-optimization"
 BASE = ["--set", "database.url=postgres://u@example.invalid:5432/db"]
 ENABLE_EVERYTHING = BASE + [
     "--set", "mcp.enabled=true",
+    "--set", "frontend.enabled=true",
     "--set", "autoscaling.api.enabled=true",
     "--set", "config.eventPublisher=kafka",
     "--set", "config.demandSiteId=SITE-1",
@@ -137,6 +142,25 @@ def check_components(docs: list[dict], failures: list[str]) -> None:
         for want in ("DATABASE_URL", "MIGRATIONS_DATABASE_URL", "MCP_ADDR", "DEMAND_SITE_ID"):
             if want not in mcp_env:
                 failures.append(f"the MCP Deployment does not render {want}")
+
+    # The web remote (slotting_mfe): its own Deployment + ClusterIP Service,
+    # component=frontend, none of the api's OLTP/Kafka env, and no route from
+    # this chart (warehouse-infra's Nginx web gateway owns /mfes/slotting-optimization/).
+    frontend = f"{RELEASE}-frontend"
+    if frontend not in services:
+        failures.append("the frontend Service was not rendered with frontend.enabled=true")
+    else:
+        if selector_of(services[frontend]).get("app.kubernetes.io/component") != "frontend":
+            failures.append("the frontend Service selector must pin component=frontend")
+        if services[frontend]["spec"].get("type") != "ClusterIP":
+            failures.append("the frontend Service must be ClusterIP")
+    if frontend not in deployments:
+        failures.append("the frontend Deployment was not rendered with frontend.enabled=true")
+    elif {"DATABASE_URL", "KAFKA_BROKERS"} & set(env_names(deployments[frontend])):
+        failures.append("the frontend Deployment must not get database/Kafka env (it serves static bytes)")
+    for d in docs:
+        if d.get("kind") in {"Ingress", "HTTPRoute"} and "frontend" in d["metadata"]["name"]:
+            failures.append(f"{d['kind']} {d['metadata']['name']}: frontend routing must not live in this chart")
 
     # ADR 0006: the analytics projector (writer) and reports (reader).
     projector, reports = f"{RELEASE}-projector", f"{RELEASE}-reports"
@@ -260,7 +284,7 @@ def main() -> int:
     # Default values must not deploy the MCP or analytics components, an HPA
     # or a route.
     defaults = render(BASE)
-    stray = [d["metadata"]["name"] for d in defaults if d["metadata"]["name"].endswith(("-mcp", "-projector", "-reports", "-analytics"))]
+    stray = [d["metadata"]["name"] for d in defaults if d["metadata"]["name"].endswith(("-mcp", "-frontend", "-projector", "-reports", "-analytics"))]
     stray += [d["kind"] for d in defaults if d.get("kind") in {"HorizontalPodAutoscaler", "Ingress", "HTTPRoute"}]
     if stray:
         failures.append(f"optional components rendered with default values: {stray}")
@@ -283,8 +307,8 @@ def main() -> int:
             print(f"FAIL: {f}")
         return 1
 
-    print("PASS: every Service selects exactly one Deployment (api, mcp, analytics-reports); mcp, analytics, HPA "
-          "and routes are off by default; every cmd/api env var has a dedicated value; the chart refuses to render "
+    print("PASS: every Service selects exactly one Deployment (api, mcp, frontend, analytics-reports); mcp, frontend, "
+          "analytics, HPA and routes are off by default; every cmd/api env var has a dedicated value; the chart refuses to render "
           "without a database source, with an unknown publisher/mode, with a Kafka mode but no broker or no consumer "
           "group, with a group set but its consumer off, with LOOKBACK_DAYS out of range, or with analytics on but "
           "no DSN source or no Kafka")

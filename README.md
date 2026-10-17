@@ -82,6 +82,32 @@ spectral lint apis/openapi.yaml --ruleset .spectral.yaml
 spectral lint apis/asyncapi.yaml --ruleset .spectral.asyncapi.yaml
 ```
 
+## Web remote (`web/`)
+
+`slotting_mfe`, a Vite + React Module Federation remote that exposes `./App`;
+the `warehouse-console` shell mounts it under `/slotting-optimization/*`.
+Production asset base `/mfes/slotting-optimization/`; standalone dev server on
+`:5194` — the next free port on the fleet's 5181+ ladder after
+inbound-receiving's `:5193`.
+
+```bash
+cd web
+npm ci            # needs a sibling warehouse-ui-kit checkout (file:../../warehouse-ui-kit)
+npm run dev       # standalone on http://localhost:5194
+npm test          # vitest: api-client mapping, idempotency headers, screens
+npm run build     # tsc -b && vite build (dist/remoteEntry.js exposes slotting_mfe)
+npm run lint      # oxlint
+```
+
+Standalone dev calls the API directly at `http://localhost:8080`, so start
+`cmd/api` with `CORS_ALLOWED_ORIGINS=http://localhost:5194`. Against the kind
+cluster's Kong instead, the remote reads the API origin at runtime from the
+console's `/config.json` (`window.__WAREHOUSE_CONFIG__.apiOrigin`), so it
+calls `http://localhost:8000/api/slotting-optimization` when served by the
+console shell — nothing is baked in at build time. In the cluster the chart's
+optional `frontend` component (off by default) serves the built bundle behind
+warehouse-infra's Nginx web gateway at `/mfes/slotting-optimization/`.
+
 ## Running it
 
 ```bash
