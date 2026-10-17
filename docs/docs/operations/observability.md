@@ -9,10 +9,9 @@ sidebar_position: 3
 
 `slotting-optimization` emits three signals: OpenTelemetry traces and
 metrics pushed over OTLP/gRPC, a Prometheus scrape endpoint for runtime
-metrics, and JSON logs on stdout. It defines **no business metric of its
-own** on `develop`: there is no `metric.WithDescription` call and no
-custom tracer in `internal/`. Everything below comes from the libraries the
-composition root installs.
+metrics, and JSON logs on stdout. It defines two business counters of its own, `slotting_optimization.relocations.observed`
+and `slotting_optimization.slot_plans.decided` (ADR 0013), and no custom tracer. Everything
+else below comes from the libraries the composition root installs.
 
 ## Pipeline
 
@@ -54,6 +53,7 @@ Source: `internal/adapters/outbound/telemetry/telemetry.go`,
 | --- | --- | --- | --- | --- |
 | `http.server.request.duration` | Float64 histogram, buckets 5 ms to 10 s | `s` | `http.method`, `http.scheme`, `http.route` (the chi pattern, e.g. `/slot-plans/{planId}`) | `otelchimetric.NewServerRequestDuration` (riandyrn/otelchi v0.12.3), installed in `NewRouter` |
 | `slotting_optimization.relocations.observed` | Int64 counter | `{relocation}` | `outcome` (`applied`, `duplicate`, `unmatched`), `reason` on `unmatched` (`unknown-plan`, `no-current-plan`, `plan-not-approved`, `site-mismatch`, `unknown-move`, `sku-mismatch`, `no-matching-move`) | `telemetry.RelocationMetrics`, recorded by `RecordRelocation` after its commit (ADR 0010) |
+| `slotting_optimization.slot_plans.decided` | Int64 counter | `{plan}` | `outcome` (`approved`, `rejected`) | `telemetry.PlanDecisionMetrics`, created in `cmd/api/main.go`; recorded when an operator approves or rejects a Draft plan; OTLP only |
 | `go.memory.used`, `go.memory.limit`, `go.memory.allocated`, `go.memory.allocations`, `go.memory.gc.goal`, `go.goroutine.count`, `go.processor.limit`, `go.config.gogc` | runtime gauges and counters | per semconv | per semconv | `go.opentelemetry.io/contrib/instrumentation/runtime` v0.72.0, started in `telemetry.Setup` |
 
 `http.server.request.duration` carries **no status-code attribute** in this
