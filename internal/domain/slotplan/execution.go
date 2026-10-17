@@ -121,6 +121,11 @@ const (
 	UnmatchedSKUMismatch UnmatchedReason = "sku-mismatch"
 	// UnmatchedNoMatchingMove: no move of the plan has that SKU and bins.
 	UnmatchedNoMatchingMove UnmatchedReason = "no-matching-move"
+	// UnmatchedNotSlotting: the relocation's reason is not SLOTTING (a
+	// manual, consolidation or replenishment move), so it executes no slot
+	// plan move even when its SKU and bins happen to match one (decided by
+	// the caller, before any plan is read).
+	UnmatchedNotSlotting UnmatchedReason = "reason-not-slotting"
 )
 
 // executionGuard checks what every match needs: a plan whose moves were

@@ -79,7 +79,7 @@ wes-work-planning numbers the moves in (its ADR 0040).
 | Broker down | the readers retry inside kafka-go; boot is not blocked. |
 | Message is not CloudEvents 1.0, payload malformed, values invalid (demand, product, layout) | logged at WARN and committed past (never retried, never dead-lettered) |
 | `StockRelocated` whose data cannot be decoded or misses a required field | dead-lettered at once to `warehouse.inventory.events.dlq` (no retry) and committed past |
-| `StockRelocated` that matches no move (unknown plan or move, other site, a manual or consolidation relocation) | claimed, logged at INFO and counted (`slotting_optimization.relocations.observed{outcome="unmatched"}`), never dead-lettered |
+| `StockRelocated` that matches no move (unknown plan or move, other site, or any relocation whose `reason` is not `SLOTTING`: manual, consolidation, replenishment) | claimed, logged at INFO and counted (`slotting_optimization.relocations.observed{outcome="unmatched"}`), never dead-lettered |
 | Shutdown (context cancelled) mid-message | never dead-lettered: the offset stays uncommitted and the message is redelivered |
 | Transient failure (Postgres) | same message retried with backoff, 5 attempts, then `<topic>.dlq` |
 | Redelivery | `processed_events` claim makes it a no-op (`outcome=duplicate`) |

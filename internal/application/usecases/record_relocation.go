@@ -15,9 +15,14 @@ import (
 const RelocationConsumer = "slotting-relocation"
 
 // OutcomeUnmatched: the relocation is no move of any plan this context
-// knows (a manual or consolidation move, an unknown plan or move). It is
-// claimed and counted, never dead-lettered.
+// knows (a manual, consolidation or replenishment move, an unknown plan or
+// move). It is claimed and counted, never dead-lettered.
 const OutcomeUnmatched Outcome = "unmatched"
+
+// SlottingReason is the only StockRelocated reason that can execute a slot
+// plan move: slot-plan RELOCATE tasks complete with it (ADR 0010). Every
+// other reason (MANUAL, CONSOLIDATION, REPLENISHMENT, ...) is unmatched.
+const SlottingReason = "SLOTTING"
 
 // RelocationFact is a decoded inventory-storage StockRelocated payload.
 // SourceRef is the caller's reference: fulfillment-execution's
@@ -67,6 +72,10 @@ func (uc *RecordRelocation) Handle(ctx context.Context, eventID string, f Reloca
 	}
 	res := RelocationResult{MoveSeq: -1}
 	outcome, err := uc.apply(ctx, RelocationConsumer, eventID, func(ctx context.Context) (Outcome, error) {
+		if strings.TrimSpace(f.Reason) != SlottingReason {
+			res = RelocationResult{Outcome: OutcomeUnmatched, MoveSeq: -1, Unmatched: slotplan.UnmatchedNotSlotting}
+			return res.Outcome, nil
+		}
 		r, err := uc.record(ctx, rel, strings.TrimSpace(f.SourceRef))
 		res = r
 		return r.Outcome, err
