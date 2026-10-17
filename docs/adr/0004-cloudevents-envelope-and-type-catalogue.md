@@ -29,15 +29,17 @@ catalogue of every type slotting-optimization publishes or consumes;
   RFC 3339 UTC.
 - Built and decoded only through `internal/adapters/kafka/cloudevents`.
 
-### Published on `warehouse.slotting-optimization.events`
+### Published on `warehouse.slotting-optimization.events` (+ `warehouse.slotting-optimization.analytics`)
 
 `<entity>` is the raising aggregate, lowercase, no separators: `slotplan`.
+Every type below is published on BOTH streams (events + analytics) under one
+`id` per occurrence; only the `dataschema` stream segment differs (ADR 0006).
 
-| type | raised when | `data` |
-|---|---|---|
-| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated` | a Draft plan is generated | `{plan_id, site_id, window_from, window_to, policy, assignment_count, move_count, unassigned_count}` |
-| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved` | a Draft plan is approved | `{plan_id, site_id, approved_at, supersedes_plan_id?, assignments:[{sku, slot}], moves:[{sku, from_slot?, to_slot, kind}]}` |
-| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanRejected` | a Draft plan is rejected | `{plan_id, site_id, rejected_at, reason?}` |
+| type | streams | raised when | `data` |
+|---|---|---|---|
+| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated` | events + analytics | a Draft plan is generated | `{plan_id, site_id, window_from, window_to, policy, assignment_count, move_count, unassigned_count}` |
+| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved` | events + analytics | a Draft plan is approved | `{plan_id, site_id, approved_at, supersedes_plan_id?, assignments:[{sku, slot}], moves:[{sku, from_slot?, to_slot, kind}]}` |
+| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanRejected` | events + analytics | a Draft plan is rejected | `{plan_id, site_id, rejected_at, reason?}` |
 
 Payload rules:
 
@@ -69,13 +71,18 @@ Payload rules:
 Every other type on those topics is ignored. A message that is not a valid
 CloudEvent is logged and skipped, never retried forever.
 
-### Analytics topic (reserved, later phase)
+### Analytics stream (ADR 0006)
 
-`warehouse.slotting-optimization.analytics` is reserved for this service's own
-analytics read side (ADR 0006, a later phase). It will carry the same three
-types with the same `id` per occurrence and
-`dataschema` `urn:warehouse:slotting-optimization:analytics:<EventName>:v1`.
-Nothing is published there yet.
+Every published event above is ALSO written, in the same transaction and under
+the same `id`, to `warehouse.slotting-optimization.analytics` (dead-letter
+topic `warehouse.slotting-optimization.analytics.dlq`). The `type`, `subject`,
+Kafka key and payload are identical to the integration message; only the
+`dataschema` differs:
+`urn:warehouse:slotting-optimization:analytics:<EventName>:v1`. Only this
+service's `cmd/slotting-projector` consumes it (consumer group from env
+`ANALYTICS_CONSUMER_GROUP`); it is not an integration contract, and other
+contexts keep reading `warehouse.slotting-optimization.events`. The
+projection and its slot-plan funnel report are specified in ADR 0006.
 
 ## Consequences
 

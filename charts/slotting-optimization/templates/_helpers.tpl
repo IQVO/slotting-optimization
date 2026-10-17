@@ -100,6 +100,49 @@ as a helm render-time error instead.
 {{- end -}}
 
 {{/*
+Fully qualified names of the analytics read-side components (ADR 0006):
+the projector (writer) and the reports binary (reader). The reports
+Service carries the same name as its Deployment (different kinds, one
+name), like the api component.
+*/}}
+{{- define "slotting-optimization.analyticsProjectorFullname" -}}
+{{- include "slotting-optimization.fullname" . }}-projector
+{{- end }}
+
+{{- define "slotting-optimization.analyticsReportsFullname" -}}
+{{- include "slotting-optimization.fullname" . }}-reports
+{{- end }}
+
+{{/*
+Name of the Secret holding ANALYTICS_DATABASE_URL: the operator's own
+(analytics.existingSecret) or the one this chart creates from
+analytics.url (analytics-secret.yaml).
+*/}}
+{{- define "slotting-optimization.analyticsSecretName" -}}
+{{- if .Values.analytics.existingSecret -}}
+{{- .Values.analytics.existingSecret -}}
+{{- else -}}
+{{- include "slotting-optimization.fullname" . }}-analytics
+{{- end -}}
+{{- end }}
+
+{{/*
+Analytics guard (ADR 0006 §9): the projector and reports binaries exit at
+boot without ANALYTICS_DATABASE_URL, and the projector additionally exits
+without KAFKA_BROKERS (it consumes warehouse.slotting-optimization.analytics;
+KAFKA_BROKERS is only rendered when kafka.enabled is true). Both would
+crash-loop, so refuse them at render time, only while analytics is on.
+*/}}
+{{- define "slotting-optimization.requireAnalyticsConfig" -}}
+{{- if not (or .Values.analytics.url .Values.analytics.existingSecret) -}}
+{{- fail "analytics.enabled is true but neither analytics.url nor analytics.existingSecret is set — the projector and reports binaries exit at boot without ANALYTICS_DATABASE_URL." -}}
+{{- end -}}
+{{- if not .Values.kafka.enabled -}}
+{{- fail "analytics.enabled is true but kafka.enabled is false — the projector exits at boot (it consumes warehouse.slotting-optimization.analytics, which requires KAFKA_BROKERS)." -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 config.eventPublisher must be one of the values the binary parses
 (parsePublisherMode): anything else exits at boot.
 */}}

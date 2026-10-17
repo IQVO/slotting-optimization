@@ -1,0 +1,108 @@
+{{- if .Values.analytics.enabled }}
+{{- include "slotting-optimization.requireAnalyticsConfig" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "slotting-optimization.analyticsProjectorFullname" . }}
+  labels:
+    {{- include "slotting-optimization.labels" . | nindent 4 }}
+    app.kubernetes.io/component: analytics-projector
+spec:
+  replicas: {{ .Values.analytics.projector.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "slotting-optimization.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: analytics-projector
+  template:
+    metadata:
+      labels:
+        {{- include "slotting-optimization.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: analytics-projector
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "slotting-optimization.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: projector
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "slotting-optimization.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/slotting-projector"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.analytics.projector.adminPort }}
+              protocol: TCP
+          # Env contract verified against cmd/slotting-projector/main.go:
+          # ANALYTICS_DATABASE_URL (required, direct DSN -- the projector
+          # never opens the OLTP database), KAFKA_BROKERS (required, the
+          # guard above refuses analytics without kafka.enabled),
+          # ANALYTICS_CONSUMER_GROUP (stable group so a rescheduled pod
+          # resumes from committed offsets), ADMIN_ADDR, LOG_LEVEL and the
+          # telemetry trio (ENVIRONMENT is read by the telemetry adapter).
+          # It reads no OLTP env: no DATABASE_URL, no EVENT_PUBLISHER, no
+          # *_MODE/*_CONSUMER_GROUP -- those belong to cmd/api only.
+          env:
+            - name: ANALYTICS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "slotting-optimization.analyticsSecretName" . }}
+                  key: {{ .Values.analytics.existingSecretKey }}
+            - name: KAFKA_BROKERS
+              value: {{ .Values.kafka.brokers | quote }}
+            - name: ANALYTICS_CONSUMER_GROUP
+              value: {{ .Values.analytics.consumerGroup | quote }}
+            - name: ADMIN_ADDR
+              value: {{ .Values.analytics.projector.adminAddr | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: SERVICE_VERSION
+              value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+            {{- if .Values.otel.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            {{- end }}
+            {{- range .Values.analytics.projector.extraEnv }}
+            - {{ toYaml . | nindent 14 | trim }}
+            {{- end }}
+          # /healthz (never flipped) and /readyz (flips to 503 as the first
+          # step of shutdown) on the admin port.
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.analytics.projector.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

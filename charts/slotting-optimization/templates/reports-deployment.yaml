@@ -1,0 +1,121 @@
+{{- if .Values.analytics.enabled }}
+{{- include "slotting-optimization.requireAnalyticsConfig" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "slotting-optimization.analyticsReportsFullname" . }}
+  labels:
+    {{- include "slotting-optimization.labels" . | nindent 4 }}
+    app.kubernetes.io/component: analytics-reports
+spec:
+  replicas: {{ .Values.analytics.reports.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "slotting-optimization.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: analytics-reports
+  template:
+    metadata:
+      labels:
+        {{- include "slotting-optimization.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: analytics-reports
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "slotting-optimization.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: reports
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: {{ include "slotting-optimization.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/app/slotting-reports"]
+          ports:
+            - name: http
+              containerPort: {{ .Values.analytics.reports.service.targetPort }}
+              protocol: TCP
+          # Env contract verified against cmd/slotting-reports/main.go:
+          # ANALYTICS_DATABASE_URL (required, read-only pool), HTTP_ADDR,
+          # LOG_LEVEL and the telemetry trio. It writes nothing, never
+          # opens the OLTP database and never dials Kafka (no KAFKA_BROKERS
+          # here): GET /reports/slot-plan-funnel and /reports/freshness on
+          # :8092, /healthz for the probes. No auth (fleet rule): the
+          # in-cluster boundary is the access control.
+          env:
+            - name: ANALYTICS_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "slotting-optimization.analyticsSecretName" . }}
+                  key: {{ .Values.analytics.existingSecretKey }}
+            - name: HTTP_ADDR
+              value: {{ .Values.analytics.reports.httpAddr | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: SERVICE_VERSION
+              value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+            {{- if .Values.otel.enabled }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.otel.endpoint | quote }}
+            {{- end }}
+            {{- range .Values.analytics.reports.extraEnv }}
+            - {{ toYaml . | nindent 14 | trim }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.analytics.reports.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "slotting-optimization.analyticsReportsFullname" . }}
+  labels:
+    {{- include "slotting-optimization.labels" . | nindent 4 }}
+    app.kubernetes.io/component: analytics-reports
+spec:
+  type: {{ .Values.analytics.reports.service.type }}
+  ports:
+    - port: {{ .Values.analytics.reports.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  # Pins component=analytics-reports like every other Service in this
+  # chart: name+instance alone would select every pod of the release
+  # (tests/test_service_selectors.py).
+  selector:
+    {{- include "slotting-optimization.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: analytics-reports
+{{- end }}

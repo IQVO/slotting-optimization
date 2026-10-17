@@ -90,7 +90,9 @@ func newWiredStack(t *testing.T) *wiredStack {
 	ids := &sequenceIDs{}
 	w := usecases.Writer{
 		Plans: postgres.NewSlotPlanRepo(pool), Outbox: postgres.NewOutboxRepo(pool),
-		Encoder: kafka.NewEncoder(), UoW: postgres.NewUnitOfWork(pool), Clock: wiredClock,
+		// The production encoder (ADR 0006): every event fans out to the
+		// integration topic AND the analytics topic under one id.
+		Encoder: kafka.NewFanoutEncoder(), UoW: postgres.NewUnitOfWork(pool), Clock: wiredClock,
 	}
 	return &wiredStack{
 		generate: &usecases.GeneratePlan{
@@ -161,6 +163,7 @@ type outboxRow struct {
 	EventID   string
 	EventType string
 	Subject   string
+	Topic     string
 	Key       []byte
 	Value     []byte
 }
@@ -168,7 +171,7 @@ type outboxRow struct {
 // outboxRows reads the persisted outbox rows in publication (id) order.
 func (s *wiredStack) outboxRows(t *testing.T) []outboxRow {
 	t.Helper()
-	rows, err := s.pool.Query(context.Background(), `SELECT event_id, event_type, subject, key, value FROM outbox_events ORDER BY id`)
+	rows, err := s.pool.Query(context.Background(), `SELECT event_id, event_type, subject, topic, key, value FROM outbox_events ORDER BY id`)
 	if err != nil {
 		t.Fatalf("read outbox: %v", err)
 	}
@@ -176,7 +179,7 @@ func (s *wiredStack) outboxRows(t *testing.T) []outboxRow {
 	var out []outboxRow
 	for rows.Next() {
 		var r outboxRow
-		if err := rows.Scan(&r.EventID, &r.EventType, &r.Subject, &r.Key, &r.Value); err != nil {
+		if err := rows.Scan(&r.EventID, &r.EventType, &r.Subject, &r.Topic, &r.Key, &r.Value); err != nil {
 			t.Fatalf("scan outbox row: %v", err)
 		}
 		out = append(out, r)
@@ -304,12 +307,16 @@ func TestUsecases_WiringPlanLifecycleEndToEnd(t *testing.T) {
 	}
 
 	// Every write enqueued its event in the same unit of work: three
-	// generations, two approvals and one rejection.
+	// generations, two approvals and one rejection, EACH as the integration
+	// row followed by its analytics twin under the same id (ADR 0006).
 	rows := s.outboxRows(t)
 	wantTypes := []string{
-		"SlotPlanGenerated", "SlotPlanApproved",
-		"SlotPlanGenerated", "SlotPlanApproved",
-		"SlotPlanGenerated", "SlotPlanRejected",
+		"SlotPlanGenerated", "SlotPlanGenerated",
+		"SlotPlanApproved", "SlotPlanApproved",
+		"SlotPlanGenerated", "SlotPlanGenerated",
+		"SlotPlanApproved", "SlotPlanApproved",
+		"SlotPlanGenerated", "SlotPlanGenerated",
+		"SlotPlanRejected", "SlotPlanRejected",
 	}
 	if len(rows) != len(wantTypes) {
 		t.Fatalf("%d outbox rows, want %d", len(rows), len(wantTypes))
@@ -317,6 +324,18 @@ func TestUsecases_WiringPlanLifecycleEndToEnd(t *testing.T) {
 	for i, want := range wantTypes {
 		if rows[i].EventType != "com.warehouse.wms.slotting-optimization.slotplan."+want {
 			t.Fatalf("outbox row %d = %s, want a %s", i, rows[i].EventType, want)
+		}
+	}
+	// Row 2k targets the integration topic, row 2k+1 the analytics topic,
+	// and each pair shares one id (the outbox identity is (event_id, topic)).
+	for i := 0; i < len(rows); i += 2 {
+		integration, analytics := rows[i], rows[i+1]
+		if integration.Topic != "warehouse.slotting-optimization.events" ||
+			analytics.Topic != "warehouse.slotting-optimization.analytics" {
+			t.Fatalf("pair %d topics = %s, %s", i/2, integration.Topic, analytics.Topic)
+		}
+		if integration.EventID != analytics.EventID {
+			t.Fatalf("pair %d ids = %s, %s; both rows of one occurrence share one id", i/2, integration.EventID, analytics.EventID)
 		}
 	}
 }
