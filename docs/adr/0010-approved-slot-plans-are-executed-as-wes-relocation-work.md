@@ -120,7 +120,13 @@ them on the ledger; this context learns the outcome from inventory-storage's
    another SKU, no current plan, no move with those bins) is claimed, logged
    at INFO and counted (`slotting_optimization.relocations.observed`,
    `outcome=unmatched`, `reason=<why>`); it is never dead-lettered, because
-   most relocations (manual, consolidation) are not slot-plan moves.
+   most relocations (manual, consolidation, replenishment) are not slot-plan
+   moves.
+   *Amendment (replenishment, inventory-storage ADR 0041):* only a
+   relocation whose `reason` is `SLOTTING` can execute a move. Any other
+   reason is unmatched with `reason=reason-not-slotting`, decided before the
+   `source_ref` or the bins are looked at, so a REPLENISHMENT move between the
+   same SKU and bins as a plan move cannot inflate the plan's progress.
 4. **Read model.** Table `slot_plan_move_executions`, one row per matched
    relocation (primary key `relocation_id`: a replay of the same relocation
    under a new CloudEvents id cannot count twice). Per plan: moves total
