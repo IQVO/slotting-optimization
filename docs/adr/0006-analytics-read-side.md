@@ -185,7 +185,9 @@ The one image builds every `cmd/*` (the Dockerfile's build loop), so
 analytical migrations are embedded. The chart gains two components,
 `analytics-projector` (Deployment) and `analytics-reports` (Deployment and
 Service `<release>-reports:80`), plus a Secret with `ANALYTICS_DATABASE_URL`
-and `ANALYTICS_READER_DATABASE_URL`, behind `analytics.enabled` (default
+(single DSN: the projector writes with it, the reports binary opens it through
+a read-only pool — `analyticsstore.NewReadOnlyPool` — rather than a second
+reader URL), behind `analytics.enabled` (default
 `false`: the default render is unchanged). The chart refuses to render
 analytics without a DSN source or without Kafka. External routing to the
 reports Service is warehouse-infra's job, not the chart's.
