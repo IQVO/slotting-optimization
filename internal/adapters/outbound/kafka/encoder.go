@@ -103,7 +103,7 @@ func (e *Encoder) Encode(events ...slotplan.Event) ([]outbox.Message, error) {
 		if err != nil {
 			return nil, err
 		}
-		msg, err := buildMessage(ev, newID(), topic, data)
+		msg, err := buildMessage(ev, newID(), topic, cloudevents.StreamEvents, data)
 		if err != nil {
 			return nil, err
 		}
@@ -112,9 +112,9 @@ func (e *Encoder) Encode(events ...slotplan.Event) ([]outbox.Message, error) {
 	return out, nil
 }
 
-// buildMessage wraps data in the CloudEvents envelope of ev and returns the
-// outbox row for topic.
-func buildMessage(ev slotplan.Event, id, topic string, data any) (outbox.Message, error) {
+// buildMessage wraps data in the CloudEvents envelope of ev (on the given
+// stream) and returns the outbox row for topic.
+func buildMessage(ev slotplan.Event, id, topic, stream string, data any) (outbox.Message, error) {
 	plan := string(ev.PlanID())
 	value, err := cloudevents.New(cloudevents.Spec{
 		ID:        id,
@@ -122,7 +122,7 @@ func buildMessage(ev slotplan.Event, id, topic string, data any) (outbox.Message
 		EventName: ev.EventName(),
 		Subject:   plan,
 		Time:      ev.OccurredAt(),
-		Stream:    cloudevents.StreamEvents,
+		Stream:    stream,
 		Version:   schemaVersion,
 		Data:      data,
 	})
@@ -136,7 +136,7 @@ func buildMessage(ev slotplan.Event, id, topic string, data any) (outbox.Message
 		EventType:  cloudevents.Type(Entity, ev.EventName()),
 		Subject:    plan,
 		Key:        []byte(plan),
-		DataSchema: cloudevents.DataSchema(cloudevents.StreamEvents, ev.EventName(), schemaVersion),
+		DataSchema: cloudevents.DataSchema(stream, ev.EventName(), schemaVersion),
 		Value:      value,
 		Headers:    []outbox.Header{{Key: ct.Key, Value: string(ct.Value)}},
 	}, nil
