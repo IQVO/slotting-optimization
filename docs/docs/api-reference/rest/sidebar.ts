@@ -80,6 +80,28 @@ const sidebar: SidebarsConfig = {
     },
     {
       type: "category",
+      label: "Reports",
+      link: {
+        type: "doc",
+        id: "api-reference/rest/reports",
+      },
+      items: [
+        {
+          type: "doc",
+          id: "api-reference/rest/get-slot-plan-funnel",
+          label: "The slot-plan review funnel per day",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/get-reports-freshness",
+          label: "How far the analytics projection is behind",
+          className: "api-method get",
+        },
+      ],
+    },
+    {
+      type: "category",
       label: "Health",
       link: {
         type: "doc",

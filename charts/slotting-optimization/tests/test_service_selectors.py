@@ -11,7 +11,9 @@ Deployment. This test fails if that ever stops being true.
 
 It mirrors inbound-receiving's charts/.../tests/test_service_selectors.py (and
 warehouse-infra's scripts/check-chart-selectors.py), restricted to the
-components this chart has: api (always) and mcp (optional, default off).
+components this chart has: api (always), mcp (optional, default off) and the
+analytics read side of ADR 0006 -- analytics-projector and analytics-reports
+(optional, default off; run with every other component enabled TOGETHER).
 
 Run: python3 charts/slotting-optimization/tests/test_service_selectors.py
 Needs: helm, PyYAML.
@@ -45,6 +47,10 @@ ENABLE_EVERYTHING = BASE + [
     "--set", "kafka.enabled=true",
     "--set", "gatewayApi.enabled=true",
     "--set", "ingress.enabled=true",
+    # ADR 0006: the analytics read side ON together with everything else.
+    "--set", "analytics.enabled=true",
+    "--set", "analytics.url=postgres://u@example.invalid:5432/analytics",
+    "--set", "analytics.consumerGroup=slotting-optimization-analytics",
 ]
 
 # Every env var cmd/api/main.go reads that has a dedicated chart value.
@@ -132,6 +138,51 @@ def check_components(docs: list[dict], failures: list[str]) -> None:
             if want not in mcp_env:
                 failures.append(f"the MCP Deployment does not render {want}")
 
+    # ADR 0006: the analytics projector (writer) and reports (reader).
+    projector, reports = f"{RELEASE}-projector", f"{RELEASE}-reports"
+    if projector not in deployments:
+        failures.append("the projector Deployment was not rendered with analytics.enabled=true")
+    else:
+        container = deployments[projector]["spec"]["template"]["spec"]["containers"][0]
+        if container.get("command") != ["/app/slotting-projector"]:
+            failures.append("the projector Deployment must run /app/slotting-projector")
+        projector_env = set(env_names(deployments[projector]))
+        # The projector never opens the OLTP database and runs none of the
+        # api's consumers; only its own env may reach it.
+        stray = {
+            "DATABASE_URL", "MIGRATIONS_DATABASE_URL", "EVENT_PUBLISHER", "OUTBOX_RELAY_INTERVAL",
+            "OUTBOX_MAX_ATTEMPTS", "DEMAND_MODE", "DEMAND_CONSUMER_GROUP", "PRODUCT_MODE",
+            "PRODUCT_CONSUMER_GROUP", "LAYOUT_MODE", "LAYOUT_CONSUMER_GROUP", "RELOCATION_MODE",
+            "RELOCATION_CONSUMER_GROUP", "LOOKBACK_DAYS", "FORWARD_ZONE_CODES",
+        } & projector_env
+        if stray:
+            failures.append(f"the projector Deployment must not get the api's OLTP env: {sorted(stray)}")
+        for want in ("ANALYTICS_DATABASE_URL", "KAFKA_BROKERS", "ANALYTICS_CONSUMER_GROUP", "ADMIN_ADDR", "ENVIRONMENT"):
+            if want not in projector_env:
+                failures.append(f"the projector Deployment does not render {want}")
+    if reports not in deployments:
+        failures.append("the reports Deployment was not rendered with analytics.enabled=true")
+    else:
+        container = deployments[reports]["spec"]["template"]["spec"]["containers"][0]
+        if container.get("command") != ["/app/slotting-reports"]:
+            failures.append("the reports Deployment must run /app/slotting-reports")
+        reports_env = set(env_names(deployments[reports]))
+        # The reports binary never dials Kafka and never opens OLTP.
+        stray = {
+            "KAFKA_BROKERS", "DATABASE_URL", "MIGRATIONS_DATABASE_URL", "EVENT_PUBLISHER",
+        } & reports_env
+        if stray:
+            failures.append(f"the reports Deployment must not get Kafka/OLTP env (it reads the analytical database only): {sorted(stray)}")
+        for want in ("ANALYTICS_DATABASE_URL", "HTTP_ADDR", "ENVIRONMENT"):
+            if want not in reports_env:
+                failures.append(f"the reports Deployment does not render {want}")
+    if reports not in services:
+        failures.append("the reports Service was not rendered with analytics.enabled=true")
+    elif selector_of(services[reports]).get("app.kubernetes.io/component") != "analytics-reports":
+        failures.append("the reports Service selector must pin component=analytics-reports")
+    if projector in services:
+        failures.append("the projector must not render a Service (its admin port is probes-only)")
+
     # Every Deployment's own selector must pin a component too, and be
     # satisfied by its pod labels.
     for name, dep in deployments.items():
@@ -191,6 +242,10 @@ def check_refusals(failures: list[str]) -> None:
         ("a product group in permissive mode", BASE + ["--set", "config.productConsumerGroup=g"], "would silently not start"),
         ("a layout group in permissive mode", BASE + ["--set", "config.layoutConsumerGroup=g"], "would silently not start"),
         ("LOOKBACK_DAYS out of range", BASE + ["--set", "config.lookbackDays=400"], "want 1..365"),
+        ("analytics without a DSN source", BASE + ["--set", "analytics.enabled=true", "--set", "kafka.enabled=true"],
+         "neither analytics.url nor analytics.existingSecret"),
+        ("analytics without kafka", BASE + ["--set", "analytics.enabled=true", "--set", "analytics.url=postgres://u@example.invalid:5432/analytics"],
+         "kafka.enabled is false"),
     ):
         result = helm_template(args)
         if result.returncode == 0 or needle not in result.stderr:
@@ -202,9 +257,10 @@ def main() -> int:
 
     check_components(render(ENABLE_EVERYTHING), failures)
 
-    # Default values must not deploy the MCP component, an HPA or a route.
+    # Default values must not deploy the MCP or analytics components, an HPA
+    # or a route.
     defaults = render(BASE)
-    stray = [d["metadata"]["name"] for d in defaults if d["metadata"]["name"].endswith("-mcp")]
+    stray = [d["metadata"]["name"] for d in defaults if d["metadata"]["name"].endswith(("-mcp", "-projector", "-reports", "-analytics"))]
     stray += [d["kind"] for d in defaults if d.get("kind") in {"HorizontalPodAutoscaler", "Ingress", "HTTPRoute"}]
     if stray:
         failures.append(f"optional components rendered with default values: {stray}")
@@ -227,10 +283,11 @@ def main() -> int:
             print(f"FAIL: {f}")
         return 1
 
-    print("PASS: every Service selects exactly one Deployment (api, mcp); mcp, HPA and routes are off by "
-          "default; every cmd/api env var has a dedicated value; the chart refuses to render without a "
-          "database source, with an unknown publisher/mode, with a Kafka mode but no broker or no consumer "
-          "group, with a group set but its consumer off, or with LOOKBACK_DAYS out of range")
+    print("PASS: every Service selects exactly one Deployment (api, mcp, analytics-reports); mcp, analytics, HPA "
+          "and routes are off by default; every cmd/api env var has a dedicated value; the chart refuses to render "
+          "without a database source, with an unknown publisher/mode, with a Kafka mode but no broker or no consumer "
+          "group, with a group set but its consumer off, with LOOKBACK_DAYS out of range, or with analytics on but "
+          "no DSN source or no Kafka")
     return 0
 
 

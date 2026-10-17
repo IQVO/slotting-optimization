@@ -144,9 +144,14 @@ type adapters struct {
 	idempotency func(http.Handler) http.Handler
 }
 
-// writer bundles the ports every write use case needs.
+// writer bundles the ports every write use case needs. The encoder is the
+// FanoutEncoder (ADR 0006): every domain event becomes TWO outbox rows — the
+// integration row on warehouse.slotting-optimization.events first, the
+// analytics row on warehouse.slotting-optimization.analytics second — under
+// ONE CloudEvents id minted per occurrence, so both streams commit together
+// and a relay retry republishes identical bytes.
 func (a adapters) writer() usecases.Writer {
-	return usecases.Writer{Plans: a.plans, Outbox: a.outbox, Encoder: outboundkafka.NewEncoder(), UoW: a.uow, Clock: clock.System{}}
+	return usecases.Writer{Plans: a.plans, Outbox: a.outbox, Encoder: outboundkafka.NewFanoutEncoder(), UoW: a.uow, Clock: clock.System{}}
 }
 
 // intake bundles the ports every consumer use case needs.

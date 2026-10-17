@@ -43,6 +43,10 @@ tags:
     description: The current approved forward-slot assignment map.
   - name: Velocity
     description: The demand velocity the planner works from.
+  - name: Reports
+    description: |
+      The analytics read side (ADR 0006), served read-only by the separate
+      slotting-reports binary (Service `<release>-reports`).
   - name: Health
     description: Liveness and readiness probes.
 
@@ -367,6 +371,115 @@ paths:
               schema:
                 $ref: "#/components/schemas/Status"
 
+  /reports/slot-plan-funnel:
+    servers:
+      - url: http://localhost:8092
+        description: slotting-reports (cluster-internal Service <release>-reports)
+    get:
+      operationId: getSlotPlanFunnel
+      summary: The slot-plan review funnel per day
+      tags: [Reports]
+      description: |
+        How do the site's slot-plan reviews flow? `days[]` has one row per UTC
+        calendar day intersecting `[from, to)` (zeros included); a day's counts
+        cover the part of the day inside the range. `plans_generated`,
+        `plans_approved` and `plans_rejected` count the events whose `time`
+        fell in the window; `supersessions` counts the plans a later approval
+        superseded in the window (a supersession is stamped on the plan that
+        LOST the forward-slot map, not on the approving one).
+        `approval_latency` is the generated-to-approved time of the plans
+        approved in the window whose generation the projection also saw; a
+        plan decided without a seen generation counts in its decision counter
+        but has no latency. `p50_seconds` / `p95_seconds` are
+        linear-interpolated percentiles and are null when `count` is 0.
+        `siteId` narrows every counter to one site (omitted = every site);
+        `granularity` is `day` (the only bucket; the default). The data is as
+        fresh as `GET /reports/freshness` says.
+      parameters:
+        - $ref: "#/components/parameters/ReportFrom"
+        - $ref: "#/components/parameters/ReportTo"
+        - name: siteId
+          in: query
+          required: false
+          description: Narrows every counter to one site. Omitted = every site.
+          schema:
+            type: string
+          example: SITE-1
+        - name: granularity
+          in: query
+          required: false
+          description: The time-bucket resolution; only `day` exists (the default).
+          schema:
+            type: string
+            enum: [day]
+          example: day
+      responses:
+        "200":
+          description: The funnel for the effective range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SlotPlanFunnelReport"
+              example:
+                from: "2026-10-05T00:00:00Z"
+                to: "2026-10-07T00:00:00Z"
+                site_id: "SITE-1"
+                granularity: day
+                days:
+                  - day: "2026-10-05"
+                    plans_generated: 12
+                    plans_approved: 7
+                    plans_rejected: 3
+                    approval_latency: { count: 7, p50_seconds: 5400, p95_seconds: 19800 }
+                    supersessions: 1
+                  - day: "2026-10-06"
+                    plans_generated: 0
+                    plans_approved: 0
+                    plans_rejected: 0
+                    approval_latency: { count: 0, p50_seconds: null, p95_seconds: null }
+                    supersessions: 0
+        "400":
+          description: "`from` / `to` are not RFC 3339, empty or inverted, span more than 366 days, or `granularity` is not `day`."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/invalid-report-range
+                title: from and to must form a valid RFC 3339 range of at most 366 days
+                status: 400
+                detail: from must be strictly before to
+                instance: /reports/slot-plan-funnel
+        "500":
+          $ref: "#/components/responses/ReportStoreError"
+  /reports/freshness:
+    servers:
+      - url: http://localhost:8092
+        description: slotting-reports (cluster-internal Service <release>-reports)
+    get:
+      operationId: getReportsFreshness
+      summary: How far the analytics projection is behind
+      tags: [Reports]
+      description: |
+        The freshness lag of the projection the report reads: `as_of` is the
+        CloudEvents time of the newest event the projector has applied and
+        `lag_seconds` is now minus `as_of` (never negative). Both are null
+        until the first event is applied. A growing lag means the projector
+        is down or behind, not that the report is wrong: it catches up when
+        the projector does.
+      responses:
+        "200":
+          description: The freshness (null fields while nothing was projected).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportsFreshness"
+              example:
+                as_of: "2026-10-07T11:59:55Z"
+                lag_seconds: 4.2
+        "500":
+          $ref: "#/components/responses/ReportStoreError"
+
 components:
   parameters:
     PlanId:
@@ -413,6 +526,25 @@ components:
         type: string
         minLength: 1
         maxLength: 128
+
+    ReportFrom:
+      name: from
+      in: query
+      required: false
+      description: RFC 3339 instant, inclusive. Defaults to `to` minus 30 days.
+      schema:
+        type: string
+        format: date-time
+      example: "2026-10-05T00:00:00Z"
+    ReportTo:
+      name: to
+      in: query
+      required: false
+      description: RFC 3339 instant, exclusive. Defaults to now. At most 366 days after `from`.
+      schema:
+        type: string
+        format: date-time
+      example: "2026-10-07T00:00:00Z"
 
   responses:
     BadRequest:
@@ -560,6 +692,17 @@ components:
             title: Internal server error
             status: 500
             detail: an unexpected error occurred
+    ReportStoreError:
+      description: The analytical database query failed (slotting-reports only).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.slotting-optimization.warehouse-systems.dev/report-store-error
+            title: The report could not be served
+            status: 500
+            detail: the analytical database query failed
             instance: /slot-plans
 
   schemas:
@@ -750,6 +893,42 @@ components:
         items:
           type: array
           items: { $ref: "#/components/schemas/SkuVelocity" }
+    ApprovalLatencyTiming:
+      type: object
+      description: The generated-to-approved durations of one day's approved plans (linear-interpolated percentiles).
+      required: [count, p50_seconds, p95_seconds]
+      properties:
+        count: { type: integer, minimum: 0 }
+        p50_seconds: { type: number, format: double, nullable: true, minimum: 0, description: Null when count is 0. }
+        p95_seconds: { type: number, format: double, nullable: true, minimum: 0, description: Null when count is 0. }
+    SlotPlanFunnelDay:
+      type: object
+      required: [day, plans_generated, plans_approved, plans_rejected, approval_latency, supersessions]
+      properties:
+        day: { type: string, format: date, description: The UTC calendar day. }
+        plans_generated: { type: integer, minimum: 0, description: SlotPlanGenerated events that fell in the day's window. }
+        plans_approved: { type: integer, minimum: 0, description: SlotPlanApproved events that fell in the day's window. }
+        plans_rejected: { type: integer, minimum: 0, description: SlotPlanRejected events that fell in the day's window. }
+        approval_latency: { $ref: "#/components/schemas/ApprovalLatencyTiming" }
+        supersessions: { type: integer, minimum: 0, description: Plans a later approval superseded in the day's window. }
+    SlotPlanFunnelReport:
+      type: object
+      required: [from, to, granularity, days]
+      properties:
+        from: { type: string, format: date-time, description: The effective range start (inclusive). }
+        to: { type: string, format: date-time, description: The effective range end (exclusive). }
+        site_id: { type: string, description: The site scope; omitted when the report covers every site. }
+        granularity: { type: string, enum: [day] }
+        days:
+          type: array
+          description: One dense row per UTC calendar day intersecting the range, zeros included.
+          items: { $ref: "#/components/schemas/SlotPlanFunnelDay" }
+    ReportsFreshness:
+      type: object
+      required: [as_of, lag_seconds]
+      properties:
+        as_of: { type: string, format: date-time, nullable: true, description: The CloudEvents time of the newest applied event; null until the first. }
+        lag_seconds: { type: number, format: double, nullable: true, minimum: 0, description: "now - as_of, never negative; null until the first event." }
     Problem:
       type: object
       description: RFC 7807 problem document used for every non-2xx response.

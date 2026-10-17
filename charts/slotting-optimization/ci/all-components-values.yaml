@@ -36,3 +36,10 @@ autoscaling:
     enabled: true
 mcp:
   enabled: true
+# The analytics read side (ADR 0006): projector + reports on, with the
+# analytical DSN the guard requires (kafka is enabled above, as the
+# projector's KAFKA_BROKERS needs).
+analytics:
+  enabled: true
+  url: "postgres://u@example.invalid:5432/analytics"
+  consumerGroup: "slotting-optimization-analytics"

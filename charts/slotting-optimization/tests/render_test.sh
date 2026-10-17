@@ -72,12 +72,24 @@ assert_env_rendered() {
 api_vars=($(binary_env api))
 # shellcheck disable=SC2207
 mcp_vars=($(binary_env mcp))
+# shellcheck disable=SC2207
+projector_vars=($(binary_env slotting-projector))
+# shellcheck disable=SC2207
+reports_vars=($(binary_env slotting-reports))
 (( ${#api_vars[@]} >= 10 )) || fail "found only ${#api_vars[@]} env literals in cmd/api/main.go; the scan is looking in the wrong place"
 (( ${#mcp_vars[@]} >= 5 )) || fail "found only ${#mcp_vars[@]} env literals in cmd/mcp/main.go; the scan is looking in the wrong place"
+(( ${#projector_vars[@]} >= 4 )) || fail "found only ${#projector_vars[@]} env literals in cmd/slotting-projector/main.go; the scan is looking in the wrong place"
+(( ${#reports_vars[@]} >= 4 )) || fail "found only ${#reports_vars[@]} env literals in cmd/slotting-reports/main.go; the scan is looking in the wrong place"
 assert_env_rendered deployment.yaml "${api_vars[@]}" \
   DEMAND_MODE DEMAND_CONSUMER_GROUP PRODUCT_MODE PRODUCT_CONSUMER_GROUP LAYOUT_MODE LAYOUT_CONSUMER_GROUP \
   RELOCATION_MODE RELOCATION_CONSUMER_GROUP ENVIRONMENT CORS_ALLOWED_ORIGINS
 assert_env_rendered mcp-deployment.yaml "${mcp_vars[@]}" ENVIRONMENT
+# The analytics binaries (ADR 0006): ENVIRONMENT is read by the shared
+# telemetry adapter, and the projector reads ANALYTICS_CONSUMER_GROUP,
+# ADMIN_ADDR and LOG_LEVEL through a variable (loadConfig's or()), so they
+# are asserted on top of the scanned literals.
+assert_env_rendered projector-deployment.yaml "${projector_vars[@]}" ENVIRONMENT ANALYTICS_CONSUMER_GROUP ADMIN_ADDR LOG_LEVEL
+assert_env_rendered reports-deployment.yaml "${reports_vars[@]}" ENVIRONMENT LOG_LEVEL
 
 # Every key the ConfigMap renders is a variable cmd/api reads (no dead keys).
 full_configmap="$(helm template "$release" "$chart_dir" "${everything[@]}" --show-only templates/configmap.yaml)"
@@ -113,5 +125,35 @@ expect_render_failure "relocationMode=kafka without a group" --set config.reloca
 expect_render_failure "relocationMode=kafka without kafka" --set config.relocationMode=kafka --set config.relocationConsumerGroup=g
 expect_render_failure "a relocation group in permissive mode" --set config.relocationConsumerGroup=g
 expect_render_failure "an unknown relocationMode" --set config.relocationMode=bogus
+
+# ADR 0006: the analytics read side. Off by default (neither component
+# renders); with analytics on, the projector Deployment renders WITHOUT a
+# Service (admin port only) and the reports Deployment + its Service render;
+# the chart refuses the two crash-loop combinations (no DSN source, no
+# Kafka) and the projector never sees the api's OLTP env.
+default_render="$(helm template "$release" "$chart_dir" "${base[@]}")"
+if grep -q 'app.kubernetes.io/component: analytics-projector' <<<"$default_render"; then
+  fail "the projector must not render while analytics.enabled is false"
+fi
+if grep -q 'app.kubernetes.io/component: analytics-reports' <<<"$default_render"; then
+  fail "the reports component must not render while analytics.enabled is false"
+fi
+analytics=(--set analytics.enabled=true --set analytics.url=postgres://u@example.invalid:5432/analytics --set kafka.enabled=true)
+projector_dep="$(helm template "$release" "$chart_dir" "${base[@]}" "${analytics[@]}" --show-only templates/projector-deployment.yaml)"
+grep -q '/app/slotting-projector' <<<"$projector_dep" || fail "the projector Deployment must run /app/slotting-projector"
+if grep -q 'kind: Service' <<<"$projector_dep"; then
+  fail "the projector must not render a Service (its admin port is probes-only)"
+fi
+if grep -Eq 'name: (DATABASE_URL|EVENT_PUBLISHER|DEMAND_MODE)$' <<<"$projector_dep"; then
+  fail "the projector Deployment must not get the api's OLTP env (it never opens the OLTP database)"
+fi
+reports_all="$(helm template "$release" "$chart_dir" "${base[@]}" "${analytics[@]}" --show-only templates/reports-deployment.yaml)"
+grep -q '/app/slotting-reports' <<<"$reports_all" || fail "the reports Deployment must run /app/slotting-reports"
+grep -q 'kind: Service' <<<"$reports_all" || fail "the reports Service was not rendered with analytics.enabled=true"
+if grep -q 'name: KAFKA_BROKERS' <<<"$reports_all"; then
+  fail "the reports Deployment must not get KAFKA_BROKERS (it never dials Kafka)"
+fi
+expect_render_failure "analytics without a DSN source" --set analytics.enabled=true --set kafka.enabled=true
+expect_render_failure "analytics without kafka" --set analytics.enabled=true --set analytics.url=postgres://u@example.invalid:5432/analytics
 
 echo "PASS: slotting-optimization chart render assertions"
