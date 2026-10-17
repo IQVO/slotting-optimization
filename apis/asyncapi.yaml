@@ -785,7 +785,7 @@ components:
                 from_bin: { type: string }
                 to_bin: { type: string }
                 quantity: { type: integer, minimum: 1 }
-                reason: { type: string, enum: [SLOTTING, CONSOLIDATION, MANUAL] }
+                reason: { type: string, enum: [SLOTTING, CONSOLIDATION, MANUAL, REPLENISHMENT], description: "Only SLOTTING can execute a slot-plan move; every other reason (including REPLENISHMENT, added by pick-face-replenishment's REPLENISH tasks) is recorded as unmatched with reason=reason-not-slotting." }
                 source_ref:
                   type: string
                   maxLength: 200

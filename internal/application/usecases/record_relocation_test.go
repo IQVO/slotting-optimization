@@ -146,6 +146,28 @@ func TestRecordRelocation_FallsBackToTheBinsWithoutAReference(t *testing.T) {
 	}
 }
 
+// A relocation whose reason is not SLOTTING executes no plan move, even when
+// its SKU and bins (or its source_ref) match one: a replenishment from a
+// reserve bin must not inflate a plan's progress.
+func TestRecordRelocation_OnlySlottingReasonExecutesAMove(t *testing.T) {
+	for _, reason := range []string{"REPLENISHMENT", "MANUAL", "CONSOLIDATION", "", "slotting"} {
+		for _, ref := range []string{"", "plan-1:2", "repl-7"} {
+			h := newExecutionHarness(t)
+			f := fact("rel-1", "SKU-3", "FWD-03", "RES-12", ref) // matches Vacate move 2 by bins and by reference
+			f.Reason = reason
+			res, err := h.uc.Handle(context.Background(), "ce-1", f)
+			noErr(t, err)
+			name := "reason=" + reason + " ref=" + ref
+			eq(t, name+": outcome", res.Outcome, usecases.OutcomeUnmatched)
+			eq(t, name+": reason", res.Unmatched, slotplan.UnmatchedNotSlotting)
+			eq(t, name+": move_seq", res.MoveSeq, -1)
+			eq(t, name+": recorded", len(h.execs.rows), 0)
+			eq(t, name+": claimed", h.process.seen[usecases.RelocationConsumer+"/ce-1"], true)
+			eq(t, name+": metric", h.metrics.seen[0], observed{"unmatched", string(slotplan.UnmatchedNotSlotting)})
+		}
+	}
+}
+
 func TestRecordRelocation_UnmatchedIsClaimedNotRecorded(t *testing.T) {
 	tests := []struct {
 		name string
