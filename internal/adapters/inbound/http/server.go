@@ -35,10 +35,12 @@ type Server struct {
 	ListSkuVelocity  *usecases.ListSkuVelocity
 
 	// Idempotency wraps POST /slot-plans (the fleet Idempotency-Key
-	// middleware, built by cmd/ over the Postgres pool); nil leaves the
-	// route unwrapped, which is the in-memory development mode.
+	// middleware, built by cmd/ over the Postgres pool); the shipped binary
+	// always sets it, nil (handler unit tests) leaves the route unwrapped.
 	Idempotency func(http.Handler) http.Handler
-	// Readiness backs GET /readyz; nil means always ready.
+	// Readiness backs GET /readyz: the drain gate plus the Postgres and Kafka
+	// checks (NewReadiness, ADR 0011). The shipped binary always builds it
+	// with NewReadiness; nil (handler unit tests) means always ready.
 	Readiness *Readiness
 	// Metrics backs GET /metrics (a Prometheus handler built by cmd/);
 	// nil leaves the route unregistered.
@@ -58,6 +60,11 @@ func NewRouter(s *Server) http.Handler {
 		AllowedHeaders:   []string{"Accept", "Content-Type", IdempotencyKeyHeader},
 		AllowCredentials: false,
 	}))
+	// A NUL (U+0000) in the path, the query or a body is a uniform client
+	// error here, never a Postgres 22021 -> 500 (ADR 0011); it runs before
+	// the route-scoped idempotency middleware so a rejected request never
+	// records its key.
+	r.Use(rejectNUL)
 
 	r.Get("/healthz", handleHealthz)
 	r.Get("/readyz", s.handleReadyz)
