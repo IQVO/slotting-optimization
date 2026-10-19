@@ -28,8 +28,9 @@ SAME read use cases the REST adapter calls. Decision record:
   `TestNoAuthMiddlewareReintroduced` fails CI if it is reintroduced.
 - Architecture: the adapter depends ONLY on `internal/application` and
   `internal/domain`; nothing depends on it (`TestMCPAdapterDependencyRule`).
-- Env (`cmd/mcp`): `MCP_ADDR`, `DATABASE_URL` (unset -> in-memory
-  repositories), `MIGRATIONS_DATABASE_URL` (direct DSN for the migration step
+- Env (`cmd/mcp`): `MCP_ADDR`, `DATABASE_URL` (REQUIRED: there is no
+  in-memory mode, ADR 0011; a boot error names the variable),
+  `MIGRATIONS_DATABASE_URL` (direct DSN for the migration step
   only), `DEMAND_SITE_ID` / `DEFAULT_SITE_ID` (the default site of the
   site-scoped tools, resolved like `cmd/api`), `OTEL_EXPORTER_OTLP_ENDPOINT`,
   `LOG_LEVEL`, `SERVICE_VERSION`, `ENVIRONMENT`. It runs the idempotent

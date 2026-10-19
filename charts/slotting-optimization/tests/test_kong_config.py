@@ -33,7 +33,17 @@ FORBIDDEN_PLUGINS = {
     "hmac-auth", "ldap-auth", "mtls", "session", "request-termination",
 }
 
-ENABLE_KONG = [
+# ADR 0011: the chart refuses to render without the Kafka brokers and the four
+# consumer groups (Postgres and Kafka are the only runtime). Dummy values.
+REAL_RUNTIME = [
+    "--set", "kafka.brokers=kafka.example.invalid:9092",
+    "--set", "config.demandConsumerGroup=slotting-optimization-demand",
+    "--set", "config.productConsumerGroup=slotting-optimization-product",
+    "--set", "config.layoutConsumerGroup=slotting-optimization-layout",
+    "--set", "config.relocationConsumerGroup=slotting-optimization-relocation",
+]
+
+ENABLE_KONG = REAL_RUNTIME + [
     # This chart refuses to render without a database DSN (a deliberate
     # guard in deployment.yaml) — supply a dummy for template assertions.
     "--set", "database.url=postgres://user:pass@localhost:5432/db",
@@ -71,7 +81,7 @@ def main() -> int:
     failures: list[str] = []
 
     # 1. Defaults render zero Kong objects.
-    default_docs = render(["--set", "database.url=postgres://user:pass@localhost:5432/db"])
+    default_docs = render(REAL_RUNTIME + ["--set", "database.url=postgres://user:pass@localhost:5432/db"])
     kong_docs = [d for d in default_docs if "Kong" in (d.get("kind") or "")]
     if kong_docs:
         failures.append(

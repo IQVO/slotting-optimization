@@ -39,11 +39,10 @@ sidebar_position: 1
 - **Default site.** `siteId` may be omitted on generate, `/forward-slots` and
   `/sku-velocity` when `DEMAND_SITE_ID` or `DEFAULT_SITE_ID` is configured;
   otherwise it is `400 invalid-site-id`.
-- **`Idempotency-Key`** is required on `POST /slot-plans` when the service
-  runs on Postgres: missing is `400 idempotency-key-required`, the same key
+- **`Idempotency-Key`** is required on `POST /slot-plans`: missing is
+  `400 idempotency-key-required`, the same key
   and body replays the stored response (4xx included), the same key with
-  another body is `422 idempotency-key-reused`. A 5xx is never cached. The
-  in-memory mode has no middleware and ignores the header. Approve and
+  another body is `422 idempotency-key-reused`. A 5xx is never cached. Approve and
   reject do not take it: repeating them is refused by the state machine
   (`409 plan-not-draft`).
 - **Versions.** Every plan carries `version` (1 at generation, +1 per

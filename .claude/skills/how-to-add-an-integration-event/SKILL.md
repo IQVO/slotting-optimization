@@ -128,11 +128,13 @@ Stale messages are dropped by `version` (`ApplyProductClassified`,
 
 ### 4. Consumer groups and modes come from the environment
 
-Each consumer has a mode env (`DEMAND_MODE`, `PRODUCT_MODE`, `LAYOUT_MODE`:
-`kafka` or `permissive`, default `permissive` = not started) and a STABLE
-group id from `DEMAND_CONSUMER_GROUP`, `PRODUCT_CONSUMER_GROUP`,
-`LAYOUT_CONSUMER_GROUP` — never a string literal (`cmd/api/main.go`
-`planConsumers`; mode `kafka` without its group is a boot error;
+Each consumer has a mode env (`DEMAND_MODE`, `PRODUCT_MODE`, `LAYOUT_MODE`,
+`RELOCATION_MODE`; the only value is `kafka`, also the default: `permissive`
+and `off` are boot errors naming the variable, ADR 0011) and a STABLE group id
+from `DEMAND_CONSUMER_GROUP`, `PRODUCT_CONSUMER_GROUP`,
+`LAYOUT_CONSUMER_GROUP`, `RELOCATION_CONSUMER_GROUP` — never a string literal
+(`cmd/api/main.go` `loadRuntime`; every consumer always runs and a missing
+group is a boot error that names the variable;
 `TestKafkaConsumerGroupNeverHardcodedInline` enforces it). These consumers
 feed a durable Postgres copy and resume from their committed offset, so a
 fixed group is the right pattern. Only a consumer that rebuilds an in-memory

@@ -355,7 +355,14 @@ paths:
     get:
       operationId: readyz
       summary: Readiness probe
-      description: 200 when the service can serve traffic; 503 while starting or draining for shutdown.
+      description: |
+        200 when the service can serve traffic. 503 in two cases: while
+        draining for shutdown (`{"status":"not_ready"}`), and while Postgres or
+        the Kafka broker is unreachable (problem `dependency-unavailable`, its
+        `detail` names the failing dependency: `postgres`, `kafka`). The
+        Postgres ping and the Kafka metadata request (an empty topic list is
+        healthy; topics are never required) are cached for 3 seconds and
+        bounded at 2 seconds.
       tags: [Health]
       responses:
         "200":
@@ -365,11 +372,20 @@ paths:
               schema:
                 $ref: "#/components/schemas/Status"
         "503":
-          description: Not ready.
+          description: Draining for shutdown (`Status`), or a runtime dependency is unavailable (`Problem`).
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/Status"
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/dependency-unavailable
+                title: A runtime dependency is unavailable
+                status: 503
+                detail: "not ready: kafka"
+                instance: /readyz
 
   /reports/slot-plan-funnel:
     servers:
@@ -548,7 +564,7 @@ components:
 
   responses:
     BadRequest:
-      description: Malformed JSON body, an unknown field, or an invalid path or query parameter.
+      description: Malformed JSON body, an unknown field, a NUL character (U+0000) in the body or the query (Postgres text cannot hold it), or an invalid path or query parameter.
       content:
         application/problem+json:
           schema:

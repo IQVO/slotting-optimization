@@ -219,8 +219,8 @@ Source: `internal/application/ports/{ports,unit_of_work,clock}.go`,
 Omits: the `memory` package, which implements every repository port with
 the same type names (`memory.SlotPlanRepo`, `memory.DemandLedger`,
 `memory.ProfileDirectory`, `memory.SlotCatalogue`, `memory.OutboxRepo`,
-`memory.ProcessedEventRepo`, `memory.UnitOfWork`) and is wired when
-`DATABASE_URL` is unset.
+`memory.ProcessedEventRepo`, `memory.UnitOfWork`) and is a test double only:
+no binary wires it (ADR 0011).
 
 ## Inbound adapters and use cases
 
@@ -232,5 +232,5 @@ the same type names (`memory.SlotPlanRepo`, `memory.DemandLedger`,
 | `kafka.Consumer` "layout consumer" | `ApplyZoneRegistered`, `ApplyLocationSlotRegistered`, `ApplyLocationSlotDecommissioned` |
 
 The outbox relay (`outbox.Relay`) is driven by its own loop, not by a use
-case: it drains `outbox.Store` (`postgres.OutboxRepo` or `memory.OutboxRepo`)
-into an `outbox.Sink` (`kafka.RelaySink` or `outbox.LogSink`).
+case: it drains `outbox.Store` (`postgres.OutboxRepo`)
+into an `outbox.Sink` (`kafka.RelaySink`).

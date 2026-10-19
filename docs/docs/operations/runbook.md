@@ -34,40 +34,48 @@ with one Service port, `HTTP_ADDR` (default `:8080`), serving:
 | Path | Purpose | Answer |
 | --- | --- | --- |
 | `GET /healthz` | liveness | always `200 {"status":"ok"}` while the process runs |
-| `GET /readyz` | readiness | `200 {"status":"ready"}`; `503 {"status":"not_ready"}` once shutdown began |
+| `GET /readyz` | readiness | `200 {"status":"ready"}`; `503 {"status":"not_ready"}` once shutdown began; `503` problem `dependency-unavailable` while Postgres or the Kafka broker is unreachable |
 | `GET /metrics` | Prometheus scrape | Go runtime and process collectors ([Observability](/docs/operations/observability)) |
 | everything else | the REST API of `apis/openapi.yaml` | see [API overview](/docs/api-reference) |
 
 ### What readiness waits for
 
-`/readyz` is a shutdown gate, not a dependency check
-(`internal/adapters/inbound/http/readiness.go`): its zero value is *ready*,
-and only `serveUntilSignal` flips it. It never probes Postgres or Kafka.
-Readiness still implies a working database, because the listener only opens
-after `buildAdapters` has run the migrations and pinged the pool: a process
-that cannot reach Postgres exits before it serves anything. Kafka is never a
-boot dependency: readers and writers dial lazily, so a broker outage shows up
-as consumer and relay errors in the logs, not as an unready pod.
+`/readyz` (`internal/adapters/inbound/http/readiness.go`, wired in
+`cmd/api/main.go` `newReadiness`) is the shutdown gate **and** a real
+dependency check: it is ready only while a Postgres ping succeeds and a Kafka
+broker answers a metadata request. The metadata request carries no topic, and
+an empty topic list is healthy: the service never requires topics (the relay
+writer auto-creates them). A failure is a 503 `dependency-unavailable` whose
+`detail` names `postgres` and/or `kafka`. The verdict is cached for 3 s and one
+round of checks is bounded at 2 s, so probes cannot hammer either dependency.
+Readiness also still implies a working database at boot: the listener only
+opens after `buildAdapters` has run the migrations and pinged the pool, so a
+process that cannot reach Postgres exits before it serves anything. Kafka is
+not a boot dependency (readers and writers dial lazily), but a broker outage
+makes the pod unready, and when the relay or a consumer returns on its own the
+process exits non-zero (`... stopped unexpectedly: exiting so the orchestrator
+restarts the service`) so the pod restarts.
 
 ### Boot sequence
 
-1. Logger (`LOG_LEVEL`), then OpenTelemetry (`OTEL_EXPORTER_OTLP_ENDPOINT`, non-blocking).
-2. With `DATABASE_URL` set: run the embedded migrations through
-   `MIGRATIONS_DATABASE_URL`, open the pool, ping it. Both steps retry 5 times
+1. Logger (`LOG_LEVEL`), then the environment is validated before anything is
+   opened or bound (`loadRuntime`): `DATABASE_URL`, `KAFKA_BROKERS` and the
+   four `*_CONSUMER_GROUP` are mandatory, `*_MODE` accepts only `kafka` and
+   `EVENT_PUBLISHER` only `kafka`. A violation exits 1 with an error naming
+   the variable (`service exited with error`).
+2. OpenTelemetry (`OTEL_EXPORTER_OTLP_ENDPOINT`, non-blocking).
+3. Run the embedded migrations through `MIGRATIONS_DATABASE_URL`, open the
+   pool, ping it (`postgres adapters configured`). Both steps retry 5 times
    with 1 s, 2 s, 4 s, 8 s waits (15 s of backoff in total; `internal/bootretry`) because a pod's first
    outbound dial can be reset by its Istio sidecar. The last error is returned
    and the process exits 1 (`service exited with error`).
-3. Without `DATABASE_URL`: in-memory adapters (log line
-   `DATABASE_URL not configured; using in-memory adapters`).
-4. Build the router, then start every consumer whose `*_MODE=kafka`
+4. Build the router, then start the four consumers
    (`consumer running` with `consumer`, `topic`, `group_id`, `brokers`), then
    the relay (`outbox relay running` with `publisher`, `interval`,
    `max_attempts`, `topic`).
 5. Listen (`http server listening`).
 
-A misconfiguration refuses to boot before the listener opens: an unknown
-`EVENT_PUBLISHER` or `*_MODE`, a `*_MODE=kafka` without its
-`*_CONSUMER_GROUP`, or Kafka needed without `KAFKA_BROKERS`.
+There is no in-memory fallback and no optional consumer ([ADR 0011](/docs/adr/0011-postgres-and-kafka-are-the-only-runtime)).
 
 ### Graceful shutdown
 
@@ -256,13 +264,13 @@ WHERE subject = 'plan-...';
 The relay sends them again with their original CloudEvents ids, so
 consumers that dedupe by id see duplicates, not new events.
 
-### Turn on the execution progress (ADR 0010)
+### Execution progress (ADR 0010)
 
-1. Set `config.relocationMode: "kafka"` and
-   `config.relocationConsumerGroup: "slotting-optimization-relocation"` in the
-   deployment's values (warehouse-infra: `helm-values/slotting-optimization.yaml`
-   there); `kafka.enabled` must be true. The chart refuses the mode without a
-   group or without Kafka.
+1. The StockRelocated consumer is always on (ADR 0011): it needs
+   `config.relocationConsumerGroup` (for example
+   `slotting-optimization-relocation`, set in warehouse-infra's
+   `helm-values/slotting-optimization.yaml`); the chart refuses to render
+   without it, and `RELOCATION_MODE` accepts only `kafka`.
 2. The consumer starts at the first offset of `warehouse.inventory.events`
    and records every `StockRelocated` that executes a move of a known plan.
 3. Check: `GET /slot-plans/{planId}` shows `execution.movesExecuted` growing;

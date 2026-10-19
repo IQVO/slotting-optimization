@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [ADR 0011](./0011-postgres-and-kafka-are-the-only-runtime.md): `RELOCATION_MODE` accepts only `kafka` (default `kafka`) and the consumer always runs.
+
 Accepted (2026-10-14, final-gaps wave decision E1). Supersedes
 [ADR 0007](./0007-executing-an-approved-slot-plan.md), whose options and open
 questions it decides. [ADR 0001](./0001-slotting-optimization-bounded-context.md)

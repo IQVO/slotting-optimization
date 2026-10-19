@@ -8,8 +8,8 @@ sidebar_position: 3
 # Quickstart
 
 Build, test and run `slotting-optimization` on your machine, then call it.
-Every command and response on this page was run against this repository
-(`cmd/api`, in-memory and Postgres modes) on 2026-10-09.
+The commands on this page were run against this repository (`cmd/api` on the
+`docker-compose.yml` Postgres and Kafka) on 2026-10-19.
 
 ## Prerequisites
 
@@ -36,69 +36,66 @@ make integration  # go test -tags=integration ./... -race -count=1 (needs Docker
 `make help` (the default target) lists every target. The full test pyramid is
 on [Testing](/docs/development/testing).
 
-## Run in memory (no database, no broker)
+## Run locally (real Postgres and real Kafka)
 
-With `DATABASE_URL` unset the binary wires in-memory adapters, starts no
-consumer (every `*_MODE` defaults to `permissive`) and drains the outbox into
-its log (`EVENT_PUBLISHER` defaults to `log`). Set a default site so requests
-may omit `siteId`:
+Postgres and Kafka are the only runtime ([ADR 0011](/docs/adr/0011-postgres-and-kafka-are-the-only-runtime)):
+the binary has no in-memory mode, so it exits at boot without `DATABASE_URL`,
+`KAFKA_BROKERS` and the four `*_CONSUMER_GROUP` variables, naming the missing
+one. The `docker-compose.yml` at the repository root starts both
+dependencies (Postgres on `localhost:55432`, a single-node Kafka on
+`localhost:9092`, advertised as `localhost` so the first produce works):
 
 ```bash
+docker compose up -d --wait
+# port 9092 taken (the kind cluster publishes its broker there)?
+#   KAFKA_HOST_PORT=19092 docker compose up -d --wait   and KAFKA_BROKERS=localhost:19092
+
 go build -o bin/slotting-api ./cmd/api
-HTTP_ADDR=:8080 DEFAULT_SITE_ID=WH1 ./bin/slotting-api
-```
-
-The process logs JSON lines to stdout:
-
-```json
-{"level":"INFO","msg":"DATABASE_URL not configured; using in-memory adapters"}
-{"level":"INFO","msg":"no consumer is in kafka mode; the local copies are whatever the database holds"}
-{"level":"INFO","msg":"outbox relay running","publisher":"log","interval":1000000000,"topic":"warehouse.slotting-optimization.events"}
-{"level":"INFO","msg":"http server listening","addr":":8080"}
-```
-
-The local copies are empty in this mode, so a generated plan is empty, but the
-whole lifecycle works:
-
-```bash
-curl -s localhost:8080/healthz                     # {"status":"ok"}
-curl -s localhost:8080/readyz                      # {"status":"ready"}
-curl -s -X POST localhost:8080/slot-plans -d '{"lookbackDays":14}'
-# 201, Location: /slot-plans/plan-8b9257d1-...
-# {"planId":"plan-8b9257d1-...","siteId":"WH1","state":"Draft","policy":"abc-velocity-v1",
-#  "windowFrom":"2026-09-25T11:43:49.329263Z","windowTo":"2026-10-09T11:43:49.329263Z",
-#  "generatedAt":"2026-10-09T11:43:49.329263Z","version":1,"assignments":[],"moves":[],"unassigned":[]}
-curl -s -X POST localhost:8080/slot-plans/plan-8b9257d1-.../approve   # state Approved, version 2
-curl -s -X POST localhost:8080/slot-plans/plan-8b9257d1-.../approve   # 409 plan-not-draft
-```
-
-and the relay logs each event it would have published:
-
-```json
-{"level":"INFO","msg":"event published (log sink)","topic":"warehouse.slotting-optimization.events","type":"com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated","subject":"plan-8b9257d1-...","id":"bfa2833a-..."}
-```
-
-## Run against a local Postgres
-
-There is no `docker-compose.yml` in this repository. Start a throwaway
-Postgres (the same major version the integration tests use):
-
-```bash
-docker run -d --rm --name slotting-pg -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=slotting -p 55432:5432 postgres:16-alpine
-
 HTTP_ADDR=:8080 DEFAULT_SITE_ID=WH1 \
-  DATABASE_URL='postgres://postgres:postgres@localhost:55432/slotting?sslmode=disable' \
+  DATABASE_URL='postgres://slotting:slotting@localhost:55432/slotting?sslmode=disable' \
+  KAFKA_BROKERS=localhost:9092 \
+  DEMAND_CONSUMER_GROUP=slotting-optimization-demand-local \
+  PRODUCT_CONSUMER_GROUP=slotting-optimization-product-local \
+  LAYOUT_CONSUMER_GROUP=slotting-optimization-layout-local \
+  RELOCATION_CONSUMER_GROUP=slotting-optimization-relocation-local \
   ./bin/slotting-api
 ```
 
+Use group ids that no deployed instance uses: a shared group id on the shared
+broker splits the partitions between your laptop and the cluster (the reason
+`TestKafkaConsumerGroupNeverHardcodedInline` exists). Stop with
+`docker compose down -v`.
+
 The binary applies the embedded migration `0001_slotting_schema.up.sql` at
-boot (through `MIGRATIONS_DATABASE_URL`, which defaults to `DATABASE_URL`) and
-logs `postgres adapters configured`.
+boot (through `MIGRATIONS_DATABASE_URL`, which defaults to `DATABASE_URL`),
+starts the four consumers and the outbox relay, and only then binds the
+listener. The process logs JSON lines to stdout:
+
+```json
+{"level":"INFO","msg":"postgres adapters configured"}
+{"level":"INFO","msg":"consumer running","consumer":"demand consumer","topic":"warehouse.order-management.events","group_id":"slotting-optimization-demand-local","brokers":["localhost:9092"]}
+{"level":"INFO","msg":"consumer running","consumer":"layout consumer","topic":"warehouse.facility.events","group_id":"slotting-optimization-layout-local","brokers":["localhost:9092"]}
+{"level":"INFO","msg":"consumer running","consumer":"product consumer","topic":"warehouse.product-master.events","group_id":"slotting-optimization-product-local","brokers":["localhost:9092"]}
+{"level":"INFO","msg":"consumer running","consumer":"relocation consumer","topic":"warehouse.inventory.events","group_id":"slotting-optimization-relocation-local","brokers":["localhost:9092"]}
+{"level":"INFO","msg":"http server listening","addr":":8080"}
+{"level":"INFO","msg":"outbox relay running","publisher":"kafka","interval":1000000000,"max_attempts":20,"topic":"warehouse.slotting-optimization.events"}
+```
+
+```bash
+curl -s localhost:8080/healthz                     # {"status":"ok"}
+curl -s localhost:8080/readyz                      # {"status":"ready"} (Postgres ping + Kafka metadata answered)
+```
+
+`/readyz` is 503 `dependency-unavailable` (naming `postgres` and/or `kafka`)
+while a dependency is unreachable. The first relay write to a topic that does
+not exist yet fails once (`[3] Unknown Topic Or Partition`, logged as
+`outbox relay pass failed`) and succeeds on the next pass: the broker
+auto-creates the topic on that first write, and the outbox row is published
+with `attempts = 2`.
 
 ### Seed the local copies
 
-In the cluster the three copies are fed by Kafka. Locally you can insert rows
+In the cluster the copies are fed by Kafka. Locally you can insert rows
 directly; this is exactly what the consumers would write:
 
 ```sql
@@ -126,7 +123,7 @@ INSERT INTO demand_lines (source_order_id, line_no, site_id, sku, units, due_at,
 ```
 
 ```bash
-docker exec -i slotting-pg psql -U postgres -d slotting < seed.sql
+docker compose exec -T postgres psql -U slotting -d slotting < seed.sql
 ```
 
 The demand `site_id` must equal the zone's `site_code`, and the zone code must
@@ -134,7 +131,7 @@ be one of `FORWARD_ZONE_CODES` (default `FWD`): `ForwardSlots` joins on both.
 
 ### First calls
 
-With Postgres, `POST /slot-plans` requires an `Idempotency-Key`:
+With the real runtime `POST /slot-plans` requires an `Idempotency-Key`:
 
 ```bash
 curl -s -X POST localhost:8080/slot-plans -d '{}'
@@ -177,28 +174,22 @@ Every write lands in `outbox_events` in the same transaction:
 SELECT id, event_type, subject, published_at IS NOT NULL AS published FROM outbox_events ORDER BY id;
 ```
 
-## Run with Kafka
+## Fill the copies from the producers' topics
 
-The fleet runs **one** Kafka broker, inside the kind cluster, exposed on
-`localhost:9092` through its external access listener (the old docker-compose
-Kafka is retired). To publish for real and fill the copies from the producers'
-topics:
+The fleet runs **one** Kafka broker inside the kind cluster, exposed on
+`localhost:9092` through its external access listener. To read the producers'
+real topics instead of the compose broker, point `KAFKA_BROKERS` at it (the
+cluster's broker is shared: keep the `*-local` group ids). `readerConfig`
+leaves kafka-go's `StartOffset` at its default, `FirstOffset`, so a fresh
+group with no committed offset reads each topic from the beginning and
+rebuilds the copy (the claims in `processed_events` make a replay
+idempotent).
 
-```bash
-EVENT_PUBLISHER=kafka KAFKA_BROKERS=localhost:9092 \
-DEMAND_MODE=kafka  DEMAND_CONSUMER_GROUP=slotting-optimization-demand-local \
-PRODUCT_MODE=kafka PRODUCT_CONSUMER_GROUP=slotting-optimization-product-local \
-LAYOUT_MODE=kafka  LAYOUT_CONSUMER_GROUP=slotting-optimization-layout-local \
-DATABASE_URL='postgres://postgres:postgres@localhost:55432/slotting?sslmode=disable' \
-./bin/slotting-api
-```
-
-Use group ids that no deployed instance uses: a shared group id on the shared
-broker splits the partitions between your laptop and the cluster (the reason
-`TestKafkaConsumerGroupNeverHardcodedInline` exists). `readerConfig` leaves
-kafka-go's `StartOffset` at its default, `FirstOffset`, so a fresh group with no
-committed offset reads each topic from the beginning and rebuilds the copy
-(the claims in `processed_events` make a replay idempotent).
+Known kafka-go behaviour, found in inbound-receiving and not measured for this
+service: a group consumer that starts before its topic exists may not pick the
+topic up when it appears until the next restart. The compose broker creates the
+four consumed topics at the first metadata request of the consumers, which
+happens at boot.
 
 ## The documentation site
 

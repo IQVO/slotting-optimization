@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [ADR 0011](./0011-postgres-and-kafka-are-the-only-runtime.md): no binary runs the in-memory outbox any more (it stays a test double).
+
 Accepted (2026-10-12, ecosystem gap fix D27). Additive: no migration (the
 existing `outbox_events.headers jsonb` column carries it), optional Kafka
 headers only; payloads and the CloudEvents envelope
