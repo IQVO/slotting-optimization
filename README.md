@@ -77,7 +77,9 @@ make check        # fmt, vet, build, lint, tests
 make check-all    # check + coverage gate, arch tests, BDD
 make integration  # testcontainers Postgres/Kafka tests (needs Docker)
 make mutation     # gremlins on internal/domain/slotplan and internal/domain/planning
-go run ./cmd/api  # in-memory mode on :8080 (set DEFAULT_SITE_ID to omit siteId)
+docker compose up -d --wait   # Postgres :55432 + Kafka :9092 (the only runtime, no in-memory mode)
+# then, with DATABASE_URL, KAFKA_BROKERS and the four *_CONSUMER_GROUP set (docker-compose.yml header):
+go run ./cmd/api  # on :8080 (set DEFAULT_SITE_ID to omit siteId)
 spectral lint apis/openapi.yaml --ruleset .spectral.yaml
 spectral lint apis/asyncapi.yaml --ruleset .spectral.asyncapi.yaml
 ```
@@ -112,16 +114,19 @@ warehouse-infra's Nginx web gateway at `/mfes/slotting-optimization/`.
 
 ```bash
 docker build -t slotting-optimization:local .
-docker run --rm -p 8080:8080 slotting-optimization:local        # api, in-memory without DATABASE_URL
-docker run --rm -p 8090:8090 --entrypoint /app/mcp slotting-optimization:local   # MCP server
+docker run --rm -p 8080:8080 slotting-optimization:local        # api: exits at boot unless DATABASE_URL, KAFKA_BROKERS and the four *_CONSUMER_GROUP are set (see docker-compose.yml)
+docker run --rm -p 8090:8090 --entrypoint /app/mcp slotting-optimization:local   # MCP server: needs DATABASE_URL
 helm lint charts/slotting-optimization -f charts/slotting-optimization/ci/default-values.yaml
+bash charts/slotting-optimization/tests/render_test.sh
 python3 charts/slotting-optimization/tests/test_service_selectors.py
 ```
 
-The chart refuses to render without `database.url` or `database.existingSecret`
-and exposes a dedicated value for every environment variable `cmd/api` reads
-(`DEMAND_SITE_ID`, `LOOKBACK_DAYS`, `FORWARD_ZONE_CODES`, the `*_MODE` and
-`*_CONSUMER_GROUP` pairs, ...); the MCP Deployment is off unless
+Postgres and Kafka are the only runtime (docs/adr/0011): there is no in-memory
+mode, and the chart refuses to render without `database.url` or
+`database.existingSecret`, `kafka.brokers` and the four `config.*ConsumerGroup`
+values. It exposes a dedicated value for every environment variable `cmd/api`
+reads (`DEMAND_SITE_ID`, `LOOKBACK_DAYS`, `FORWARD_ZONE_CODES`, the `*_MODE` (only
+`kafka`) and `*_CONSUMER_GROUP` pairs, ...); the MCP Deployment is off unless
 `mcp.enabled=true`. Images and chart publish to `ghcr.io/iqvo/slotting-optimization`.
 
 ## Study project

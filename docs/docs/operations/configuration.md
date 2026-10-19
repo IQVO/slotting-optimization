@@ -41,7 +41,7 @@ when the ConfigMap has a key no binary reads.
 
 | Variable | Default | Required | Meaning | Source |
 | --- | --- | --- | --- | --- |
-| `DATABASE_URL` | unset | no | Postgres DSN of the pgx pool. **Unset selects the in-memory adapters**: no migrations, no `Idempotency-Key` middleware, nothing survives a restart. Set, the process runs the embedded migrations, opens a pool (`MaxConns = 10`, `statement_timeout = 5s`) and pings it; failure after the retry budget exits the process. | `cmd/api/main.go` (`buildAdapters`), `internal/adapters/outbound/postgres/pool.go` |
+| `DATABASE_URL` | none | **yes** | Postgres DSN of the pgx pool. There is no in-memory mode ([ADR 0011](/docs/adr/0011-postgres-and-kafka-are-the-only-runtime)): unset, the process exits at boot with `DATABASE_URL is required: this context runs on real Postgres, there is no in-memory mode`, before the listener binds. Set, the process runs the embedded migrations, opens a pool (`MaxConns = 10`, `statement_timeout = 5s`) and pings it; failure after the retry budget exits the process. | `cmd/api/main.go` (`loadRuntime`, `buildAdapters`), `internal/adapters/outbound/postgres/pool.go` |
 | `MIGRATIONS_DATABASE_URL` | value of `DATABASE_URL` | no | DSN used **only** for the boot migrations. Point it at a direct (non-PgBouncer) connection: golang-migrate takes a Postgres advisory lock that does not survive transaction pooling. | `cmd/api/main.go` (`migrationsDatabaseURL`) |
 
 ### Planning
@@ -57,28 +57,46 @@ when the ConfigMap has a key no binary reads.
 
 | Variable | Default | Required | Meaning | Source |
 | --- | --- | --- | --- | --- |
-| `EVENT_PUBLISHER` | `log` | no | Sink of the outbox relay. `log` writes `event published (log sink)` lines and marks rows published; `kafka` writes to `warehouse.slotting-optimization.events`. Any other value refuses to boot (`unknown EVENT_PUBLISHER`). | `cmd/api/main.go` (`parsePublisherMode`, `startOutboxRelay`) |
-| `KAFKA_BROKERS` | unset | when `EVENT_PUBLISHER=kafka` or any `*_MODE=kafka` | Comma-separated bootstrap brokers, shared by the relay writer, the three readers and the three DLQ writers. Missing when needed refuses to boot. The fleet broker is reachable at `localhost:9092` from a laptop. | `cmd/api/main.go` (`planConsumers`, `startOutboxRelay`) |
+| `EVENT_PUBLISHER` | `kafka` | no | Kept because the chart and warehouse-infra set it. The only value is `kafka` (the outbox relay writes to `warehouse.slotting-optimization.events`, always on). `log` refuses to boot (`EVENT_PUBLISHER=log is not supported: this context publishes to real Kafka`), any other value too (`EVENT_PUBLISHER: unknown value ... (want kafka)`). | `cmd/api/main.go` (`parsePublisherMode`, `startOutboxRelay`) |
+| `KAFKA_BROKERS` | none | **yes** | Comma-separated bootstrap brokers, shared by the relay writer, the four readers, the four DLQ writers and the `/readyz` broker check. Unset exits at boot with `KAFKA_BROKERS is required: this context runs on real Kafka (outbox relay, consumers, /readyz)`. The fleet broker is reachable at `localhost:9092` from a laptop. | `cmd/api/main.go` (`loadRuntime`, `startConsumers`, `startOutboxRelay`) |
 | `OUTBOX_RELAY_INTERVAL` | `1s` | no | Sleep between relay passes that did not fill a batch of 100 rows. Go duration (`500ms`) or plain seconds (`0.5`); invalid or non-positive logs `invalid OUTBOX_RELAY_INTERVAL; using the default`. | `cmd/api/main.go` (`parseRelayInterval`), `outbox.DefaultInterval` |
 | `OUTBOX_MAX_ATTEMPTS` | `20` | no | How many times one outbox row may fail before the relay **excludes it from claims** ([ADR 0008](/docs/adr/0008-outbox-relay-attempt-cap)), so a poison row cannot block every row behind it forever. The excluded row stays in `outbox_events` with `attempts` and `last_error`; the failure that reaches the cap logs one ERROR (`outbox relay: row reached the attempt cap ...`). `0` = unlimited (the old behaviour); a negative or non-integer value logs `invalid OUTBOX_MAX_ATTEMPTS; using the default` and uses 20. Re-arm a row with `UPDATE outbox_events SET attempts = 0 WHERE id = ...` ([Runbook](/docs/operations/runbook#outbox-relay-attempt-cap)). Chart value `config.outboxMaxAttempts`. | `cmd/api/main.go` (`outboxMaxAttempts`), `outbox.DefaultMaxAttempts` |
 
 ### Kafka: consumers
 
-Each local copy has its own mode and consumer group. A mode is `permissive`
-(the default, consumer **not started**) or `kafka`. An unknown mode, or
-`kafka` without its group variable, refuses to boot. Group ids are never
-hard-coded (`TestKafkaConsumerGroupNeverHardcodedInline`).
+Each local copy has its own mode variable and consumer group. All four
+consumers **always run** ([ADR 0011](/docs/adr/0011-postgres-and-kafka-are-the-only-runtime)).
+The mode names are kept because the chart and warehouse-infra set them, but
+the only value is `kafka` (also the default when unset): `permissive` and
+`off` exit at boot with `<MODE>=permissive is not supported: this context runs
+on real Kafka`, an unknown value with `<MODE>: unknown mode "x" (want kafka)`.
+A missing group exits at boot with `<GROUP> is required: the <MODE> consumer
+always runs on real Kafka`. Group ids are never hard-coded
+(`TestKafkaConsumerGroupNeverHardcodedInline`).
 
 | Variable | Default | Required | Meaning | Source |
 | --- | --- | --- | --- | --- |
-| `DEMAND_MODE` | `permissive` | no | `kafka` starts the demand consumer on `warehouse.order-management.events`. | `cmd/api/main.go` (`consumerSpecs`) |
-| `DEMAND_CONSUMER_GROUP` | unset | when `DEMAND_MODE=kafka` | Consumer group id of the demand consumer. | `cmd/api/main.go` (`planConsumers`) |
-| `PRODUCT_MODE` | `permissive` | no | `kafka` starts the product consumer on `warehouse.product-master.events`. | `cmd/api/main.go` (`consumerSpecs`) |
-| `PRODUCT_CONSUMER_GROUP` | unset | when `PRODUCT_MODE=kafka` | Consumer group id of the product consumer. | `cmd/api/main.go` (`planConsumers`) |
-| `LAYOUT_MODE` | `permissive` | no | `kafka` starts the layout consumer on `warehouse.facility.events`. | `cmd/api/main.go` (`consumerSpecs`) |
-| `LAYOUT_CONSUMER_GROUP` | unset | when `LAYOUT_MODE=kafka` | Consumer group id of the layout consumer. | `cmd/api/main.go` (`planConsumers`) |
-| `RELOCATION_MODE` | `permissive` | no | `kafka` starts the StockRelocated consumer on `warehouse.inventory.events`: the execution progress of the slot plans (ADR 0010). Chart value `config.relocationMode`. | `cmd/api/main.go` (`consumerSpecs`) |
-| `RELOCATION_CONSUMER_GROUP` | unset | when `RELOCATION_MODE=kafka` | Consumer group id of the StockRelocated consumer (e.g. `slotting-optimization-relocation`). Chart value `config.relocationConsumerGroup`. | `cmd/api/main.go` (`planConsumers`) |
+| `DEMAND_MODE` | `kafka` | no | The demand consumer on `warehouse.order-management.events`. Only `kafka`. | `cmd/api/main.go` (`consumerSpecs`, `parseConsumerMode`) |
+| `DEMAND_CONSUMER_GROUP` | none | **yes** | Consumer group id of the demand consumer. | `cmd/api/main.go` (`loadRuntime`) |
+| `PRODUCT_MODE` | `kafka` | no | The product consumer on `warehouse.product-master.events`. Only `kafka`. | `cmd/api/main.go` (`consumerSpecs`, `parseConsumerMode`) |
+| `PRODUCT_CONSUMER_GROUP` | none | **yes** | Consumer group id of the product consumer. | `cmd/api/main.go` (`loadRuntime`) |
+| `LAYOUT_MODE` | `kafka` | no | The layout consumer on `warehouse.facility.events`. Only `kafka`. | `cmd/api/main.go` (`consumerSpecs`, `parseConsumerMode`) |
+| `LAYOUT_CONSUMER_GROUP` | none | **yes** | Consumer group id of the layout consumer. | `cmd/api/main.go` (`loadRuntime`) |
+| `RELOCATION_MODE` | `kafka` | no | The StockRelocated consumer on `warehouse.inventory.events`: the execution progress of the slot plans (ADR 0010). Only `kafka`. Chart value `config.relocationMode`. | `cmd/api/main.go` (`consumerSpecs`, `parseConsumerMode`) |
+| `RELOCATION_CONSUMER_GROUP` | none | **yes** | Consumer group id of the StockRelocated consumer (e.g. `slotting-optimization-relocation`). Chart value `config.relocationConsumerGroup`. | `cmd/api/main.go` (`loadRuntime`) |
+
+### Readiness and worker failure
+
+`/healthz` is liveness only. `/readyz` is 200 only while the drain gate is open
+**and** Postgres answers a ping **and** a Kafka broker answers a metadata
+request with a topic list (an empty list is healthy: the service never
+requires topics, the writer auto-creates them); otherwise 503
+`dependency-unavailable` naming `postgres` and/or `kafka`. The verdict is cached
+for 3 s and a check is bounded at 2 s. When the outbox relay or a consumer
+returns on its own (for example after the broker went away), the process logs
+`<worker> stopped unexpectedly: exiting so the orchestrator restarts the
+service` and exits non-zero, so the pod restarts instead of staying alive with
+a dead worker.
 
 ## `cmd/mcp`
 
@@ -89,7 +107,8 @@ with the api values.
 | Variable | Default | Required | Meaning | Source |
 | --- | --- | --- | --- | --- |
 | `MCP_ADDR` | `:8090` | no | Listen address of the Streamable HTTP MCP endpoint and `GET /healthz`. | `cmd/mcp/main.go` (`run`) |
-| `DATABASE_URL`, `MIGRATIONS_DATABASE_URL` | unset / `DATABASE_URL` | no | As for `cmd/api`: unset = empty in-memory repositories; set = run the embedded migrations, then a pgx pool. | `cmd/mcp/main.go` (`buildDeps`) |
+| `DATABASE_URL` | none | **yes** | As for `cmd/api`: unset exits at boot (`DATABASE_URL is required: this context runs on real Postgres, there is no in-memory mode`). It reads the same Postgres as `cmd/api`. | `cmd/mcp/main.go` (`buildDeps`) |
+| `MIGRATIONS_DATABASE_URL` | `DATABASE_URL` | no | As for `cmd/api`: the embedded migrations run before the pgx pool opens. | `cmd/mcp/main.go` (`buildDeps`) |
 | `DEMAND_SITE_ID`, `DEFAULT_SITE_ID` | unset | no | The site `get_forward_slots` and `get_sku_velocity` default to (`DEMAND_SITE_ID`, else `DEFAULT_SITE_ID`), matching `cmd/api`. | `cmd/mcp/main.go` (`defaultSite`) |
 | `LOG_LEVEL`, `SERVICE_VERSION`, `ENVIRONMENT`, `OTEL_EXPORTER_OTLP_ENDPOINT` | as for `cmd/api` | no | Logging and telemetry, parsed the same way. | `cmd/mcp/main.go`, `telemetry.go` |
 
@@ -112,7 +131,6 @@ These are constants in code; changing them is a code change.
 
 | Profile | Variables |
 | --- | --- |
-| Unit tests, BDD, a quick look | nothing (in-memory, log sink, no consumers); add `DEFAULT_SITE_ID=WH1` to omit `siteId` |
-| Local Postgres | `DATABASE_URL`, `DEFAULT_SITE_ID` |
-| Local Postgres + the fleet broker | the above plus `EVENT_PUBLISHER=kafka`, `KAFKA_BROKERS=localhost:9092` and, per copy you want filled, `*_MODE=kafka` with a `*_CONSUMER_GROUP` no deployed instance uses ([Quickstart](/docs/overview/quickstart#run-with-kafka)) |
-| A cluster deployment | everything above with real DSNs, plus `MIGRATIONS_DATABASE_URL` when `DATABASE_URL` goes through a pooler, `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` and `CORS_ALLOWED_ORIGINS`, all set by `charts/slotting-optimization` from its values ([Runbook](/docs/operations/runbook#deployment)). |
+| Unit tests, BDD | nothing: they use the in-memory test doubles directly and never boot the binary |
+| Local run (`docker compose up -d`, [Quickstart](/docs/overview/quickstart)) | `DATABASE_URL`, `KAFKA_BROKERS`, the four `*_CONSUMER_GROUP`, and `DEFAULT_SITE_ID=WH1` to omit `siteId` |
+| A cluster deployment | everything above with real DSNs and brokers, plus `MIGRATIONS_DATABASE_URL` when `DATABASE_URL` goes through a pooler, `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` and `CORS_ALLOWED_ORIGINS`, all set by `charts/slotting-optimization` from its values; the chart refuses to render without `database.*`, `kafka.brokers` and the four consumer groups ([Runbook](/docs/operations/runbook#deployment)). |
