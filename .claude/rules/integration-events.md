@@ -100,17 +100,25 @@ afterwards (`FetchMessage` + `CommitMessages`).
 
 ## Consumer group id and modes
 
-Each consumer has a mode env (`kafka` or `permissive`, default `permissive` =
-no consumer started) and a STABLE consumer group id read from the environment,
-never a hardcoded string literal:
+Each consumer has a mode env (the only value is `kafka`, also the default:
+`permissive` and `off` are boot errors that name the variable, ADR 0011) and a
+STABLE consumer group id read from the environment, never a hardcoded string
+literal. Every consumer always runs; a missing group is a boot error:
 
 | Concern | Mode | Group id |
 | --- | --- | --- |
 | Demand | `DEMAND_MODE` | `DEMAND_CONSUMER_GROUP` |
 | Product | `PRODUCT_MODE` | `PRODUCT_CONSUMER_GROUP` |
 | Layout | `LAYOUT_MODE` | `LAYOUT_CONSUMER_GROUP` |
+| Relocation | `RELOCATION_MODE` | `RELOCATION_CONSUMER_GROUP` |
 
-Mode `kafka` with the group variable unset is a boot error.
+`DATABASE_URL` and `KAFKA_BROKERS` are mandatory too (boot errors naming the
+variable, before the listener binds); `EVENT_PUBLISHER` may only be `kafka`
+(`log` is refused). `/readyz` pings Postgres and asks a Kafka broker for
+metadata (empty, non-nil topic list: the service never requires topics).
+The process exits non-zero when the relay or a consumer dies on its own, so the
+pod restarts. The in-memory adapters are test doubles only
+(`TestRuntimeBinaryHasNoInMemoryAdapters`).
 `internal/architecture/fitness_test.go`'s
 TestKafkaConsumerGroupNeverHardcodedInline enforces env-configurable group ids
 (a real incident: wes-work-planning's hardcoded group id let a locally-run

@@ -1,0 +1,54 @@
+# Local dependencies for cmd/api, cmd/mcp and cmd/slotting-projector:
+# Postgres AND Kafka are the only runtime (ADR 0011), there is no in-memory
+# mode. `docker compose up -d --wait` then, for example:
+#
+#   export DATABASE_URL='postgres://slotting:slotting@localhost:55432/slotting?sslmode=disable'
+#   export KAFKA_BROKERS='localhost:9092'
+#   export DEMAND_CONSUMER_GROUP=slotting-optimization-demand-local
+#   export PRODUCT_CONSUMER_GROUP=slotting-optimization-product-local
+#   export LAYOUT_CONSUMER_GROUP=slotting-optimization-layout-local
+#   export RELOCATION_CONSUMER_GROUP=slotting-optimization-relocation-local
+#   export DEFAULT_SITE_ID=WH1
+#   go run ./cmd/api
+#
+# The broker (confluent-local, KRaft, single node) advertises localhost:9092
+# to the host and auto-creates topics on first write, like the cluster does.
+# Port 9092 is also what the kind cluster's Kafka publishes on the host: when
+# it is taken, pick another host port, e.g.
+#   KAFKA_HOST_PORT=19092 docker compose up -d --wait   (and KAFKA_BROKERS=localhost:19092)
+# The advertised address follows the host port, as the first produce needs it.
+# Use consumer group ids no deployed instance uses: a shared group on a shared
+# broker splits the partitions between your laptop and the cluster.
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: slotting
+      POSTGRES_PASSWORD: slotting
+      POSTGRES_DB: slotting
+    ports:
+      - "55432:5432"
+    volumes:
+      - slotting_optimization_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U slotting"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    image: confluentinc/confluent-local:7.6.1
+    ports:
+      - "${KAFKA_HOST_PORT:-9092}:9092"
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:29092,PLAINTEXT_HOST://localhost:${KAFKA_HOST_PORT:-9092}"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  slotting_optimization_pg_data:

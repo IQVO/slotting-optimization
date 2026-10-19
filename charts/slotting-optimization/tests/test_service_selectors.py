@@ -32,23 +32,39 @@ from pathlib import Path
 CHART_DIR = Path(__file__).resolve().parents[1]
 RELEASE = "slotting-optimization"
 
-# Dummy DSN, no password: the chart refuses to render without a database source.
-BASE = ["--set", "database.url=postgres://u@example.invalid:5432/db"]
+# Dummy values, no password: the chart refuses to render without a database
+# source, the Kafka brokers and the four consumer groups (ADR 0011: Postgres
+# and Kafka are the only runtime). None is ever dialled.
+GROUPS = {
+    "demandConsumerGroup": "slotting-optimization-demand",
+    "productConsumerGroup": "slotting-optimization-product",
+    "layoutConsumerGroup": "slotting-optimization-layout",
+    "relocationConsumerGroup": "slotting-optimization-relocation",
+}
+
+
+def runtime(skip: str | None = None) -> list[str]:
+    """The mandatory values, minus the one named by skip (database, kafka or a group key)."""
+    args: list[str] = []
+    if skip != "database":
+        args += ["--set", "database.url=postgres://u@example.invalid:5432/db"]
+    if skip != "kafka":
+        args += ["--set", "kafka.brokers=kafka.example.invalid:9092"]
+    for key, value in GROUPS.items():
+        if skip != key:
+            args += ["--set", f"config.{key}={value}"]
+    return args
+
+
+BASE = runtime()
 ENABLE_EVERYTHING = BASE + [
     "--set", "mcp.enabled=true",
     "--set", "frontend.enabled=true",
     "--set", "autoscaling.api.enabled=true",
-    "--set", "config.eventPublisher=kafka",
     "--set", "config.demandSiteId=SITE-1",
     "--set", "config.defaultSiteId=SITE-1",
     "--set", "config.lookbackDays=28",
     "--set", "config.forwardZoneCodes=FWD\\,FWD2",
-    "--set", "config.demandMode=kafka",
-    "--set", "config.demandConsumerGroup=slotting-optimization-demand",
-    "--set", "config.productMode=kafka",
-    "--set", "config.productConsumerGroup=slotting-optimization-product",
-    "--set", "config.layoutMode=kafka",
-    "--set", "config.layoutConsumerGroup=slotting-optimization-layout",
     "--set", "kafka.enabled=true",
     "--set", "gatewayApi.enabled=true",
     "--set", "ingress.enabled=true",
@@ -63,7 +79,8 @@ API_ENV = (
     "HTTP_ADDR", "LOG_LEVEL", "EVENT_PUBLISHER", "KAFKA_BROKERS", "DATABASE_URL", "MIGRATIONS_DATABASE_URL",
     "DEMAND_SITE_ID", "DEFAULT_SITE_ID", "LOOKBACK_DAYS", "FORWARD_ZONE_CODES",
     "DEMAND_MODE", "DEMAND_CONSUMER_GROUP", "PRODUCT_MODE", "PRODUCT_CONSUMER_GROUP",
-    "LAYOUT_MODE", "LAYOUT_CONSUMER_GROUP", "ENVIRONMENT", "SERVICE_VERSION", "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "LAYOUT_MODE", "LAYOUT_CONSUMER_GROUP", "RELOCATION_MODE", "RELOCATION_CONSUMER_GROUP",
+    "ENVIRONMENT", "SERVICE_VERSION", "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OUTBOX_MAX_ATTEMPTS",
 )
 
@@ -247,30 +264,27 @@ def check_components(docs: list[dict], failures: list[str]) -> None:
 
 
 def check_refusals(failures: list[str]) -> None:
-    kafka_demand = BASE + ["--set", "config.demandMode=kafka", "--set", "config.demandConsumerGroup=g"]
-    for label, args, needle in (
-        ("without a database source", [], "requires database.url or database.existingSecret"),
-        ("EVENT_PUBLISHER=kafka without kafka", BASE + ["--set", "config.eventPublisher=kafka"], "kafka.enabled is false"),
-        ("an unknown EVENT_PUBLISHER", BASE + ["--set", "config.eventPublisher=nats"], "want \"log\" or \"kafka\""),
-        ("an unknown DEMAND_MODE", BASE + ["--set", "config.demandMode=strict"], "want \"permissive\" or \"kafka\""),
-        ("an unknown PRODUCT_MODE", BASE + ["--set", "config.productMode=strict"], "want \"permissive\" or \"kafka\""),
-        ("an unknown LAYOUT_MODE", BASE + ["--set", "config.layoutMode=strict"], "want \"permissive\" or \"kafka\""),
-        ("DEMAND_MODE=kafka without a group", BASE + ["--set", "config.demandMode=kafka", "--set", "kafka.enabled=true"],
-         "DEMAND_MODE=kafka requires DEMAND_CONSUMER_GROUP"),
-        ("PRODUCT_MODE=kafka without a group", BASE + ["--set", "config.productMode=kafka", "--set", "kafka.enabled=true"],
-         "PRODUCT_MODE=kafka requires PRODUCT_CONSUMER_GROUP"),
-        ("LAYOUT_MODE=kafka without a group", BASE + ["--set", "config.layoutMode=kafka", "--set", "kafka.enabled=true"],
-         "LAYOUT_MODE=kafka requires LAYOUT_CONSUMER_GROUP"),
-        ("a kafka consumer mode without kafka", kafka_demand, "a consumer in kafka mode requires KAFKA_BROKERS"),
-        ("a demand group in permissive mode", BASE + ["--set", "config.demandConsumerGroup=g"], "would silently not start"),
-        ("a product group in permissive mode", BASE + ["--set", "config.productConsumerGroup=g"], "would silently not start"),
-        ("a layout group in permissive mode", BASE + ["--set", "config.layoutConsumerGroup=g"], "would silently not start"),
+    cases: list[tuple[str, list[str], str]] = [
+        ("without a database source", runtime("database"), "requires database.url or database.existingSecret"),
+        ("without kafka.brokers", runtime("kafka"), "kafka.brokers"),
+        ("kafka switched off", BASE + ["--set", "kafka.enabled=false"], "Kafka cannot be switched off"),
+        ("the log publisher", BASE + ["--set", "config.eventPublisher=log"], "the only publisher is"),
+        ("an unknown publisher", BASE + ["--set", "config.eventPublisher=nats"], "the only publisher is"),
+        ("EVENT_PUBLISHER=log through extraEnv",
+         BASE + ["--set", "extraEnv[0].name=EVENT_PUBLISHER", "--set", "extraEnv[0].value=log"], "extraEnv sets EVENT_PUBLISHER=log"),
+        ("a *_MODE through extraEnv",
+         BASE + ["--set", "extraEnv[0].name=DEMAND_MODE", "--set", "extraEnv[0].value=permissive"], "extraEnv sets DEMAND_MODE"),
+        ("a grace period under 20s", BASE + ["--set", "terminationGracePeriodSeconds=19"], "terminationGracePeriodSeconds"),
         ("LOOKBACK_DAYS out of range", BASE + ["--set", "config.lookbackDays=400"], "want 1..365"),
-        ("analytics without a DSN source", BASE + ["--set", "analytics.enabled=true", "--set", "kafka.enabled=true"],
+        ("analytics without a DSN source", BASE + ["--set", "analytics.enabled=true"],
          "neither analytics.url nor analytics.existingSecret"),
-        ("analytics without kafka", BASE + ["--set", "analytics.enabled=true", "--set", "analytics.url=postgres://u@example.invalid:5432/analytics"],
-         "kafka.enabled is false"),
-    ):
+    ]
+    for key in GROUPS:
+        cases.append((f"without config.{key}", runtime(key), f"config.{key} is required"))
+    for mode in ("demandMode", "productMode", "layoutMode", "relocationMode"):
+        for bad in ("permissive", "off", "strict"):
+            cases.append((f"{mode}={bad}", BASE + ["--set", f"config.{mode}={bad}"], f"config.{mode} is"))
+    for label, args, needle in cases:
         result = helm_template(args)
         if result.returncode == 0 or needle not in result.stderr:
             failures.append(f"chart rendered (or failed for another reason) {label}")
@@ -290,15 +304,16 @@ def main() -> int:
         failures.append(f"optional components rendered with default values: {stray}")
     dep = next(d for d in defaults if d.get("kind") == "Deployment")
     names = env_names(dep)
-    off = {
-        "DEMAND_CONSUMER_GROUP", "PRODUCT_CONSUMER_GROUP", "LAYOUT_CONSUMER_GROUP", "KAFKA_BROKERS",
-        "DEMAND_SITE_ID", "DEFAULT_SITE_ID", "LOOKBACK_DAYS", "FORWARD_ZONE_CODES",
-    }
+    off = {"DEMAND_SITE_ID", "DEFAULT_SITE_ID", "LOOKBACK_DAYS", "FORWARD_ZONE_CODES"}
     if off & set(names):
         failures.append(f"these must be off with default values: {sorted(off & set(names))}")
-    for want in ("DEMAND_MODE", "PRODUCT_MODE", "LAYOUT_MODE"):
+    # ADR 0011: the real runtime is always rendered, every mode is kafka.
+    for mode in ("EVENT_PUBLISHER", "DEMAND_MODE", "PRODUCT_MODE", "LAYOUT_MODE", "RELOCATION_MODE"):
+        if env_value(dep, mode) != "kafka":
+            failures.append(f"{mode} must always be rendered as kafka, got {env_value(dep, mode)!r}")
+    for want in ("KAFKA_BROKERS", *(k for k in API_ENV if k.endswith("_CONSUMER_GROUP"))):
         if want not in names:
-            failures.append(f"{want} must always be rendered (permissive by default)")
+            failures.append(f"{want} is mandatory and must always be rendered")
 
     check_refusals(failures)
 
@@ -309,9 +324,9 @@ def main() -> int:
 
     print("PASS: every Service selects exactly one Deployment (api, mcp, frontend, analytics-reports); mcp, frontend, "
           "analytics, HPA and routes are off by default; every cmd/api env var has a dedicated value; the chart refuses to render "
-          "without a database source, with an unknown publisher/mode, with a Kafka mode but no broker or no consumer "
-          "group, with a group set but its consumer off, with LOOKBACK_DAYS out of range, or with analytics on but "
-          "no DSN source or no Kafka")
+          "without a database source, brokers or any consumer group, with a log/unknown publisher or a permissive/off/unknown "
+          "mode (also through extraEnv), with kafka switched off, with a grace period under 20s, with LOOKBACK_DAYS out of "
+          "range, or with analytics on but no DSN source")
     return 0
 
 

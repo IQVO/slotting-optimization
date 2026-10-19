@@ -2,6 +2,8 @@
 
 ## Status
 
+Amended by [ADR 0011](./0011-postgres-and-kafka-are-the-only-runtime.md): `DATABASE_URL` is now required (no in-memory repositories).
+
 Accepted (2026-10-08).
 
 ## Context

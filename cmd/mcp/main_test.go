@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,19 +13,17 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	inboundmcp "github.com/claudioed/slotting-optimization/internal/adapters/inbound/mcp"
+	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/memory"
 )
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// newTestServer wires the binary exactly as run() does, over the in-memory
-// repositories selected by an empty DATABASE_URL, behind the real router.
+// newTestServer wires the read use cases (depsOver, the same function run()
+// uses) over the in-memory TEST DOUBLES, behind the real router. The Postgres
+// wiring is proven in main_integration_test.go.
 func newTestServer(t *testing.T, site string) *httptest.Server {
 	t.Helper()
-	deps, closeFn, err := buildDeps(context.Background(), quietLogger(), "", "", site)
-	if err != nil {
-		t.Fatalf("buildDeps: %v", err)
-	}
-	t.Cleanup(closeFn)
+	deps := depsOver(memory.NewSlotPlanRepo(), memory.NewDemandLedger(), memory.NewMoveExecutionLedger(), site)
 	srv := httptest.NewServer(newRouter(inboundmcp.Handler(inboundmcp.NewServer(deps))))
 	t.Cleanup(srv.Close)
 	return srv
@@ -117,7 +116,7 @@ func TestNoAuthIsRequired(t *testing.T) {
 }
 
 // An unreachable database is a boot error after the bounded retries, never
-// a silent fallback to the in-memory repositories.
+// a silent fallback.
 func TestBuildDeps_BadDatabaseFailsBoot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // a cancelled context makes bootretry give up at once
@@ -126,24 +125,38 @@ func TestBuildDeps_BadDatabaseFailsBoot(t *testing.T) {
 	}
 }
 
+// There is no in-memory runtime: an empty DATABASE_URL is a boot error from
+// both loadConfig (before anything opens) and buildDeps, and it names the
+// variable.
+func TestNoDatabaseURLIsABootError(t *testing.T) {
+	_, err := loadConfig(func(string) string { return "" })
+	if !errors.Is(err, errMissingDatabaseURL) || !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Fatalf("loadConfig(empty) = %v, want errMissingDatabaseURL naming DATABASE_URL", err)
+	}
+	if _, _, err := buildDeps(context.Background(), quietLogger(), "", "", "SITE-1"); !errors.Is(err, errMissingDatabaseURL) {
+		t.Fatalf("buildDeps(\"\") = %v, want errMissingDatabaseURL", err)
+	}
+	url, err := loadConfig(func(k string) string {
+		if k == "DATABASE_URL" {
+			return "postgres://u@db/x"
+		}
+		return ""
+	})
+	if err != nil || url != "postgres://u@db/x" {
+		t.Fatalf("loadConfig(set) = %q, %v", url, err)
+	}
+}
+
 // The default site reaches the site-scoped use cases: with one the site-less
 // tools answer, without one they refuse.
-func TestBuildDeps_PassesTheDefaultSite(t *testing.T) {
-	with, closeWith, err := buildDeps(context.Background(), quietLogger(), "", "", "SITE-7")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeWith()
+func TestDepsOver_PassesTheDefaultSite(t *testing.T) {
+	with := depsOver(memory.NewSlotPlanRepo(), memory.NewDemandLedger(), memory.NewMoveExecutionLedger(), "SITE-7")
 	m, err := with.ListForwardSlots.Handle(context.Background(), "")
 	if err != nil || m.Site != "SITE-7" {
 		t.Fatalf("forward slots = %+v, %v; want site SITE-7", m, err)
 	}
 
-	without, closeWithout, err := buildDeps(context.Background(), quietLogger(), "", "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer closeWithout()
+	without := depsOver(memory.NewSlotPlanRepo(), memory.NewDemandLedger(), memory.NewMoveExecutionLedger(), "")
 	if _, err := without.ListForwardSlots.Handle(context.Background(), ""); err == nil {
 		t.Fatal("no site and no default site must be refused")
 	}

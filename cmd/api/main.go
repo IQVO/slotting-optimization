@@ -1,28 +1,34 @@
 // Command api is slotting-optimization's composition root: it wires env
 // config into adapters, adapters into use cases, and use cases into the HTTP
-// router, the three local-copy Kafka consumers (ADR 0003) and the outbox
-// relay.
+// router, the four local-copy Kafka consumers (ADR 0003, ADR 0010) and the
+// outbox relay, all on real Postgres and real Kafka (ADR 0011): there is no
+// in-memory mode, no log sink and no consumer that is off.
 //
 // Environment:
 //
 //	HTTP_ADDR                   listen address (default :8080)
-//	DATABASE_URL                Postgres DSN; unset = in-memory adapters
+//	DATABASE_URL                Postgres DSN (REQUIRED: there is no in-memory mode, ADR 0011)
 //	MIGRATIONS_DATABASE_URL     direct DSN for the boot migrations (default DATABASE_URL)
-//	EVENT_PUBLISHER             kafka | log (default log)
-//	KAFKA_BROKERS               comma-separated brokers (EVENT_PUBLISHER=kafka, any *_MODE=kafka)
+//	KAFKA_BROKERS               comma-separated brokers (REQUIRED: relay, consumers, /readyz)
+//	EVENT_PUBLISHER             kafka (default kafka); log is a boot error
 //	OUTBOX_RELAY_INTERVAL       relay poll interval (Go duration or seconds, default 1s)
 //	OUTBOX_MAX_ATTEMPTS         failures before the relay excludes a row (default 20, 0 = unlimited; ADR 0008)
 //	DEMAND_SITE_ID              the site plans default to; when set, demand for other sites is ignored
 //	LOOKBACK_DAYS               default demand window of a new plan (default 28)
 //	FORWARD_ZONE_CODES          comma-separated zone codes of the forward pick slots (default FWD)
 //	DEMAND_MODE, PRODUCT_MODE, LAYOUT_MODE, RELOCATION_MODE
-//	                            kafka | permissive (default permissive = consumer not started)
+//	                            kafka (default kafka); permissive and off are boot errors
 //	DEMAND_CONSUMER_GROUP, PRODUCT_CONSUMER_GROUP, LAYOUT_CONSUMER_GROUP, RELOCATION_CONSUMER_GROUP
-//	                            stable group ids; required when the mode is kafka
+//	                            stable group ids (ALL REQUIRED, boot error naming the variable)
 //	                            (RELOCATION_*: inventory-storage's StockRelocated -> plan execution progress, ADR 0010)
 //	OTEL_EXPORTER_OTLP_ENDPOINT OTLP/gRPC collector (default localhost:4317)
 //	SHUTDOWN_DRAIN_DELAY        wait after flipping /readyz before closing (default 5s)
 //	LOG_LEVEL, SERVICE_VERSION, ENVIRONMENT, CORS_ALLOWED_ORIGINS
+//
+// GET /readyz is 200 only while Postgres answers a ping AND a Kafka broker
+// answers a metadata request (verdict cached 3s, bounded 2s); /healthz is
+// liveness only. The process exits non-zero when the relay or a consumer
+// returns on its own, so the orchestrator restarts it.
 package main
 
 import (
@@ -45,7 +51,6 @@ import (
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/clock"
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/ids"
 	outboundkafka "github.com/claudioed/slotting-optimization/internal/adapters/outbound/kafka"
-	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/memory"
 	outboxrelay "github.com/claudioed/slotting-optimization/internal/adapters/outbound/outbox"
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/postgres"
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/postgres/pgtx"
@@ -73,15 +78,23 @@ const DefaultShutdownDrainDelay = 5 * time.Second
 const defaultForwardZoneCode = "FWD"
 
 func main() {
-	if err := run(); err != nil {
+	if err := run(context.Background()); err != nil {
 		slog.Error("service exited with error", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
+// run boots the service and serves until SIGINT/SIGTERM or until ctx is
+// cancelled (the integration test stops the real entry point that way).
+func run(ctx context.Context) error {
 	logger := newLogger(getenv("LOG_LEVEL", "info"))
 	slog.SetDefault(logger)
+
+	// Misconfiguration is refused before anything is opened or bound (ADR 0011).
+	rt, err := loadRuntime(os.Getenv)
+	if err != nil {
+		return err
+	}
 
 	otelShutdown, err := setupTelemetry(logger)
 	if err != nil {
@@ -91,7 +104,7 @@ func run() error {
 
 	// closeAdapters (pool.Close) is deferred FIRST so it runs LAST, after the
 	// HTTP drain, the consumers and the relay have all stopped.
-	ad, closeAdapters, err := buildAdapters(context.Background(), os.Getenv("DATABASE_URL"), logger)
+	ad, closeAdapters, err := buildAdapters(ctx, os.Getenv("DATABASE_URL"), logger)
 	if err != nil {
 		return err
 	}
@@ -105,7 +118,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("plan decision metrics: %w", err)
 	}
-	readiness := &inboundhttp.Readiness{}
+	readiness := newReadiness(ad.pool.Ping, rt.brokers)
 	server, err := buildServer(ad, configFromEnv(logger), readiness, metrics, planDecisionMetrics)
 	if err != nil {
 		return err
@@ -116,16 +129,79 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	consumers, closeConsumers, err := startConsumers(ad, logger)
-	if err != nil {
-		return err
-	}
-	relay, closeRelay, err := startOutboxRelay(ad.outboxStore, logger)
+	consumers, closeConsumers := startConsumers(ad, rt, logger)
+	relay, closeRelay, err := startOutboxRelay(ad.outboxStore, rt.brokers, logger)
 	if err != nil {
 		closeConsumers()
 		return err
 	}
-	return serveUntilSignal(logger, httpServer, readiness, consumers, closeConsumers, relay, closeRelay)
+	return serveUntilSignal(ctx, logger, httpServer, readiness, consumers, closeConsumers, relay, closeRelay)
+}
+
+// Boot errors for the variables the context cannot run without. Each message
+// names the variable (ADR 0011).
+var (
+	errMissingDatabaseURL = errors.New("DATABASE_URL is required: this context runs on real Postgres, there is no in-memory mode")
+	errMissingBrokers     = errors.New("KAFKA_BROKERS is required: this context runs on real Kafka (outbox relay, consumers, /readyz)")
+)
+
+// runtimeEnv is the validated part of the environment that selects the real
+// runtime: the brokers and the consumer group of every consumer.
+type runtimeEnv struct {
+	brokers []string
+	// groups maps a consumer's group variable (DEMAND_CONSUMER_GROUP, ...) to
+	// its value; every consumer always runs, so every entry is present.
+	groups map[string]string
+}
+
+// loadRuntime validates the environment before anything is opened or bound:
+// DATABASE_URL, KAFKA_BROKERS and every consumer group are mandatory, the
+// consumer modes may only be `kafka` (the default), and EVENT_PUBLISHER may
+// only be `kafka`. Every error names the variable (ADR 0011).
+func loadRuntime(env func(string) string) (runtimeEnv, error) {
+	if env("DATABASE_URL") == "" {
+		return runtimeEnv{}, errMissingDatabaseURL
+	}
+	rt := runtimeEnv{brokers: splitBrokers(env("KAFKA_BROKERS")), groups: map[string]string{}}
+	if len(rt.brokers) == 0 {
+		return runtimeEnv{}, errMissingBrokers
+	}
+	if err := parsePublisherMode(env("EVENT_PUBLISHER")); err != nil {
+		return runtimeEnv{}, err
+	}
+	for _, spec := range consumerSpecs(adapters{}, config{}) {
+		if err := parseConsumerMode(spec.modeEnv, env(spec.modeEnv)); err != nil {
+			return runtimeEnv{}, err
+		}
+		group := env(spec.groupEnv)
+		if group == "" {
+			return runtimeEnv{}, fmt.Errorf("%s is required: the %s consumer always runs on real Kafka", spec.groupEnv, spec.modeEnv)
+		}
+		rt.groups[spec.groupEnv] = group
+	}
+	return rt, nil
+}
+
+// splitBrokers splits KAFKA_BROKERS on commas, trimming blanks.
+func splitBrokers(raw string) []string {
+	var out []string
+	for _, b := range strings.Split(raw, ",") {
+		if b = strings.TrimSpace(b); b != "" {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// newReadiness builds the /readyz gate: the drain gate plus a Postgres ping
+// and a Kafka broker answering a topic-less metadata request (never topics:
+// the broker auto-creates them on first write), cached 3s, bounded 2s. The
+// ping is a parameter so the gate is testable without a pool.
+func newReadiness(ping func(context.Context) error, brokers []string) *inboundhttp.Readiness {
+	return inboundhttp.NewReadiness(inboundhttp.DefaultReadinessTTL, inboundhttp.DefaultReadinessTimeout,
+		inboundhttp.Dependency{Name: "postgres", Check: ping},
+		inboundhttp.Dependency{Name: "kafka", Check: outboundkafka.NewBrokerCheck(brokers).Check},
+	)
 }
 
 // adapters is the set of outbound adapters the composition root wires.
@@ -139,9 +215,10 @@ type adapters struct {
 	processed   ports.ProcessedEvents
 	executions  ports.MoveExecutionLedger
 	uow         ports.UnitOfWork
-	// idempotency is the Idempotency-Key middleware of POST /slot-plans; nil
-	// in the in-memory development mode.
+	// idempotency is the Idempotency-Key middleware of POST /slot-plans.
 	idempotency func(http.Handler) http.Handler
+	// pool is the Postgres pool (the readiness check pings it).
+	pool *pgxpool.Pool
 }
 
 // writer bundles the ports every write use case needs. The encoder is the
@@ -229,20 +306,12 @@ func buildServer(ad adapters, cfg config, readiness *inboundhttp.Readiness, metr
 	}, nil
 }
 
-// buildAdapters wires Postgres when databaseURL is set (running the embedded
-// migrations first) or in-memory adapters otherwise.
+// buildAdapters wires the Postgres adapters, running the embedded migrations
+// first. An empty databaseURL is a boot error: there is no in-memory runtime.
 func buildAdapters(ctx context.Context, databaseURL string, logger *slog.Logger) (adapters, func(), error) {
 	noop := func() {}
 	if databaseURL == "" {
-		logger.Info("DATABASE_URL not configured; using in-memory adapters")
-		plans, ob, processed := memory.NewSlotPlanRepo(), memory.NewOutboxRepo(), memory.NewProcessedEventRepo()
-		demand, profiles, catalogue := memory.NewDemandLedger(), memory.NewProfileDirectory(), memory.NewSlotCatalogue()
-		executions := memory.NewMoveExecutionLedger()
-		return adapters{
-			plans: plans, demand: demand, profiles: profiles, catalogue: catalogue,
-			outbox: ob, outboxStore: ob, processed: processed, executions: executions,
-			uow: memory.NewUnitOfWork(plans, ob, demand, profiles, catalogue, processed, executions),
-		}, noop, nil
+		return adapters{}, noop, errMissingDatabaseURL
 	}
 
 	// The first outbound dial of an injected pod can be reset (Istio native
@@ -275,6 +344,7 @@ func postgresAdapters(pool *pgxpool.Pool) adapters {
 		executions:  postgres.NewMoveExecutionLedger(pool),
 		uow:         postgres.NewUnitOfWork(pool),
 		idempotency: inboundhttp.RequireIdempotencyKey(pool, pgtx.With),
+		pool:        pool,
 	}
 }
 
@@ -292,22 +362,22 @@ type worker struct {
 	done chan struct{}
 }
 
-// Consumer modes (DEMAND_MODE, PRODUCT_MODE, LAYOUT_MODE, RELOCATION_MODE).
-const (
-	modePermissive = "permissive"
-	modeKafka      = "kafka"
-)
+// modeKafka is the only consumer mode (DEMAND_MODE, PRODUCT_MODE,
+// LAYOUT_MODE, RELOCATION_MODE): the names stay because docs and
+// warehouse-infra set them, the legacy values are refused.
+const modeKafka = "kafka"
 
-// parseConsumerMode validates a *_MODE value ("" and "permissive" = no
-// consumer).
-func parseConsumerMode(name, raw string) (string, error) {
+// parseConsumerMode accepts the only runtime mode of a local-copy consumer:
+// "" (the default) or "kafka". `permissive` and `off` are refused: the
+// consumers always run.
+func parseConsumerMode(name, raw string) error {
 	switch raw {
-	case "", modePermissive:
-		return modePermissive, nil
-	case modeKafka:
-		return modeKafka, nil
+	case "", modeKafka:
+		return nil
+	case "permissive", "off":
+		return fmt.Errorf("%s=%s is not supported: this context runs on real Kafka", name, raw)
 	default:
-		return "", fmt.Errorf("unknown %s %q (want kafka or permissive)", name, raw)
+		return fmt.Errorf("%s: unknown mode %q (want kafka)", name, raw)
 	}
 }
 
@@ -354,65 +424,23 @@ func relocationMetrics() ports.RelocationMetrics {
 	return m
 }
 
-// plannedConsumer is a consumer whose mode is kafka, with its resolved group.
-type plannedConsumer struct {
-	spec  consumerSpec
-	group string
-}
-
-// planConsumers resolves every consumer's mode and group from the
-// environment and refuses to boot on a misconfiguration: an unknown mode, or
-// mode kafka without its group variable or without KAFKA_BROKERS.
-func planConsumers(specs []consumerSpec) ([]plannedConsumer, []string, error) {
-	var planned []plannedConsumer
-	for _, spec := range specs {
-		mode, err := parseConsumerMode(spec.modeEnv, os.Getenv(spec.modeEnv))
-		if err != nil {
-			return nil, nil, err
-		}
-		if mode != modeKafka {
-			continue
-		}
-		group := os.Getenv(spec.groupEnv)
-		if group == "" {
-			return nil, nil, fmt.Errorf("%s=kafka requires %s", spec.modeEnv, spec.groupEnv)
-		}
-		planned = append(planned, plannedConsumer{spec: spec, group: group})
-	}
-	if len(planned) == 0 {
-		return nil, nil, nil
-	}
-	raw := os.Getenv("KAFKA_BROKERS")
-	if raw == "" {
-		return nil, nil, errors.New("a consumer in kafka mode requires KAFKA_BROKERS")
-	}
-	return planned, strings.Split(raw, ","), nil
-}
-
-// startConsumers starts every consumer whose mode is kafka. The readers dial
+// startConsumers starts every consumer; they are always on. The readers dial
 // lazily inside Run, so a broker outage never blocks boot.
-func startConsumers(ad adapters, logger *slog.Logger) ([]*worker, func(), error) {
-	planned, brokers, err := planConsumers(consumerSpecs(ad, configFromEnv(logger)))
-	if err != nil {
-		return nil, nil, err
-	}
-	if len(planned) == 0 {
-		logger.Info("no consumer is in kafka mode; the local copies are whatever the database holds")
-		return nil, func() {}, nil
-	}
+func startConsumers(ad adapters, rt runtimeEnv, logger *slog.Logger) ([]*worker, func()) {
 	ctx, stop := context.WithCancel(context.Background())
 	var (
 		workers []*worker
 		closers []func() error
 	)
-	for _, p := range planned {
-		consumer := p.spec.build(brokers, p.group, logger)
-		w := &worker{name: p.spec.modeEnv, done: make(chan struct{})}
+	for _, spec := range consumerSpecs(ad, configFromEnv(logger)) {
+		group := rt.groups[spec.groupEnv]
+		consumer := spec.build(rt.brokers, group, logger)
+		w := &worker{name: spec.modeEnv + " consumer", done: make(chan struct{})}
 		workers = append(workers, w)
 		closers = append(closers, consumer.Close)
 		go func() {
 			defer close(w.done)
-			logger.Info("consumer running", "consumer", consumer.Name, "topic", consumer.Topic, "group_id", p.group, "brokers", brokers)
+			logger.Info("consumer running", "consumer", consumer.Name, "topic", consumer.Topic, "group_id", group, "brokers", rt.brokers)
 			if err := consumer.Run(ctx); !errors.Is(err, context.Canceled) {
 				logger.Error("consumer stopped", "consumer", consumer.Name, "error", err)
 			}
@@ -423,24 +451,20 @@ func startConsumers(ad adapters, logger *slog.Logger) ([]*worker, func(), error)
 		for _, closeFn := range closers {
 			_ = closeFn()
 		}
-	}, nil
+	}
 }
 
-// Event publisher modes (EVENT_PUBLISHER).
-const (
-	publisherLog   = "log"
-	publisherKafka = "kafka"
-)
-
-// parsePublisherMode validates EVENT_PUBLISHER ("" and "log" = log sink).
-func parsePublisherMode(raw string) (string, error) {
+// parsePublisherMode validates EVENT_PUBLISHER: unset or "kafka". The log
+// sink is gone (ADR 0011); the variable stays because the chart and
+// warehouse-infra set it.
+func parsePublisherMode(raw string) error {
 	switch raw {
-	case "", publisherLog:
-		return publisherLog, nil
-	case publisherKafka:
-		return publisherKafka, nil
+	case "", "kafka":
+		return nil
+	case "log":
+		return errors.New("EVENT_PUBLISHER=log is not supported: this context publishes to real Kafka")
 	default:
-		return "", fmt.Errorf("unknown EVENT_PUBLISHER %q (want kafka or log)", raw)
+		return fmt.Errorf("EVENT_PUBLISHER: unknown value %q (want kafka)", raw)
 	}
 }
 
@@ -480,40 +504,28 @@ func outboxMaxAttempts(raw string, logger *slog.Logger) int {
 	return n
 }
 
-// startOutboxRelay starts the relay goroutine with the EVENT_PUBLISHER sink.
+// startOutboxRelay starts the always-on relay goroutine over the Kafka sink.
 // Kafka is dialled lazily on the first send, never here.
-func startOutboxRelay(store outboxrelay.Store, logger *slog.Logger) (*worker, func(), error) {
-	mode, err := parsePublisherMode(os.Getenv("EVENT_PUBLISHER"))
-	if err != nil {
-		return nil, nil, err
+func startOutboxRelay(store outboxrelay.Store, brokers []string, logger *slog.Logger) (*worker, func(), error) {
+	if len(brokers) == 0 {
+		return nil, nil, errMissingBrokers
 	}
-	var (
-		sink      outboxrelay.Sink = outboxrelay.LogSink{Logger: logger}
-		closeSink                  = func() {}
-	)
-	if mode == publisherKafka {
-		raw := os.Getenv("KAFKA_BROKERS")
-		if raw == "" {
-			return nil, nil, errors.New("EVENT_PUBLISHER=kafka requires KAFKA_BROKERS")
-		}
-		kafkaSink := outboundkafka.NewRelaySink(strings.Split(raw, ","))
-		sink = kafkaSink
-		closeSink = func() {
-			if err := kafkaSink.Close(); err != nil {
-				logger.Error("kafka relay sink close failed", "error", err)
-			}
+	kafkaSink := outboundkafka.NewRelaySink(brokers)
+	closeSink := func() {
+		if err := kafkaSink.Close(); err != nil {
+			logger.Error("kafka relay sink close failed", "error", err)
 		}
 	}
 	interval := parseRelayInterval(os.Getenv("OUTBOX_RELAY_INTERVAL"), logger)
 	maxAttempts := outboxMaxAttempts(os.Getenv("OUTBOX_MAX_ATTEMPTS"), logger)
-	relay := outboxrelay.NewRelay(store, sink, logger, outboxrelay.WithInterval(interval), outboxrelay.WithMaxAttempts(maxAttempts))
+	relay := outboxrelay.NewRelay(store, kafkaSink, logger, outboxrelay.WithInterval(interval), outboxrelay.WithMaxAttempts(maxAttempts))
 
 	ctx, stop := context.WithCancel(context.Background())
 	w := &worker{name: "outbox-relay", done: make(chan struct{})}
 	go func() {
 		defer close(w.done)
 		defer closeSink()
-		logger.Info("outbox relay running", "publisher", mode, "interval", interval, "max_attempts", maxAttempts, "topic", outboundkafka.Topic)
+		logger.Info("outbox relay running", "publisher", "kafka", "interval", interval, "max_attempts", maxAttempts, "topic", outboundkafka.Topic)
 		if err := relay.Run(ctx); !errors.Is(err, context.Canceled) {
 			logger.Error("outbox relay stopped", "error", err)
 		}
@@ -526,7 +538,7 @@ func startOutboxRelay(store outboxrelay.Store, logger *slog.Logger) (*worker, fu
 // drain delay, (3) drain HTTP, (4) stop and await the consumers, (5) stop and
 // await the relay LAST so nothing committed above is stranded; the caller's
 // deferred pool.Close runs after all of it.
-func serveUntilSignal(logger *slog.Logger, httpServer *http.Server, readiness *inboundhttp.Readiness,
+func serveUntilSignal(ctx context.Context, logger *slog.Logger, httpServer *http.Server, readiness *inboundhttp.Readiness,
 	consumers []*worker, closeConsumers func(), relay *worker, closeRelay func(),
 ) error {
 	errCh := make(chan error, 1)
@@ -537,14 +549,23 @@ func serveUntilSignal(logger *slog.Logger, httpServer *http.Server, readiness *i
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	sigCtx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	died := watchWorkers(append([]*worker{relay}, consumers...)...)
 	select {
 	case err := <-errCh:
 		closeConsumers()
 		closeRelay()
 		return err
-	case <-ctx.Done():
+	case name := <-died:
+		// A consumer or the relay returned on its own (a lost broker, a
+		// failed reader): the service cannot run without it and must not sit
+		// "alive" with a dead worker, so exit non-zero and let the
+		// orchestrator restart it.
+		closeConsumers()
+		closeRelay()
+		return fmt.Errorf("%s stopped unexpectedly: exiting so the orchestrator restarts the service", name)
+	case <-sigCtx.Done():
 	}
 
 	readiness.SetNotReady()
@@ -563,6 +584,23 @@ func serveUntilSignal(logger *slog.Logger, httpServer *http.Server, readiness *i
 	closeRelay()
 	await(logger, relay)
 	return err
+}
+
+// watchWorkers returns a channel that receives the name of every worker that
+// returns. Workers only return when stopped or on an unrecoverable failure, so
+// a value read while the service is serving means a worker died.
+func watchWorkers(workers ...*worker) <-chan string {
+	died := make(chan string, len(workers))
+	for _, w := range workers {
+		if w == nil {
+			continue
+		}
+		go func() {
+			<-w.done
+			died <- w.name
+		}()
+	}
+	return died
 }
 
 // await waits (bounded) for w to return; nil w is a no-op.
