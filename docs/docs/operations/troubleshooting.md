@@ -93,8 +93,24 @@ console's origin to `CORS_ALLOWED_ORIGINS`.
 | A new group id replays nothing | claims in `processed_events` are keyed by consumer name (`slotting-demand`, `slotting-product`, `slotting-layout`, `slotting-relocation`), not by group | `outcome=duplicate` for every message | follow [Rebuild a local copy](/docs/operations/runbook#rebuild-a-local-copy-from-the-producers-topics) |
 | A laptop consumer "steals" partitions from the cluster | the same group id on the shared broker | `kafka-consumer-groups.sh --describe` shows your host | use a group id nobody else uses |
 
+## Analytics read side
+
+| Symptom | Cause | Check | Fix |
+| --- | --- | --- | --- |
+| `slotting-projector exited with error` with `ANALYTICS_DATABASE_URL is required: ...` or `KAFKA_BROKERS is required: ...` (`slotting-reports exited with error` with the first one) | the variable is unset; in the chart, `analytics.enabled` without a DSN source is refused at render | the pod log | set `analytics.url` or `analytics.existingSecret` |
+| Projector exits about 15 s after start with `run analytics migrations (after 5 attempts): ...` or `ping analytics database (after 5 attempts): ...` | the analytical database is unreachable or the DSN is wrong (or goes through PgBouncer: the migration lock needs a direct DSN) | the `retrying` WARN lines | fix `ANALYTICS_DATABASE_URL` |
+| `analytics consumer stopped unexpectedly: ...` and a restart | the reader failed for good (broker gone) | the error text | restore the broker; the restart resumes from the committed offset |
+| `GET /reports/freshness` answers `{"as_of": null, "lag_seconds": null}` | the projector has applied nothing yet: not deployed, no event since a fresh group started, or every event is being retried | projector logs, group lag of `ANALYTICS_CONSUMER_GROUP` | decide a plan, or check the projector |
+| `lag_seconds` keeps growing | the projector is behind or retrying a transient failure forever (it never dead-letters a transient error), or simply no plan was decided since `as_of` | group lag; ERROR lines of the consumer loop | fix the analytical database; if lag is zero, nothing is wrong |
+| `analytics: dead-lettering a message that can never be projected` | undecodable `data`, `plan_id` not equal to `subject`, a missing id, time, plan or site, or a SQLSTATE 22 / 23 rejection | `x-dlq-error` on `warehouse.slotting-optimization.analytics.dlq` | a producer defect in `cmd/api`'s encoder; replay after the fix as in [Replay a dead-lettered message](/docs/operations/runbook#replay-a-dead-lettered-message) |
+| `400 invalid-report-range` | `from` / `to` not RFC 3339, `from` not before `to`, or more than 366 days | the `detail` | fix the range (omit both for the last 30 days) |
+| `400 invalid-report-granularity` | `granularity` other than `day` | | omit it or send `day` |
+| `500 report-store-error` | the analytical query failed (database down, `statement_timeout = 15s` reached) | the `report query failed` ERROR line | fix the database or shorten the range |
+| `GET http://localhost:8000/api/slotting-optimization/reports/...` is `404` in the kind cluster | the chart renders no Kong route for the reports Service; the request reaches `cmd/api`, which has no `/reports` route | `kubectl get httproute -n warehouse-systems` | read the reports in-cluster (`port-forward svc/slotting-optimization-reports 8092:80`); a route needs a chart change |
+| Plans generated before the analytics stream existed have no approval latency | ADR 0006: a plan is only visible from the events the topic still holds | `slot_plan_facts.generated_at IS NULL` | expected |
+
 ## What does not exist
 
-There is no circuit breaker, no outbound HTTP client and no analytics read
-side in this service on `develop`, so none of their failure modes apply. The
-MCP server (`cmd/mcp`, ADR 0005) is read-only.
+There is no circuit breaker and no outbound HTTP client in this service on
+`develop`, so none of their failure modes apply. The MCP server (`cmd/mcp`,
+ADR 0005) and the reports binary are read-only.
