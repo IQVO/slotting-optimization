@@ -21,20 +21,31 @@ flowchart LR
     fl["facility-layout (wms)"]
     so["slotting-optimization (wms)"]
     is["inventory-storage (wms)"]
-    users["planners, console, agents (REST, MCP)"]
+    users["planners (REST), web remote slotting_mfe"]
+    agent["warehouse-ops-agent (MCP)"]
+    console["warehouse-console (reports screen)"]
     wwp["wes-work-planning -> fulfillment-execution"]
+    pfr["pick-face-replenishment (wms)"]
+    proj["slotting-projector -> slotting-reports (this repo)"]
     om -->|"SiteSkuDemandChanged"| so
     pm -->|"ProductClassified, ProductDimensionsDeclared, ProductMeasured"| so
     fl -->|"ZoneRegistered, LocationSlotRegistered, LocationSlotDecommissioned"| so
     users -->|"REST /slot-plans, /forward-slots, /sku-velocity"| so
+    agent -->|"MCP list_slot_plans, get_slot_plan"| so
     so -->|"SlotPlanApproved: RELOCATE work per move"| wwp
+    so -->|"SlotPlanApproved: forward assignment map"| pfr
+    so -->|"analytics topic: all three events"| proj
+    console -.->|"GET /reports/* (no Kong route)"| proj
     wwp -->|"TaskCompleted RELOCATE"| is
     is -->|"StockRelocated: execution progress"| so
 ```
 
 Topics: `warehouse.order-management.events`, `warehouse.product-master.events`,
-`warehouse.facility.events`, `warehouse.inventory.events` (in) and
-`warehouse.slotting-optimization.events` (out).
+`warehouse.facility.events`, `warehouse.inventory.events` (in),
+`warehouse.slotting-optimization.events` (out, integration) and
+`warehouse.slotting-optimization.analytics` (out, read only by this
+repository's projector, ADR 0006). The dashed edge is wired in the console
+but does not reach the reports binary in the kind cluster (see below).
 
 Source: `internal/adapters/inbound/kafka/{demand,product,layout,stock}_consumer.go`,
 `internal/adapters/outbound/kafka/encoder.go`,
@@ -90,10 +101,13 @@ wes-work-planning numbers the moves in (its ADR 0040).
 
 | Consumer | Protocol | Contract | State on `develop` |
 | --- | --- | --- | --- |
-| any subscriber of `warehouse.slotting-optimization.events` | Kafka, CloudEvents 1.0 structured mode, key = plan id, optional W3C `traceparent` header of the writing request ([ADR 0009](/docs/adr/0009-trace-context-crosses-the-outbox)) | `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated`, `...SlotPlanApproved` (full `{sku, slot}` map, the moves, `supersedes_plan_id`), `...SlotPlanRejected`; dataschema `urn:warehouse:slotting-optimization:events:<EventName>:v1` ([Domain events](/docs/ddd/domain-events)) | `wes-work-planning` consumes `SlotPlanApproved` (below); nothing consumes `SlotPlanGenerated` or `SlotPlanRejected` |
-| planners, `warehouse-console`, `warehouse-ops-agent` | REST (Open Host Service), unauthenticated | `apis/openapi.yaml`: `POST /slot-plans`, `GET /slot-plans`, `GET /slot-plans/{planId}`, `POST /slot-plans/{planId}/approve`, `POST /slot-plans/{planId}/reject`, `GET /forward-slots`, `GET /sku-velocity` | the API is built; no console remote and no agent tool call it yet. `CORS_ALLOWED_ORIGINS` defaults to the console's dev origin `http://localhost:5173`. |
+| any subscriber of `warehouse.slotting-optimization.events` | Kafka, CloudEvents 1.0 structured mode, key = plan id, optional W3C `traceparent` header of the writing request ([ADR 0009](/docs/adr/0009-trace-context-crosses-the-outbox)) | `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated`, `...SlotPlanApproved` (full `{sku, slot}` map, the moves, `supersedes_plan_id`), `...SlotPlanRejected`; dataschema `urn:warehouse:slotting-optimization:events:<EventName>:v1` ([Domain events](/docs/ddd/domain-events)) | `wes-work-planning` (below) and `pick-face-replenishment` consume `SlotPlanApproved`; no sibling consumes `SlotPlanGenerated` or `SlotPlanRejected` |
+| `pick-face-replenishment` | Kafka, Published Language / Conformist | `SlotPlanApproved` v1: its forward-assignment map (`ApplyForwardAssignmentMap`, `internal/adapters/inbound/kafka/slotting_consumer.go` on its `origin/develop`) | **live**: built there and wired by warehouse-infra (`helm-values/pick-face-replenishment.yaml`, group `pick-face-replenishment-slotting`) |
+| `cmd/slotting-projector` (this repository) | Kafka `warehouse.slotting-optimization.analytics`, same CloudEvents ids as the integration topic | the three event types with byte-identical payloads, dataschema `urn:warehouse:slotting-optimization:analytics:<EventName>:v1` (ADR 0006) | **live**: `analytics.enabled: true` in warehouse-infra's values; not an integration contract, no sibling reads it |
+| planners, web remote `slotting_mfe` | REST (Open Host Service), unauthenticated | `apis/openapi.yaml`: `POST /slot-plans`, `GET /slot-plans`, `GET /slot-plans/{planId}`, `POST /slot-plans/{planId}/approve`, `POST /slot-plans/{planId}/reject`, `GET /forward-slots`, `GET /sku-velocity` | API **live** behind Kong `/api/slotting-optimization`. The remote (`web/`) is built and registered by `warehouse-console` (route `/slotting/*`, container `slotting_mfe`, `/mfes/slotting-optimization/`), but warehouse-infra does not deploy it (no `frontend_remote` in `terraform/apps.yaml`, no `frontend.enabled`): **wired-but-unused**. `CORS_ALLOWED_ORIGINS` defaults to the console's dev origin `http://localhost:5173`. |
+| `warehouse-console` reports screen | REST `GET /reports/slot-plan-funnel`, `GET /reports/freshness` (snake_case) | `apis/openapi.yaml` (`getSlotPlanFunnel`, `getReportsFreshness`), served by `cmd/slotting-reports` | the console's "Slotting: Slot Plan Funnel" screen calls `${apiOrigin}/api/slotting-optimization/reports/...`; this chart renders no Kong route to the reports Service, so in the kind cluster the call reaches `cmd/api` and is a 404. The reports binary itself is deployed (in-cluster Service `slotting-optimization-reports:80`). |
 | `wes-work-planning` -> `fulfillment-execution` -> `inventory-storage` | Kafka | `SlotPlanApproved`: one RELOCATE work unit per move, sequenced inside the plan (a move into a slot another move vacates waits for that vacate) and superseded by a newer plan's approval (not-yet-released work is cancelled); released on the `RELOCATE` process path (process-path-management ADR 0033, intake `SLOT_RELOCATION`, ADR 0034); executed as a fulfillment-execution RELOCATE task (its ADR 0047) whose `TaskCompleted` inventory-storage applies as `RelocateStock` (its ADR 0039) | **built** in those contexts (wes-work-planning ADR 0040); decided by [ADR 0010](/docs/adr/0010-approved-slot-plans-are-executed-as-wes-relocation-work), which supersedes [ADR 0007](/docs/adr/0007-executing-an-approved-slot-plan). The resulting `StockRelocated` comes back upstream (above) as execution progress. |
-| MCP clients | MCP (Streamable HTTP) | read tools `get_slot_plan` (with `execution`, ADR 0010), `list_slot_plans`, `get_forward_slots`, `get_sku_velocity` | built: `cmd/mcp` (ADR 0005), unauthenticated, read-only |
+| `warehouse-ops-agent` and other MCP clients | MCP (Streamable HTTP) | read tools `get_slot_plan` (with `execution`, ADR 0010), `list_slot_plans`, `get_forward_slots`, `get_sku_velocity` | **live**: `cmd/mcp` (ADR 0005), unauthenticated, read-only, deployed by warehouse-infra (`mcp.enabled: true`, Kong `/api/mcp/slotting-optimization`). warehouse-ops-agent (its ADR 0024, `internal/adapters/outbound/mcpclient/slotting_optimization.go`) calls `list_slot_plans` and `get_slot_plan` for its slot-plan watch, at `http://slotting-optimization-mcp.warehouse-systems.svc.cluster.local:8090/mcp` (`helm-values/warehouse-ops-agent.yaml`); it does not call `get_forward_slots` or `get_sku_velocity` |
 
 ### Failure behaviour (outbound)
 
@@ -117,12 +131,15 @@ later events of the same plan then overtake it until an operator re-arms it
 - **Proposals are not gated on execution** in v1: a new plan can be
   generated and approved while the previous one is half executed.
 - **No edge to `inbound-receiving` or `warehouse-planning`.**
-- **No request-time calls** in either direction: no sibling calls this
-  service, and it calls none.
+- **No request-time calls from this service**: it calls no sibling. The
+  only request-time callers are people (REST, the web remote),
+  warehouse-ops-agent (MCP) and the console's reports screen.
 
 ## Edge and infrastructure
 
-The fleet edge (Kong `:8000`, `/api/<context>`) has no route for this
-context yet; the Helm chart (`charts/slotting-optimization`) exists but
-`warehouse-infra` does not deploy it yet; see
+warehouse-infra (`origin/develop`) deploys the chart with the api, the MCP
+server and the analytics pair on. Kong `:8000` routes
+`/api/slotting-optimization` to the api and `/api/mcp/slotting-optimization`
+to the MCP server; there is no route to the reports Service and the web
+remote is not deployed. Details:
 [Runbook](/docs/operations/runbook#deployment).
