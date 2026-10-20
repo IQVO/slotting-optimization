@@ -43,8 +43,8 @@ the page is wrong.
 :::
 
 :::info Not in this pack
-`develop` has no MCP server, analytics read side or web remote for this
-context (ADR 0001 names MCP read tools as a later phase), so there are no
-pages for them. Edges that depend on them are labelled *planned* wherever
-they appear.
+The `web/` remote (`slotting_mfe`) is packaged as its own image; it is
+described on [Runbook](/docs/operations/runbook#frontend-image-web-remote).
+Pages for the MCP server and the analytics read side are not part of this
+pack. Edges that depend on them are labelled *planned* wherever they appear.
 :::
