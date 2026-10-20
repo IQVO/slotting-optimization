@@ -16,6 +16,7 @@ tooling does not exist yet the page says so.
 | Item | State on `develop` |
 | --- | --- |
 | Binaries | four in one image: `cmd/api` (`/app/api`: REST, the four consumers and the outbox relay in one process, [Architecture](/docs/overview/architecture)), `cmd/mcp` (`/app/mcp`: the read-only MCP server, ADR 0005), `cmd/slotting-projector` (`/app/slotting-projector`) and `cmd/slotting-reports` (`/app/slotting-reports`): the analytics read side, ADR 0006 |
+| Web remote | `web/` is the Module Federation remote `slotting_mfe` (exposes `./App`, mounted by warehouse-console on `/slotting/*`). It has its own image, built from `web/Dockerfile` (nginx-unprivileged on `8080`), and the chart's `frontend` component serves it; see [Frontend image](#frontend-image-web-remote) |
 | Container image | built from the repository's `Dockerfile`; the `docker-publish` job of `.github/workflows/ci.yml` pushes `ghcr.io/iqvo/slotting-optimization:{latest,<short-sha>}` on a push to `main` |
 | Helm chart | `charts/slotting-optimization`: the api Deployment (always), the mcp Deployment, Service and Kong route (`mcp.enabled`, `mcp.route.enabled`, off by default), the projector Deployment (no Service) and the reports Deployment + Service `<fullname>-reports:80` (`analytics.enabled`, off by default), the web remote (`frontend.enabled`, off by default), an optional HPA for the api, ingress or Gateway API route. The api Deployment renders every variable `cmd/api` reads as explicit `env` and also mounts the chart ConfigMap with `envFrom` (explicit `env` wins); `tests/render_test.sh` (CI job `chart-tests`) fails when a variable a binary reads is not rendered into its Deployment, when the mount disappears, when the ConfigMap carries a key no binary reads, or when the analytics components render while `analytics.enabled` is false. The `release` job packages and pushes the chart. |
 | Deployment in the kind cluster | warehouse-infra (`origin/develop`): `terraform/apps.yaml` registers `slotting-optimization` (`kind: service`, `database: true`, `analytics: true`, no `frontend_remote`) and `helm-values/slotting-optimization.yaml` sets the four consumer groups, `kafka.enabled: true`, `mcp.enabled: true` with `mcp.route` on, `analytics.enabled: true` (`existingSecret: slotting-optimization-analytics-db`, group `slotting-optimization-analytics`) and `gatewayApi` on. So api, mcp, projector and reports are deployed; the web remote is not. |
@@ -94,6 +95,48 @@ On `SIGTERM`/`SIGINT` (`serveUntilSignal` in `cmd/api/main.go`):
 Give the pod a `terminationGracePeriodSeconds` of at least
 `SHUTDOWN_DRAIN_DELAY` + 10 + 10 + 10 + 5 seconds (40 s with the defaults) to
 cover the worst case.
+
+## Frontend image (web remote)
+
+`web/` holds the operator UI as a Module Federation remote, not a standalone
+app. The files that package it:
+
+| File | Role |
+| --- | --- |
+| `web/Dockerfile` | multi-stage build: `node:22-bookworm-slim` builds `@warehouse/ui-kit` (a sibling checkout, supplied as the named BuildKit context `uikit`), then `npm ci && npm run build` for the remote, then copies `dist/` into `nginxinc/nginx-unprivileged` |
+| `web/nginx.conf` | `listen 8080`; `GET /healthz` answers `200 ok`; `remoteEntry.js` and `index.html` are `Cache-Control: no-cache`; `/assets/` is `public, max-age=31536000, immutable` (one header); unknown paths fall back to `index.html` |
+| `web/.dockerignore` | keeps the host `node_modules` and `dist` out of the build context (a macOS `node_modules` would hide the linux native bindings) |
+
+Facts a deployer needs (from `web/vite.config.ts`):
+
+| Item | Value |
+| --- | --- |
+| Federation container name | `slotting_mfe` |
+| Exposed module | `./App` |
+| Entry file | `remoteEntry.js` |
+| Public base path (build) | `/mfes/slotting-optimization/` |
+| Container port | `8080` |
+| Dev / preview port | `5194` |
+| Image build context | `web/` with `--build-context uikit=<path to warehouse-ui-kit>` |
+| Chart component | `frontend` (`frontend.enabled`, default `false`; image `warehouse/slotting-optimization-frontend`) |
+
+Build and check it locally from the repository root:
+
+```bash
+docker build --build-context uikit=../warehouse-ui-kit \
+  -t warehouse/slotting-optimization-frontend:local web
+docker run --rm -p 18194:8080 warehouse/slotting-optimization-frontend:local
+curl -s localhost:18194/healthz                                  # ok
+curl -s -o /dev/null -w '%{http_code}\n' localhost:18194/remoteEntry.js   # 200
+```
+
+The Nginx web gateway of `warehouse-infra` strips the `/mfes/slotting-optimization`
+prefix before proxying to the pod, so the pod itself sees root-relative paths.
+The pod serves static bytes only: the SPA reaches the REST API at
+`${apiOrigin}/api/slotting-optimization`, with `apiOrigin` read at runtime
+from the console's `/config.json`. Kong never serves these assets. The CI job
+`web` runs lint, `tsc -b`, the vitest suite and the production build, then
+builds this image and requests `/healthz` and `remoteEntry.js` from it.
 
 ## Migrations
 

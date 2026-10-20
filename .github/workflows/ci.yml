@@ -340,6 +340,55 @@ jobs:
       - name: Architecture fitness tests
         run: go test ./internal/architecture/... -v
 
+  # slotting-mfe (web/) is a Module Federation remote consumed by the
+  # warehouse-console shell; it depends on @warehouse/ui-kit via
+  # `file:../../warehouse-ui-kit`, so warehouse-ui-kit is checked out as a
+  # SIBLING directory here (matching warehouse-console's own CI shape) so that
+  # relative path resolves the same way it does on a contributor's machine.
+  # lint + typecheck (tsc -b) + vitest unit/component tests + production build,
+  # then the web/Dockerfile image build (the image warehouse-infra builds for
+  # `frontend_remote`) and a smoke check that nginx serves remoteEntry.js.
+  # ============================================================
+  # CLASSIFICATION: UNIT TESTING (frontend remote) + PACKAGING VALIDATION
+  # ============================================================
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: slotting-optimization/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: slotting-optimization
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: IQVO/warehouse-ui-kit
+          ref: develop
+          path: warehouse-ui-kit
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "22"
+      - run: npm ci && npm run build
+        working-directory: warehouse-ui-kit
+      - run: npm ci
+      - run: npm run lint
+      - run: npx tsc -b
+      - run: npm test
+      - run: npm run build
+      - name: Build the frontend image (web/Dockerfile, ui-kit as a named build context)
+        run: docker build --build-context uikit=../../warehouse-ui-kit -t slotting-optimization-frontend:ci .
+      - name: Smoke check (nginx serves /healthz and the federation remoteEntry.js)
+        run: |
+          set -euo pipefail
+          docker run -d --rm --name slotting-fe -p 18194:8080 slotting-optimization-frontend:ci
+          trap 'docker stop slotting-fe >/dev/null' EXIT
+          for _ in $(seq 1 20); do
+            curl -fsS http://localhost:18194/healthz && break
+            sleep 1
+          done
+          curl -fsS -o /dev/null -w 'remoteEntry.js -> %{http_code}\n' http://localhost:18194/remoteEntry.js
+
   # Shift-left container scan: builds the image (no push) on pull requests,
   # so a vulnerable base image or dependency is caught before merge, not just
   # at publish time. Blocks on CRITICAL/HIGH with a known fix; findings also
@@ -378,7 +427,7 @@ jobs:
           severity: 'CRITICAL,HIGH,MEDIUM'
           ignore-unfixed: true
       - name: Upload Trivy SARIF to Security tab
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
