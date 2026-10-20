@@ -9,9 +9,18 @@ sidebar_position: 3
 
 `slotting-optimization` emits three signals: OpenTelemetry traces and
 metrics pushed over OTLP/gRPC, a Prometheus scrape endpoint for runtime
-metrics, and JSON logs on stdout. It defines two business counters of its own, `slotting_optimization.relocations.observed`
-and `slotting_optimization.slot_plans.decided` (ADR 0013), and no custom tracer. Everything
-else below comes from the libraries the composition root installs.
+metrics (`cmd/api` only), and JSON logs on stdout. It defines two business
+counters of its own, `slotting_optimization.relocations.observed` and
+`slotting_optimization.slot_plans.decided`, both emitted by `cmd/api`, and no
+custom tracer. Everything else below comes from the libraries each binary
+installs through the same `telemetry.Setup`.
+
+| Binary | `service.name` | HTTP spans and `http.server.request.duration` | Custom instruments | Prometheus `/metrics` |
+| --- | --- | --- | --- | --- |
+| `cmd/api` | `slotting-optimization` | yes (`NewRouter`) | the two counters above | yes |
+| `cmd/mcp` | `slotting-optimization-mcp` | yes (`cmd/mcp/router.go`) | none | no |
+| `cmd/slotting-projector` | `slotting-optimization-projector` | no (the admin mux is a plain `http.ServeMux`, uninstrumented) | none: runtime metrics only | no |
+| `cmd/slotting-reports` | `slotting-optimization-reports` | yes (`NewReportsRouter`: `/reports/slot-plan-funnel`, `/reports/freshness`, `/healthz`) | none | no |
 
 ## Pipeline
 
@@ -72,8 +81,10 @@ scrapeable without a Collector (`telemetry.NewMetricsHandler`).
 ### What is not measured
 
 No counter exists for plans generated, outbox lag, consumer lag, the outcomes
-of the demand, product and layout consumers, or dead-lettered messages. Use
-the database and the broker for those (queries below) or the log lines.
+of the demand, product and layout consumers, the projector's applied,
+skipped or dead-lettered events, or dead-lettered messages in general. Use
+the database and the broker for those (queries below), the reports binary's
+`GET /reports/freshness` for the projection's lag, or the log lines.
 
 ## Traces
 
@@ -114,14 +125,39 @@ Trace ids are not injected into log lines.
 | `worker did not stop before the shutdown drain deadline` | WARN | `worker` | `cmd/api/main.go` |
 | `service exited with error` | ERROR | `error` (a boot error naming the variable, or `<worker> stopped unexpectedly: exiting so the orchestrator restarts the service`) | `cmd/api/main.go` (exit code 1) |
 | `readiness: dependency is not ready` | WARN | `dependency` (`postgres`, `kafka`), `error` (at most once per 3 s cache window) | `inbound/http/readiness.go` |
+| `telemetry configured` | INFO | `service_name`, `service_version`, `environment`, `otlp_endpoint` | `cmd/slotting-projector/main.go` |
+| `projector admin server listening` / `analytics consumer running` | INFO | `addr` / `topic`, `group_id`, `brokers` | `cmd/slotting-projector/main.go` |
+| `analytics: skipping message that is not a CloudEvents 1.0 event (further skips are counted, not logged, until the next interval)` | WARN | `error`, `topic`, `partition`, `offset`, `suppressed_since_last_warning` (at most one line per minute) | `inbound/kafka/analytics_consumer.go` |
+| `analytics: ignoring event of another type` | DEBUG | `type`, `event_id` | `inbound/kafka/analytics_consumer.go` |
+| `analytics: dead-lettering a message that can never be projected` | ERROR | `error`, `dlq_topic`, `partition`, `offset` | `inbound/kafka/analytics_consumer.go` |
+| `slotting-projector exited with error` | ERROR | `error` (`ANALYTICS_DATABASE_URL is required ...`, `analytics consumer stopped unexpectedly: ...`, `admin server failed: ...`) | `cmd/slotting-projector/main.go` (exit code 1) |
+| `analytics consumer returned an error at shutdown` / `analytics consumer did not stop before the shutdown deadline` | WARN | `error` | `cmd/slotting-projector/main.go` |
+| `reports server listening` | INFO | `addr` | `cmd/slotting-reports/main.go` |
+| `report query failed` | ERROR | `error`, `path` (the `500 report-store-error` answer never echoes it) | `inbound/http/reports_handler.go` |
+| `slotting-reports exited with error` | ERROR | `error` | `cmd/slotting-reports/main.go` (exit code 1) |
 
 A 4xx answer is not logged; it is visible in the span status and in the
 RFC 7807 body (`type`, `title`, `status`, `detail`, `instance`).
 
-## Dashboards
+## Dashboards and alerts
 
-None. This repository has no dashboard JSON, and `warehouse-infra`
-(`origin/develop`) has no Grafana or ArgoCD entry for this context yet.
+This repository has no dashboard JSON. warehouse-infra (`origin/develop`)
+generates the Grafana dashboard `warehouse-slotting-optimization`
+(`terraform/dashboards/contexts/slotting-optimization.json`, from
+`scripts/gen-context-dashboards.py`): Kong request rate, 5xx ratio and p95
+latency over the routes `slotting-optimization`, `-mcp` and `-reports`;
+`http_server_request_duration_seconds` by route and by process for every
+`service_name=~"slotting-optimization.*"`; Go goroutines and memory; and the
+Loki log panels for `app="slotting-optimization"`. It has no panel for the two
+business counters. The Kong regex includes a `-reports` route, but the chart
+renders none, so that series stays empty.
+
+Its alert rules (`terraform/alerting/warehouse-alert-rules.json`) for this
+context are the group `warehouse-slotting-optimization`
+(`WarehouseKong5xxRatioHigh`, `WarehousePodRestarting`) and
+`warehouse-slotting-optimization-slo` (`WarehouseApiAvailabilityBurnFast`,
+`WarehouseApiLatencyBurnFast`, `WarehouseApiAvailabilityBurnSlow`,
+`WarehouseApiLatencyBurnSlow`), all linking to this site's runbook.
 
 ## Health queries
 
@@ -145,9 +181,19 @@ SELECT plan_id, count(DISTINCT move_seq) AS moves_executed, max(executed_at) AS 
 FROM slot_plan_move_executions GROUP BY plan_id ORDER BY last_executed_at DESC LIMIT 20;
 ```
 
+```sql
+-- Analytical database: what the projector applied, and its freshness basis
+SELECT event_type, count(*), max(occurred_at) FROM analytics_processed_events GROUP BY event_type;
+
+-- Plans still pending (generated, neither approved nor rejected yet)
+SELECT site_id, count(*) FROM slot_plan_facts
+WHERE generated_at IS NOT NULL AND approved_at IS NULL AND rejected_at IS NULL GROUP BY site_id;
+```
+
 Consumer lag lives in the broker: describe the groups set in
-`DEMAND_CONSUMER_GROUP`, `PRODUCT_CONSUMER_GROUP`, `LAYOUT_CONSUMER_GROUP` and
-`RELOCATION_CONSUMER_GROUP` with `kafka-consumer-groups.sh --describe`.
+`DEMAND_CONSUMER_GROUP`, `PRODUCT_CONSUMER_GROUP`, `LAYOUT_CONSUMER_GROUP`,
+`RELOCATION_CONSUMER_GROUP` and `ANALYTICS_CONSUMER_GROUP` with
+`kafka-consumer-groups.sh --describe`.
 
 ## Suggested alerts
 
@@ -156,6 +202,8 @@ Consumer lag lives in the broker: describe the groups set in
 | Outbox backlog | `count(*)` of unpublished `outbox_events` older than 5 minutes greater than 0 | the relay is failing; plan decisions are not reaching Kafka |
 | Dead letters | any message on `warehouse.order-management.events.dlq`, `warehouse.product-master.events.dlq` or `warehouse.facility.events.dlq` | a copy is missing data the next plan needs |
 | Relocation poison | any message on `warehouse.inventory.events.dlq` from this consumer (`x-dlq-error` mentions `relocation`) | inventory-storage published a `StockRelocated` that misses a field; a move's progress is missing |
+| Analytics poison | any message on `warehouse.slotting-optimization.analytics.dlq` | an event the projector can never apply; the funnel misses it |
+| Projection stale | `lag_seconds` of `GET /reports/freshness` growing while plans are decided, or growing lag of `ANALYTICS_CONSUMER_GROUP` | the projector is down or retrying a transient failure forever |
 | Unmatched relocations | rate of `slotting_optimization.relocations.observed` with `outcome="unmatched"` and `reason` one of `unknown-plan`, `unknown-move`, `sku-mismatch` above 0 | RELOCATE tasks refer to moves this context does not know: the move numbering of the plan and of wes-work-planning disagree |
 | Consumer stuck | `handling failed; retrying the same message` logged for more than 1 minute, or growing group lag | a blocked partition |
 | Readiness | `/readyz` 503 outside a rollout | the pod is shutting down or wedged in the drain |

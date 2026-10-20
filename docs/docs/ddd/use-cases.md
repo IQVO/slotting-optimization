@@ -69,6 +69,18 @@ outbox.
 | `ApplyLocationSlotDecommissioned` | `LocationSlotDecommissioned` on `warehouse.facility.events` | `slotting-layout` | location code token | `active = false` for good, also for a slot never seen before |
 | `RecordRelocation` (ADR 0010) | `StockRelocated` on `warehouse.inventory.events` | `slotting-relocation` | `relocation_id`, `site_code`, `sku`, `from_bin`, `to_bin` present; `quantity >= 1`; `occurred_at` present (else `ErrInvalidEvent`, dead-lettered) | matches the move (`source_ref` = `<plan_id>:<move_seq>` of an Approved or Superseded plan of the site whose move there is for the SKU; else the site's Approved plan's move for the SKU whose bins fit its kind) and records it in `slot_plan_move_executions` once per `relocation_id` (`applied`, or `duplicate` for a replayed relocation); no match is `unmatched` with a reason, claimed and counted, never dead-lettered. Proposals are not gated on it. |
 
+## Analytics read side (not in this package)
+
+The projector and the reports binary (ADR 0006) do not go through
+`internal/application/usecases`: their logic is the self-contained region
+`internal/analytics/report`, behind its own `Projection` and `Reader` ports.
+
+| Operation | Trigger | Inputs | Checks | Effect / result |
+| --- | --- | --- | --- | --- |
+| Project an event (`Projection.Apply`) | a `SlotPlanGenerated`, `SlotPlanApproved` or `SlotPlanRejected` on `warehouse.slotting-optimization.analytics` (`cmd/slotting-projector`) | CloudEvents `id`, `time`, `subject`; `data.plan_id`, `data.site_id`, `data.supersedes_plan_id` (approvals) | `plan_id` equals `subject`; id, time, plan and site present; only an approval may supersede (`Event.Validate`, else `ErrInvalidEvent`: dead-lettered) | claims the id in `analytics_processed_events` and upserts `slot_plan_facts` in one transaction; a replayed id changes nothing |
+| Slot-plan funnel (`Reader.FunnelDays`) | `GET /reports/slot-plan-funnel` | `from?`, `to?` (RFC 3339), `siteId?`, `granularity?` | range valid, not empty, at most 366 days (`invalid-report-range`); granularity `day` (`invalid-report-granularity`) | one row per UTC day of the range, zeros included: plans generated, approved, rejected, approval latency (count, p50, p95 in seconds) and supersessions |
+| Freshness (`Reader.LastEventAt`) | `GET /reports/freshness` | none | | `as_of` (newest applied event time) and `lag_seconds` (never negative), both `null` before the first event |
+
 ## Not use cases
 
 - **Supersede** is not triggered on its own: it happens inside

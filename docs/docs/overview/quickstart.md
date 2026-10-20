@@ -66,8 +66,8 @@ broker splits the partitions between your laptop and the cluster (the reason
 `TestKafkaConsumerGroupNeverHardcodedInline` exists). Stop with
 `docker compose down -v`.
 
-The binary applies the embedded migration `0001_slotting_schema.up.sql` at
-boot (through `MIGRATIONS_DATABASE_URL`, which defaults to `DATABASE_URL`),
+The binary applies the embedded migrations `0001_slotting_schema.up.sql` and
+`0002_slot_plan_move_executions.up.sql` at boot (through `MIGRATIONS_DATABASE_URL`, which defaults to `DATABASE_URL`),
 starts the four consumers and the outbox relay, and only then binds the
 listener. The process logs JSON lines to stdout:
 
@@ -173,6 +173,36 @@ Every write lands in `outbox_events` in the same transaction:
 ```sql
 SELECT id, event_type, subject, published_at IS NOT NULL AS published FROM outbox_events ORDER BY id;
 ```
+
+## Run the analytics read side (optional)
+
+The projector and the reports binary need a second, analytical database
+(`ANALYTICS_DATABASE_URL`, ADR 0006). `docker-compose.yml` starts only one
+Postgres, so create one beside the OLTP database and run both binaries
+against it (the projector applies its own migration at boot):
+
+```bash
+docker compose exec -T postgres createdb -U slotting slotting_analytics
+
+go build -o bin/slotting-projector ./cmd/slotting-projector
+go build -o bin/slotting-reports ./cmd/slotting-reports
+ANALYTICS_DATABASE_URL='postgres://slotting:***@localhost:55432/slotting_analytics?sslmode=disable' \
+  KAFKA_BROKERS=localhost:9092 ANALYTICS_CONSUMER_GROUP=slotting-optimization-analytics-local \
+  ./bin/slotting-projector          # admin :8091 (/healthz, /readyz)
+ANALYTICS_DATABASE_URL='postgres://slotting:***@localhost:55432/slotting_analytics?sslmode=disable' \
+  ./bin/slotting-reports            # :8092
+
+curl -s localhost:8092/reports/freshness
+curl -s 'localhost:8092/reports/slot-plan-funnel?siteId=WH1'
+```
+
+`/reports/freshness` answers `{"as_of": null, "lag_seconds": null}` until the
+projector has applied an event. Every plan decision of `cmd/api` above is
+published twice (integration and analytics topic, one CloudEvents id), so
+the funnel counts the plans generated, approved and rejected per UTC day of
+the requested range (default: the 30 days ending now). These commands are
+not captured from a run on this page; the response shapes come from
+`internal/adapters/inbound/http/reports_handler.go` and `apis/openapi.yaml`.
 
 ## Fill the copies from the producers' topics
 

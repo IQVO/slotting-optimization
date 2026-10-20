@@ -6,8 +6,11 @@ a forward pick slot and which slot (policy `abc-velocity-v1`: rank by order-line
 picks, ABC classes, eligibility by hazmat, temperature and capacity, stickiness
 to limit churn), and records the human decision on the proposal (Draft, then
 Approved or Rejected). Approved plans are published as CloudEvents with the full
-assignment map and the moves. Execution of the moves on the floor is a planned,
-not yet built, edge.
+assignment map and the moves. The moves of an Approved plan are executed on
+the floor as WES relocation work (ADR 0010): wes-work-planning plans one
+RELOCATE work unit per move, fulfillment-execution executes it,
+inventory-storage records the `StockRelocated` that comes back here as the
+plan's execution progress.
 
 Built from `warehouse-harness-template` v2 (`HARNESS.md` documents the sensors).
 CloudEvents subdomain `wms`; module `github.com/claudioed/slotting-optimization`.
@@ -23,6 +26,9 @@ CloudEvents subdomain `wms`; module `github.com/claudioed/slotting-optimization`
 | REST contract | [`apis/openapi.yaml`](apis/openapi.yaml) |
 | Event contract | [`apis/asyncapi.yaml`](apis/asyncapi.yaml) |
 | MCP server (read-only tools, `cmd/mcp`) | [`docs/adr/0005`](docs/adr/0005-mcp-server-adoption.md), `.claude/rules/mcp.md` |
+| Analytics read side (stream, `cmd/slotting-projector`, `cmd/slotting-reports`) | [`docs/adr/0006`](docs/adr/0006-analytics-read-side.md) |
+| Execution of approved plans as WES relocation work | [`docs/adr/0010`](docs/adr/0010-approved-slot-plans-are-executed-as-wes-relocation-work.md) |
+| Postgres and Kafka are the only runtime | [`docs/adr/0011`](docs/adr/0011-postgres-and-kafka-are-the-only-runtime.md) |
 | Image and Helm chart | `Dockerfile`, `charts/slotting-optimization`, `.claude/rules/chart.md` |
 | Domain code | `internal/domain/slotplan` (aggregate), `internal/domain/planning` (planner) |
 | Agent rules | `.claude/rules/` |
@@ -46,10 +52,15 @@ The documentation site is published at
 ## Status
 
 Contracts, ADRs, the domain packages and the service (use cases, Postgres
-persistence, the outbox, the three local-copy Kafka consumers and the REST
-API in `cmd/api`) are in place, packaged as one image with two binaries
-(`/app/api` and `/app/mcp`) and a Helm chart. Execution of the approved moves
-on the floor is a planned, not yet built, edge.
+persistence, the outbox, the four Kafka consumers and the REST API in
+`cmd/api`), the read-only MCP server (`cmd/mcp`), the analytics read side
+(`cmd/slotting-projector`, `cmd/slotting-reports`) and the web remote (`web/`)
+are in place, packaged as one image with four binaries (`/app/api`,
+`/app/mcp`, `/app/slotting-projector`, `/app/slotting-reports`) and a Helm
+chart. warehouse-infra (`origin/develop`, `helm-values/slotting-optimization.yaml`)
+deploys the api, the MCP server (Kong `/api/mcp/slotting-optimization`) and
+the analytics pair; it does not deploy the web remote (no `frontend_remote` in
+its `terraform/apps.yaml` entry, no `frontend.enabled`).
 
 ## Binaries
 
@@ -57,6 +68,8 @@ on the floor is a planned, not yet built, edge.
 |---|---|---|
 | `cmd/api` | 8080 | REST API, outbox relay and local-copy consumers (the writer) |
 | `cmd/mcp` | 8090 | MCP server over Streamable HTTP, read-only, no Kafka (ADR 0005) |
+| `cmd/slotting-projector` | 8091 (admin: `/healthz`, `/readyz`) | consumes `warehouse.slotting-optimization.analytics` (group `ANALYTICS_CONSUMER_GROUP`) and writes the analytical database (`ANALYTICS_DATABASE_URL`); its only writer (ADR 0006) |
+| `cmd/slotting-reports` | 8092 | read-only `GET /reports/slot-plan-funnel` and `GET /reports/freshness` over the analytical database (ADR 0006) |
 
 `cmd/mcp` serves four tools at `/` and `/mcp` (health at `/healthz`), no auth:
 
@@ -86,8 +99,11 @@ spectral lint apis/asyncapi.yaml --ruleset .spectral.asyncapi.yaml
 
 ## Web remote (`web/`)
 
-`slotting_mfe`, a Vite + React Module Federation remote that exposes `./App`;
-the `warehouse-console` shell mounts it under `/slotting-optimization/*`.
+`slotting_mfe`, a Vite + React Module Federation remote that exposes `./App`
+(screens: plan list and plan detail with the approve / reject workbench,
+forward slots, SKU velocity). The `warehouse-console` shell (`origin/develop`)
+mounts it under `/slotting/*`; the remote's own tests and comments assume
+`/slotting-optimization/*` (it uses relative links, so it works under either).
 Production asset base `/mfes/slotting-optimization/`; standalone dev server on
 `:5194` — the next free port on the fleet's 5181+ ladder after
 inbound-receiving's `:5193`.
@@ -116,6 +132,8 @@ warehouse-infra's Nginx web gateway at `/mfes/slotting-optimization/`.
 docker build -t slotting-optimization:local .
 docker run --rm -p 8080:8080 slotting-optimization:local        # api: exits at boot unless DATABASE_URL, KAFKA_BROKERS and the four *_CONSUMER_GROUP are set (see docker-compose.yml)
 docker run --rm -p 8090:8090 --entrypoint /app/mcp slotting-optimization:local   # MCP server: needs DATABASE_URL
+docker run --rm -p 8091:8091 --entrypoint /app/slotting-projector slotting-optimization:local   # needs ANALYTICS_DATABASE_URL and KAFKA_BROKERS
+docker run --rm -p 8092:8092 --entrypoint /app/slotting-reports slotting-optimization:local     # needs ANALYTICS_DATABASE_URL
 helm lint charts/slotting-optimization -f charts/slotting-optimization/ci/default-values.yaml
 bash charts/slotting-optimization/tests/render_test.sh
 python3 charts/slotting-optimization/tests/test_service_selectors.py
@@ -126,8 +144,12 @@ mode, and the chart refuses to render without `database.url` or
 `database.existingSecret`, `kafka.brokers` and the four `config.*ConsumerGroup`
 values. It exposes a dedicated value for every environment variable `cmd/api`
 reads (`DEMAND_SITE_ID`, `LOOKBACK_DAYS`, `FORWARD_ZONE_CODES`, the `*_MODE` (only
-`kafka`) and `*_CONSUMER_GROUP` pairs, ...); the MCP Deployment is off unless
-`mcp.enabled=true`. Images and chart publish to `ghcr.io/iqvo/slotting-optimization`.
+`kafka`) and `*_CONSUMER_GROUP` pairs, ...). Three components are off by
+default: the MCP Deployment (`mcp.enabled`), the analytics projector and
+reports Deployments (`analytics.enabled`, which also needs `analytics.url` or
+`analytics.existingSecret`) and the web remote (`frontend.enabled`). The chart
+renders no Kong route for the reports Service (it has no `reports-route.yaml`).
+Images and chart publish to `ghcr.io/iqvo/slotting-optimization`.
 
 ## Study project
 

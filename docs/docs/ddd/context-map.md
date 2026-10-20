@@ -18,14 +18,16 @@ flowchart LR
     pm["product-master (wms, Supporting)"]
     fl["facility-layout (wms, Generic)"]
     so["slotting-optimization (wms, Supporting)"]
-    ui["warehouse-console, warehouse-ops-agent"]
+    ui["warehouse-console (web remote slotting_mfe)"]
+    ag["warehouse-ops-agent"]
     wwp["wes-work-planning"]
     fe["fulfillment-execution"]
     is["inventory-storage (wms)"]
     om -->|"U: Published Language / D: Conformist (Kafka)"| so
     pm -->|"U: Published Language / D: Conformist (Kafka)"| so
     fl -->|"U: Open Host Service + Published Language / D: Conformist (Kafka)"| so
-    so -.->|"U: Open Host Service (REST, MCP), no caller yet"| ui
+    so -->|"U: Open Host Service (MCP read tools)"| ag
+    so -.->|"U: Open Host Service (REST), web remote not deployed"| ui
     so -->|"U: Published Language SlotPlanApproved / D: Conformist"| wwp
     wwp --> fe
     fe --> is
@@ -45,7 +47,8 @@ Source: `internal/adapters/inbound/kafka/consumer.go` (topics),
 | order-management -> slotting-optimization | Published Language / **Conformist**, local demand copy | Kafka `warehouse.order-management.events`, group `DEMAND_CONSUMER_GROUP` | `SiteSkuDemandChanged` v1 | built (`DEMAND_MODE=kafka`) |
 | product-master -> slotting-optimization | Published Language / **Conformist**, local product copy | Kafka `warehouse.product-master.events`, group `PRODUCT_CONSUMER_GROUP` | `ProductClassified`, `ProductDimensionsDeclared`, `ProductMeasured` v1 | built (`PRODUCT_MODE=kafka`) |
 | facility-layout -> slotting-optimization | Open Host Service + Published Language / **Conformist**, local slot copy | Kafka `warehouse.facility.events`, group `LAYOUT_CONSUMER_GROUP` | `ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned` v1 | built (`LAYOUT_MODE=kafka`) |
-| slotting-optimization -> console, ops-agent | **Open Host Service** | REST (`apis/openapi.yaml`); MCP read tools later | the seven REST operations | API built, no caller yet |
+| slotting-optimization -> warehouse-ops-agent | **Open Host Service** | MCP read tools (`cmd/mcp`, Kong `/api/mcp/slotting-optimization`) | `list_slot_plans`, `get_slot_plan` (the agent's slot-plan watch, its ADR 0024) | live: MCP enabled in warehouse-infra and the agent's `SLOTTING_OPTIMIZATION_MCP_ENDPOINT` set |
+| slotting-optimization -> console web remote | **Open Host Service** | REST (`apis/openapi.yaml`) through Kong `/api/slotting-optimization` | the seven REST operations | remote `slotting_mfe` built and packaged (`web/Dockerfile`); wired-but-unused: no `frontend_remote` in warehouse-infra `terraform/apps.yaml`, so no image or gateway route |
 | slotting-optimization -> wes-work-planning (-> fulfillment-execution -> inventory-storage) | Published Language / **Conformist** | Kafka `warehouse.slotting-optimization.events`; RELOCATE work on the process-path-management `RELOCATE` path (intake `SLOT_RELOCATION`) | `SlotPlanApproved` v1 (moves) | built in the siblings (wes-work-planning ADR 0040, fulfillment-execution ADR 0047, inventory-storage ADR 0039, process-path-management ADR 0033/0034); decided by ADR 0010 |
 | inventory-storage -> slotting-optimization | Published Language / **Conformist**, execution-progress read model | Kafka `warehouse.inventory.events`, group `RELOCATION_CONSUMER_GROUP` | `StockRelocated` v1 | built (`RELOCATION_MODE=kafka`, ADR 0010) |
 

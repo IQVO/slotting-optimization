@@ -20,11 +20,12 @@ assignment map and the physical moves it implies.
 | Tier | **WMS** (CloudEvents subdomain segment `wms`) | `internal/adapters/kafka/cloudevents/cloudevents.go` (`Subdomain = "wms"`) |
 | Aggregate | `SlotPlan` (package `internal/domain/slotplan`) | ADR 0002 |
 | Policy | `abc-velocity-v1` (package `internal/domain/planning`) | ADR 0002 |
-| Binaries | one: `cmd/api` (REST on `HTTP_ADDR`, default `:8080`, plus four Kafka consumers and the outbox relay as goroutines, all always on) | `cmd/api/main.go` |
-| Data store | one Postgres database (embedded migrations); there is no in-memory mode (ADR 0011) | `internal/adapters/outbound/postgres` |
-| Kafka | publishes `warehouse.slotting-optimization.events`; consumes `warehouse.order-management.events`, `warehouse.product-master.events`, `warehouse.facility.events`, `warehouse.inventory.events`; the only runtime (ADR 0011) | ADR 0003, ADR 0004, ADR 0010 |
+| Binaries | four, in one image: `cmd/api` (REST on `HTTP_ADDR`, default `:8080`, plus four Kafka consumers and the outbox relay as goroutines, all always on), `cmd/mcp` (read-only MCP server, `:8090`), `cmd/slotting-projector` (analytics writer, admin `:8091`) and `cmd/slotting-reports` (read-only reports, `:8092`) | `cmd/*/main.go`, [Architecture](/docs/overview/architecture) |
+| Data stores | the OLTP Postgres database (`DATABASE_URL`, embedded migrations `0001`-`0002`) and a separate analytical Postgres database (`ANALYTICS_DATABASE_URL`, embedded migration `analytics/migrations/0001`); there is no in-memory mode (ADR 0011) | `internal/adapters/outbound/postgres`, `internal/adapters/outbound/analyticsstore` |
+| Kafka | publishes `warehouse.slotting-optimization.events` (integration) and `warehouse.slotting-optimization.analytics` (analytics, ADR 0006); consumes `warehouse.order-management.events`, `warehouse.product-master.events`, `warehouse.facility.events`, `warehouse.inventory.events` (api) and `warehouse.slotting-optimization.analytics` (projector); the only runtime (ADR 0011) | ADR 0003, ADR 0004, ADR 0006, ADR 0010 |
 | Auth | none (fleet-wide decision; `TestNoAuthMiddlewareReintroduced` keeps it out) | `internal/adapters/inbound/http/server.go` |
-| MCP | none on `develop` (ADR 0001 names MCP read tools as a later phase) | no `cmd/mcp` |
+| MCP | `cmd/mcp`: four read-only tools (`get_slot_plan`, `list_slot_plans`, `get_forward_slots`, `get_sku_velocity`), Streamable HTTP, unauthenticated | ADR 0005, `internal/adapters/inbound/mcp/tools.go` |
+| Web | `web/`: the `slotting_mfe` Module Federation remote (plan list and approval workbench, forward slots, SKU velocity) | `web/src/App.tsx` |
 
 ## What it owns
 
@@ -53,14 +54,17 @@ plan's execution progress (ADR 0010).
 
 | Capability | Interface | Use case |
 | --- | --- | --- |
-| Generate a Draft plan for a site | `POST /slot-plans` (requires `Idempotency-Key` with Postgres) | `GeneratePlan` |
+| Generate a Draft plan for a site | `POST /slot-plans` (requires `Idempotency-Key`) | `GeneratePlan` |
 | Approve a Draft (supersedes the previous Approved plan) | `POST /slot-plans/{planId}/approve` | `ApprovePlan` |
 | Reject a Draft with an optional reason | `POST /slot-plans/{planId}/reject` | `RejectPlan` |
 | Read plans | `GET /slot-plans`, `GET /slot-plans/{planId}` | `ListPlans`, `GetPlan` |
 | Read the current forward-slot map of a site | `GET /forward-slots` | `ListForwardSlots` |
 | Read SKU velocity (the planner's demand input) | `GET /sku-velocity` | `ListSkuVelocity` |
 | Keep the demand, product and layout copies current | Kafka consumers (always on; `DEMAND_MODE`, `PRODUCT_MODE`, `LAYOUT_MODE` are `kafka`, the only value) | `ApplyDemandChanged`, `ApplyProductClassified`, `ApplyPhysicalProfile`, `ApplyZoneRegistered`, `ApplyLocationSlotRegistered`, `ApplyLocationSlotDecommissioned` |
-| Publish plan decisions | transactional outbox + relay (always on, `EVENT_PUBLISHER=kafka`) | every write use case |
+| Record the execution progress of an Approved plan | Kafka consumer of `StockRelocated` (always on, `RELOCATION_MODE=kafka`) | `RecordRelocation` |
+| Publish plan decisions | transactional outbox + relay (always on, `EVENT_PUBLISHER=kafka`): each event goes to the integration topic and, under the same CloudEvents id, to the analytics topic | every write use case |
+| Read plans and velocity from an agent | MCP tools over the same database | `GetPlan`, `ListPlans`, `ListForwardSlots`, `ListSkuVelocity` |
+| Report the slot-plan funnel (generated, approved, rejected, approval latency, supersessions per day) | `GET /reports/slot-plan-funnel`, `GET /reports/freshness` on `cmd/slotting-reports` | `internal/analytics/report` (not an OLTP use case) |
 
 ## Where to go next
 
