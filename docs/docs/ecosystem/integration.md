@@ -84,7 +84,7 @@ wes-work-planning numbers the moves in (its ADR 0040).
 | Transient failure (Postgres) | same message retried with backoff, 5 attempts, then `<topic>.dlq` |
 | Redelivery | `processed_events` claim makes it a no-op (`outcome=duplicate`) |
 | Out-of-order product events | the `version` guard keeps the newest (`outcome=stale`) |
-| Consumer not enabled (`*_MODE=permissive`, the default) | the copy is whatever the database already holds |
+| Consumer behind or its broker down | the copy is whatever the database already holds; the consumers always run (`*_MODE` accepts only `kafka`, ADR 0011) and the process exits non-zero when one dies on its own |
 
 ## Downstream
 
@@ -104,8 +104,8 @@ order, with the original CloudEvents ids, and stops at the first failing
 row so per-plan order holds. A row that fails `OUTBOX_MAX_ATTEMPTS` times
 (default 20) is excluded and logged at ERROR so the rows behind it move on;
 later events of the same plan then overtake it until an operator re-arms it
-([ADR 0008](/docs/adr/0008-outbox-relay-attempt-cap)). With `EVENT_PUBLISHER=log` (the default) the
-events are only logged; downstream sees nothing.
+([ADR 0008](/docs/adr/0008-outbox-relay-attempt-cap)). The relay always publishes to Kafka
+(`EVENT_PUBLISHER` accepts only `kafka`): there is no log sink.
 
 ## Explicit non-edges
 

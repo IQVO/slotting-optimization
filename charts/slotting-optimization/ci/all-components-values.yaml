@@ -20,7 +20,6 @@ config:
   shutdownDrainDelay: "5s"
   corsAllowedOrigins: "http://localhost:5173"
 kafka:
-  enabled: true
   brokers: "kafka.warehouse-systems.svc.cluster.local:9092"
 gatewayApi:
   enabled: true
@@ -37,8 +36,8 @@ autoscaling:
 mcp:
   enabled: true
 # The analytics read side (ADR 0006): projector + reports on, with the
-# analytical DSN the guard requires (kafka is enabled above, as the
-# projector's KAFKA_BROKERS needs).
+# analytical DSN the guard requires (the projector's KAFKA_BROKERS comes from
+# kafka.brokers above).
 analytics:
   enabled: true
   url: "postgres://u@example.invalid:5432/analytics"

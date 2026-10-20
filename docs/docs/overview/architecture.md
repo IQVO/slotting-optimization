@@ -16,7 +16,7 @@ transactional-outbox relay in one process.
 
 | Binary | Role | Listens on | Background workers |
 | --- | --- | --- | --- |
-| `cmd/api` | Composition root: reads the environment, builds the adapters (Postgres or in-memory), runs the embedded migrations, wires the use cases into the chi router, starts the consumers and the relay, and shuts everything down in order on `SIGINT`/`SIGTERM`. | `HTTP_ADDR` (default `:8080`): the REST API, `GET /healthz`, `GET /readyz`, `GET /metrics` | demand consumer (`DEMAND_MODE=kafka`), product consumer (`PRODUCT_MODE=kafka`), layout consumer (`LAYOUT_MODE=kafka`), outbox relay (always; `EVENT_PUBLISHER` picks the sink) |
+| `cmd/api` | Composition root: validates the environment (a missing `DATABASE_URL`, `KAFKA_BROKERS` or consumer group is a boot error before anything binds), builds the Postgres adapters, runs the embedded migrations, wires the use cases into the chi router, starts the consumers and the relay, and shuts everything down in order on `SIGINT`/`SIGTERM`; it exits non-zero when the relay or a consumer dies on its own. | `HTTP_ADDR` (default `:8080`): the REST API, `GET /healthz` (liveness), `GET /readyz` (Postgres ping + Kafka metadata), `GET /metrics` | demand, product, layout and relocation consumers (always on; `*_MODE` accepts only `kafka`), outbox relay (always on; `EVENT_PUBLISHER` accepts only `kafka`) |
 
 There is no MCP binary, no analytics projector and no reports binary on
 `develop`; ADR 0001 and ADR 0004 name those as later phases. There is no other
@@ -35,7 +35,7 @@ port: OpenTelemetry is pushed over OTLP/gRPC to `OTEL_EXPORTER_OTLP_ENDPOINT`.
 | Inbound adapter | `internal/adapters/inbound/kafka` | The three consumers (`demand_consumer.go`, `product_consumer.go`, `layout_consumer.go`), the at-least-once run loop (`kafka.go`) and dead-lettering (`deadletter.go`). |
 | Shared adapter | `internal/adapters/kafka/cloudevents` | The only place a CloudEvents 1.0 envelope is built (`New`) or decoded (`Decode`). |
 | Outbound adapter | `internal/adapters/outbound/postgres` | pgx repositories, the unit of work (`pgtx` carries the transaction in the context), the outbox store and the golang-migrate runner over the embedded `migrations/*.sql`. |
-| Outbound adapter | `internal/adapters/outbound/memory` | In-memory implementations of every port (used when `DATABASE_URL` is unset, and by the BDD suite). |
+| Outbound adapter | `internal/adapters/outbound/memory` | In-memory implementations of every port: test doubles only (the BDD suite and unit tests). `cmd/**` never imports it (`TestRuntimeBinaryHasNoInMemoryAdapters`, ADR 0011). |
 | Outbound adapter | `internal/adapters/outbound/kafka` | `Encoder` (domain event to outbox row) and `RelaySink` (kafka-go writer). |
 | Outbound adapter | `internal/adapters/outbound/outbox` | The relay loop and the `LogSink`. |
 | Outbound adapter | `internal/adapters/outbound/telemetry`, `clock`, `ids` | OTLP tracer and meter providers plus the Prometheus handler, the system clock, `plan-<uuid v4>` ids. |
@@ -98,16 +98,19 @@ Source: `cmd/api/main.go`, `internal/adapters/inbound/http/server.go`,
 | Store | What lives there | Notes |
 | --- | --- | --- |
 | Postgres (`DATABASE_URL`) | `slot_plans`, `slot_plan_assignments`, `slot_plan_moves`, `slot_plan_unassigned` (the aggregate); `demand_lines`, `product_profiles`, `zones`, `slots` (the three local copies); `outbox_events` (transactional outbox); `processed_events` (consumer idempotency); `idempotency_keys` (REST idempotency); `schema_migrations` (golang-migrate) | One migration, `0001_slotting_schema.up.sql`, embedded in the binary and applied at boot. Pool: `MaxConns = 10`, `statement_timeout = 5s` per connection (`postgres/pool.go`). The full schema is on the [entity-relationship](/docs/ddd/entity-relationship) page. |
-| In-memory | the same ports, held in maps | Selected when `DATABASE_URL` is unset. No `Idempotency-Key` middleware in this mode (the header is ignored), and everything is lost on exit. Used by `make test` and the BDD suite. |
-| Kafka | the topics above | Readers and writers never dial at construction; a broker outage never blocks boot. |
+| In-memory (test doubles) | the same ports, held in maps | Never selected by a binary (ADR 0011): no `cmd/**` file imports the package. Used by `make test` and the BDD suite only; everything is lost on exit. |
+| Kafka | the topics above | Readers and writers never dial at construction, so a broker outage does not block boot; `/readyz` asks a broker for metadata and goes 503 while none answers. |
 
 ## Process lifecycle
 
-Boot order (`run` in `cmd/api/main.go`): logger, OpenTelemetry (non-blocking),
-adapters (when `DATABASE_URL` is set: migrations through
+Boot order (`run` in `cmd/api/main.go`): logger, the environment is validated
+(`DATABASE_URL`, `KAFKA_BROKERS` and the four consumer groups are mandatory, so
+a misconfiguration exits before anything is opened), OpenTelemetry
+(non-blocking), adapters (migrations through
 `MIGRATIONS_DATABASE_URL` with up to 5 attempts and 1 s, 2 s, 4 s, 8 s backoff,
 then the pool and a retried ping; failure exits the process), the Prometheus
-handler, the HTTP server, the consumers, the relay.
+handler, the HTTP server, the consumers, the relay. If the relay or a consumer
+returns on its own the process exits non-zero.
 
 Shutdown order on `SIGINT`/`SIGTERM` (`serveUntilSignal`): `/readyz` flips to
 `503 {"status":"not_ready"}`, the process waits `SHUTDOWN_DRAIN_DELAY`
