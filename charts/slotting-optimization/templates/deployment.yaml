@@ -1,7 +1,4 @@
-{{- include "slotting-optimization.requireDatabase" . -}}
-{{- include "slotting-optimization.requireKafkaForPublisher" . -}}
-{{- include "slotting-optimization.requireKnownPublisher" . -}}
-{{- include "slotting-optimization.requireConsumerConfig" . -}}
+{{- include "slotting-optimization.requireRealRuntime" . -}}
 {{- include "slotting-optimization.requireLookbackDays" . -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -102,37 +99,29 @@ spec:
             - name: FORWARD_ZONE_CODES
               value: {{ . | quote }}
             {{- end }}
-            # ADR 0003 local copies. DEMAND_MODE / PRODUCT_MODE / LAYOUT_MODE
-            # are always rendered (permissive = the consumer is not started).
-            # The consumer group ids come from values, never a literal: a
-            # stable id is what makes a rescheduled pod resume from its
-            # committed offsets. Absent while empty.
+            # ADR 0003 / ADR 0010 / ADR 0011 local copies: the four consumers
+            # always run (the only mode is "kafka"). The consumer group ids
+            # come from values, never a literal, and are mandatory (the chart
+            # refuses an empty one): a stable id is what makes a rescheduled
+            # pod resume from its committed offsets.
             - name: DEMAND_MODE
               value: {{ .Values.config.demandMode | quote }}
-            {{- with .Values.config.demandConsumerGroup }}
             - name: DEMAND_CONSUMER_GROUP
-              value: {{ . | quote }}
-            {{- end }}
+              value: {{ .Values.config.demandConsumerGroup | quote }}
             - name: PRODUCT_MODE
               value: {{ .Values.config.productMode | quote }}
-            {{- with .Values.config.productConsumerGroup }}
             - name: PRODUCT_CONSUMER_GROUP
-              value: {{ . | quote }}
-            {{- end }}
+              value: {{ .Values.config.productConsumerGroup | quote }}
             - name: LAYOUT_MODE
               value: {{ .Values.config.layoutMode | quote }}
-            {{- with .Values.config.layoutConsumerGroup }}
             - name: LAYOUT_CONSUMER_GROUP
-              value: {{ . | quote }}
-            {{- end }}
+              value: {{ .Values.config.layoutConsumerGroup | quote }}
             # ADR 0010: inventory-storage's StockRelocated -> slot-plan
             # execution progress (warehouse.inventory.events).
             - name: RELOCATION_MODE
               value: {{ .Values.config.relocationMode | quote }}
-            {{- with .Values.config.relocationConsumerGroup }}
             - name: RELOCATION_CONSUMER_GROUP
-              value: {{ . | quote }}
-            {{- end }}
+              value: {{ .Values.config.relocationConsumerGroup | quote }}
             {{- with .Values.config.shutdownDrainDelay }}
             - name: SHUTDOWN_DRAIN_DELAY
               value: {{ . | quote }}
@@ -167,10 +156,10 @@ spec:
                   key: {{ .Values.database.migrationsExistingSecretKey }}
                   optional: true
             {{- end }}
-            {{- if .Values.kafka.enabled }}
+            # Mandatory (ADR 0011): the relay, the four consumers and /readyz
+            # all dial Kafka; the chart refuses to render without the brokers.
             - name: KAFKA_BROKERS
               value: {{ .Values.kafka.brokers | quote }}
-            {{- end }}
             {{- range .Values.extraEnv }}
             - {{ toYaml . | nindent 14 | trim }}
             {{- end }}

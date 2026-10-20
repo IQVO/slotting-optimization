@@ -20,9 +20,9 @@ assignment map and the physical moves it implies.
 | Tier | **WMS** (CloudEvents subdomain segment `wms`) | `internal/adapters/kafka/cloudevents/cloudevents.go` (`Subdomain = "wms"`) |
 | Aggregate | `SlotPlan` (package `internal/domain/slotplan`) | ADR 0002 |
 | Policy | `abc-velocity-v1` (package `internal/domain/planning`) | ADR 0002 |
-| Binaries | one: `cmd/api` (REST on `HTTP_ADDR`, default `:8080`, plus three Kafka consumers and the outbox relay as goroutines) | `cmd/api/main.go` |
-| Data store | one Postgres database (embedded migrations), or in-memory adapters when `DATABASE_URL` is unset | `internal/adapters/outbound/postgres` |
-| Kafka | publishes `warehouse.slotting-optimization.events`; consumes `warehouse.order-management.events`, `warehouse.product-master.events`, `warehouse.facility.events` | ADR 0003, ADR 0004 |
+| Binaries | one: `cmd/api` (REST on `HTTP_ADDR`, default `:8080`, plus four Kafka consumers and the outbox relay as goroutines, all always on) | `cmd/api/main.go` |
+| Data store | one Postgres database (embedded migrations); there is no in-memory mode (ADR 0011) | `internal/adapters/outbound/postgres` |
+| Kafka | publishes `warehouse.slotting-optimization.events`; consumes `warehouse.order-management.events`, `warehouse.product-master.events`, `warehouse.facility.events`, `warehouse.inventory.events`; the only runtime (ADR 0011) | ADR 0003, ADR 0004, ADR 0010 |
 | Auth | none (fleet-wide decision; `TestNoAuthMiddlewareReintroduced` keeps it out) | `internal/adapters/inbound/http/server.go` |
 | MCP | none on `develop` (ADR 0001 names MCP read tools as a later phase) | no `cmd/mcp` |
 
@@ -59,8 +59,8 @@ plan's execution progress (ADR 0010).
 | Read plans | `GET /slot-plans`, `GET /slot-plans/{planId}` | `ListPlans`, `GetPlan` |
 | Read the current forward-slot map of a site | `GET /forward-slots` | `ListForwardSlots` |
 | Read SKU velocity (the planner's demand input) | `GET /sku-velocity` | `ListSkuVelocity` |
-| Keep the demand, product and layout copies current | Kafka consumers (`DEMAND_MODE`, `PRODUCT_MODE`, `LAYOUT_MODE` = `kafka`) | `ApplyDemandChanged`, `ApplyProductClassified`, `ApplyPhysicalProfile`, `ApplyZoneRegistered`, `ApplyLocationSlotRegistered`, `ApplyLocationSlotDecommissioned` |
-| Publish plan decisions | transactional outbox + relay (`EVENT_PUBLISHER=kafka`) | every write use case |
+| Keep the demand, product and layout copies current | Kafka consumers (always on; `DEMAND_MODE`, `PRODUCT_MODE`, `LAYOUT_MODE` are `kafka`, the only value) | `ApplyDemandChanged`, `ApplyProductClassified`, `ApplyPhysicalProfile`, `ApplyZoneRegistered`, `ApplyLocationSlotRegistered`, `ApplyLocationSlotDecommissioned` |
+| Publish plan decisions | transactional outbox + relay (always on, `EVENT_PUBLISHER=kafka`) | every write use case |
 
 ## Where to go next
 

@@ -10,7 +10,8 @@
 // binary can never insert into the outbox. It never starts the outbox relay,
 // never runs the local-copy consumers and never dials Kafka (no
 // EVENT_PUBLISHER, no KAFKA_BROKERS, no consumer groups): those run in
-// cmd/api only.
+// cmd/api only. It reads the SAME Postgres as cmd/api and has no in-memory
+// mode (ADR 0011): DATABASE_URL is required.
 //
 // There is NO auth of any kind (fleet-wide revert 2026-09-11): no keys, no
 // bearer checks. Access control is the in-cluster ClusterIP boundary.
@@ -18,7 +19,7 @@
 // Environment:
 //
 //	MCP_ADDR                     listen address (default :8090)
-//	DATABASE_URL                 Postgres DSN; unset = in-memory repositories
+//	DATABASE_URL                 Postgres DSN (REQUIRED: there is no in-memory mode, ADR 0011)
 //	MIGRATIONS_DATABASE_URL      direct DSN for the boot migrations (default DATABASE_URL)
 //	DEMAND_SITE_ID               the site get_forward_slots and get_sku_velocity default to
 //	                             (falls back to DEFAULT_SITE_ID), matching cmd/api
@@ -40,7 +41,6 @@ import (
 
 	inboundmcp "github.com/claudioed/slotting-optimization/internal/adapters/inbound/mcp"
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/clock"
-	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/memory"
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/postgres"
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/telemetry"
 	"github.com/claudioed/slotting-optimization/internal/application/ports"
@@ -62,6 +62,12 @@ func run() error {
 	logger := newLogger(getenv("LOG_LEVEL", "info"))
 	slog.SetDefault(logger)
 
+	// Misconfiguration is refused before anything is opened.
+	databaseURL, err := loadConfig(os.Getenv)
+	if err != nil {
+		return err
+	}
+
 	otelCtx, otelCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	otelShutdown, err := telemetry.Setup(otelCtx, mcpServiceName, getenv("SERVICE_VERSION", "dev"),
 		getenv("OTEL_EXPORTER_OTLP_ENDPOINT", telemetry.DefaultOTLPEndpoint))
@@ -77,7 +83,6 @@ func run() error {
 		}
 	}()
 
-	databaseURL := os.Getenv("DATABASE_URL")
 	deps, closeAdapters, err := buildDeps(context.Background(), logger, databaseURL,
 		getenv("MIGRATIONS_DATABASE_URL", databaseURL), defaultSite())
 	if err != nil {
@@ -99,17 +104,23 @@ func defaultSite() string {
 	return getenv("DEMAND_SITE_ID", os.Getenv("DEFAULT_SITE_ID"))
 }
 
-// readRepositories is the set of read ports cmd/mcp wires, whichever adapter
-// family backs them.
-type readRepositories struct {
-	plans      ports.SlotPlanRepository
-	demand     ports.DemandLedger
-	executions ports.MoveExecutionLedger
+// errMissingDatabaseURL is the boot error of an unset DATABASE_URL: the MCP
+// binary reads the same Postgres as cmd/api and has no in-memory mode.
+var errMissingDatabaseURL = errors.New("DATABASE_URL is required: this context runs on real Postgres, there is no in-memory mode")
+
+// loadConfig validates the environment before anything is opened and returns
+// DATABASE_URL.
+func loadConfig(env func(string) string) (string, error) {
+	databaseURL := env("DATABASE_URL")
+	if databaseURL == "" {
+		return "", errMissingDatabaseURL
+	}
+	return databaseURL, nil
 }
 
-// buildDeps selects the repositories the way cmd/api does: no DATABASE_URL
-// means the in-memory repositories (runnable locally, empty); a URL means
-// migrate then connect a pgx pool. The returned close func releases the pool.
+// buildDeps migrates then connects a pgx pool and wires the read use cases
+// over the Postgres repositories. An empty databaseURL is a boot error. The
+// returned close func releases the pool.
 //
 // Like every sibling's cmd/mcp this binary runs the idempotent embedded
 // migrations on start, so it can boot against a fresh database before cmd/api
@@ -119,40 +130,37 @@ type readRepositories struct {
 // advisory lock); the runtime pool always uses databaseURL.
 func buildDeps(ctx context.Context, logger *slog.Logger, databaseURL, migrationsDatabaseURL, site string) (inboundmcp.Deps, func(), error) {
 	noop := func() {}
-	var (
-		repos   readRepositories
-		closeFn = noop
-	)
 	if databaseURL == "" {
-		logger.Info("DATABASE_URL not configured; using the in-memory repositories")
-		repos = readRepositories{plans: memory.NewSlotPlanRepo(), demand: memory.NewDemandLedger(), executions: memory.NewMoveExecutionLedger()}
-	} else {
-		// The first outbound dial of an injected pod can be reset (Istio
-		// native sidecars), so migrations and the first ping retry with
-		// backoff; on exhaustion the process refuses to boot.
-		if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
-			return postgres.RunMigrations(migrationsDatabaseURL)
-		}); err != nil {
-			return inboundmcp.Deps{}, noop, err
-		}
-		pool, err := postgres.NewPool(ctx, databaseURL)
-		if err != nil {
-			return inboundmcp.Deps{}, noop, err
-		}
-		if err := bootretry.Retry(ctx, logger, "ping postgres", func() error { return pool.Ping(ctx) }); err != nil {
-			pool.Close()
-			return inboundmcp.Deps{}, noop, err
-		}
-		logger.Info("postgres repositories configured")
-		repos = readRepositories{plans: postgres.NewSlotPlanRepo(pool), demand: postgres.NewDemandLedger(pool), executions: postgres.NewMoveExecutionLedger(pool)}
-		closeFn = pool.Close
+		return inboundmcp.Deps{}, noop, errMissingDatabaseURL
 	}
+	// The first outbound dial of an injected pod can be reset (Istio native
+	// sidecars), so migrations and the first ping retry with backoff; on
+	// exhaustion the process refuses to boot.
+	if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
+		return postgres.RunMigrations(migrationsDatabaseURL)
+	}); err != nil {
+		return inboundmcp.Deps{}, noop, err
+	}
+	pool, err := postgres.NewPool(ctx, databaseURL)
+	if err != nil {
+		return inboundmcp.Deps{}, noop, err
+	}
+	if err := bootretry.Retry(ctx, logger, "ping postgres", func() error { return pool.Ping(ctx) }); err != nil {
+		pool.Close()
+		return inboundmcp.Deps{}, noop, err
+	}
+	logger.Info("postgres repositories configured")
+	return depsOver(postgres.NewSlotPlanRepo(pool), postgres.NewDemandLedger(pool), postgres.NewMoveExecutionLedger(pool), site), pool.Close, nil
+}
+
+// depsOver wires the four read-only use cases over the given read ports.
+func depsOver(plans ports.SlotPlanRepository, demand ports.DemandLedger, executions ports.MoveExecutionLedger, site string) inboundmcp.Deps {
 	return inboundmcp.Deps{
-		GetPlan:          &usecases.GetPlan{Plans: repos.plans, Executions: repos.executions},
-		ListPlans:        &usecases.ListPlans{Plans: repos.plans},
-		ListForwardSlots: &usecases.ListForwardSlots{Plans: repos.plans, DefaultSite: site},
-		ListSkuVelocity:  &usecases.ListSkuVelocity{Demand: repos.demand, Clock: clock.System{}, DefaultSite: site},
-	}, closeFn, nil
+		GetPlan:          &usecases.GetPlan{Plans: plans, Executions: executions},
+		ListPlans:        &usecases.ListPlans{Plans: plans},
+		ListForwardSlots: &usecases.ListForwardSlots{Plans: plans, DefaultSite: site},
+		ListSkuVelocity:  &usecases.ListSkuVelocity{Demand: demand, Clock: clock.System{}, DefaultSite: site},
+	}
 }
 
 // serveMCP runs srv until it fails or SIGINT/SIGTERM arrives, then drains it

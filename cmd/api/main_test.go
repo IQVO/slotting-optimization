@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,28 +17,98 @@ import (
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-func TestParsePublisherMode(t *testing.T) {
-	for raw, want := range map[string]string{"": "log", "log": "log", "kafka": "kafka"} {
-		got, err := parsePublisherMode(raw)
-		if err != nil || got != want {
-			t.Errorf("parsePublisherMode(%q) = %q, %v; want %q", raw, got, err, want)
-		}
-	}
-	if _, err := parsePublisherMode("rabbit"); err == nil {
-		t.Error("an unknown EVENT_PUBLISHER must be a config error")
+// validEnv is the smallest environment the binary boots with; tests delete or
+// overwrite single keys of it.
+func validEnv() map[string]string {
+	return map[string]string{
+		"DATABASE_URL": "postgres://u@db:5432/x", "KAFKA_BROKERS": "a:9092,b:9092",
+		"DEMAND_CONSUMER_GROUP": "g-demand", "PRODUCT_CONSUMER_GROUP": "g-product",
+		"LAYOUT_CONSUMER_GROUP": "g-layout", "RELOCATION_CONSUMER_GROUP": "g-relocation",
 	}
 }
 
-func TestParseConsumerMode(t *testing.T) {
-	for raw, want := range map[string]string{"": "permissive", "permissive": "permissive", "kafka": "kafka"} {
-		got, err := parseConsumerMode("DEMAND_MODE", raw)
-		if err != nil || got != want {
-			t.Errorf("parseConsumerMode(%q) = %q, %v; want %q", raw, got, err, want)
+func withEnv(overrides map[string]string) func(string) string {
+	env := validEnv()
+	for k, v := range overrides {
+		if v == "-" {
+			delete(env, k)
+			continue
+		}
+		env[k] = v
+	}
+	return func(k string) string { return env[k] }
+}
+
+func TestLoadRuntimeAcceptsTheMinimalRealEnvironment(t *testing.T) {
+	rt, err := loadRuntime(withEnv(nil))
+	if err != nil || len(rt.brokers) != 2 || rt.brokers[1] != "b:9092" {
+		t.Fatalf("rt = %+v, err = %v", rt, err)
+	}
+	for env, want := range map[string]string{"DEMAND_CONSUMER_GROUP": "g-demand", "PRODUCT_CONSUMER_GROUP": "g-product", "LAYOUT_CONSUMER_GROUP": "g-layout", "RELOCATION_CONSUMER_GROUP": "g-relocation"} {
+		if rt.groups[env] != want {
+			t.Errorf("group %s = %q, want %q", env, rt.groups[env], want)
 		}
 	}
-	if _, err := parseConsumerMode("DEMAND_MODE", "http"); err == nil {
-		t.Error("an unknown mode must be a config error")
+	// The explicit values the chart renders are accepted too.
+	explicit := map[string]string{"DEMAND_MODE": "kafka", "PRODUCT_MODE": "kafka", "LAYOUT_MODE": "kafka", "RELOCATION_MODE": "kafka", "EVENT_PUBLISHER": "kafka"}
+	if _, err := loadRuntime(withEnv(explicit)); err != nil {
+		t.Fatalf("explicit kafka modes: %v", err)
 	}
+}
+
+// Every refused environment is a boot error whose message names the variable
+// (ADR 0011), raised by loadRuntime before anything is opened or bound.
+func TestLoadRuntimeRefusesWithAnErrorNamingTheVariable(t *testing.T) {
+	cases := []struct {
+		name     string
+		override map[string]string
+		wantVar  string
+	}{
+		{"no DATABASE_URL", map[string]string{"DATABASE_URL": "-"}, "DATABASE_URL"},
+		{"no KAFKA_BROKERS", map[string]string{"KAFKA_BROKERS": "-"}, "KAFKA_BROKERS"},
+		{"blank KAFKA_BROKERS", map[string]string{"KAFKA_BROKERS": " , "}, "KAFKA_BROKERS"},
+		{"no DEMAND_CONSUMER_GROUP", map[string]string{"DEMAND_CONSUMER_GROUP": "-"}, "DEMAND_CONSUMER_GROUP"},
+		{"no PRODUCT_CONSUMER_GROUP", map[string]string{"PRODUCT_CONSUMER_GROUP": "-"}, "PRODUCT_CONSUMER_GROUP"},
+		{"no LAYOUT_CONSUMER_GROUP", map[string]string{"LAYOUT_CONSUMER_GROUP": "-"}, "LAYOUT_CONSUMER_GROUP"},
+		{"no RELOCATION_CONSUMER_GROUP", map[string]string{"RELOCATION_CONSUMER_GROUP": "-"}, "RELOCATION_CONSUMER_GROUP"},
+		{"DEMAND_MODE=permissive", map[string]string{"DEMAND_MODE": "permissive"}, "DEMAND_MODE=permissive is not supported"},
+		{"PRODUCT_MODE=permissive", map[string]string{"PRODUCT_MODE": "permissive"}, "PRODUCT_MODE=permissive is not supported"},
+		{"LAYOUT_MODE=permissive", map[string]string{"LAYOUT_MODE": "permissive"}, "LAYOUT_MODE=permissive is not supported"},
+		{"RELOCATION_MODE=permissive", map[string]string{"RELOCATION_MODE": "permissive"}, "RELOCATION_MODE=permissive is not supported"},
+		{"DEMAND_MODE=off", map[string]string{"DEMAND_MODE": "off"}, "DEMAND_MODE=off is not supported"},
+		{"RELOCATION_MODE=off", map[string]string{"RELOCATION_MODE": "off"}, "RELOCATION_MODE=off is not supported"},
+		{"unknown LAYOUT_MODE", map[string]string{"LAYOUT_MODE": "http"}, "LAYOUT_MODE"},
+		{"EVENT_PUBLISHER=log", map[string]string{"EVENT_PUBLISHER": "log"}, "EVENT_PUBLISHER=log is not supported"},
+		{"unknown EVENT_PUBLISHER", map[string]string{"EVENT_PUBLISHER": "rabbit"}, "EVENT_PUBLISHER"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadRuntime(withEnv(tc.override))
+			if err == nil || !strings.Contains(err.Error(), tc.wantVar) {
+				t.Fatalf("err = %v, want a boot error containing %q", err, tc.wantVar)
+			}
+		})
+	}
+}
+
+func TestLoadRuntimePermissiveMessageNamesRealKafka(t *testing.T) {
+	_, err := loadRuntime(withEnv(map[string]string{"DEMAND_MODE": "permissive"}))
+	if err == nil || err.Error() != "DEMAND_MODE=permissive is not supported: this context runs on real Kafka" {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// A completely empty environment fails on the first mandatory variable, and
+// buildAdapters refuses an empty DATABASE_URL by itself (no in-memory branch).
+func TestNoDatabaseURLIsABootErrorEverywhere(t *testing.T) {
+	if _, err := loadRuntime(func(string) string { return "" }); !errors.Is(err, errMissingDatabaseURL) {
+		t.Fatalf("loadRuntime(empty) = %v, want errMissingDatabaseURL", err)
+	}
+	_, closeFn, err := buildAdapters(context.Background(), "", quietLogger())
+	if !errors.Is(err, errMissingDatabaseURL) {
+		t.Fatalf("buildAdapters(\"\") = %v, want errMissingDatabaseURL", err)
+	}
+	closeFn()
 }
 
 func TestParseRelayInterval(t *testing.T) {
@@ -114,13 +185,18 @@ func (s countingStore) Drain(ctx context.Context, _, _ int, _ func(context.Conte
 
 var _ outboxrelay.Store = countingStore{}
 
-func TestStartOutboxRelay_DefaultsToTheLogSinkAndStops(t *testing.T) {
-	t.Setenv("EVENT_PUBLISHER", "")
+// The relay is always on and always publishes to Kafka: with a down broker it
+// starts without dialing, drains the store, and stops.
+func TestStartOutboxRelay_StartsOverKafkaWithoutDialingAtBoot(t *testing.T) {
 	t.Setenv("OUTBOX_RELAY_INTERVAL", "10ms")
 	store := countingStore{drains: make(chan struct{}, 1)}
-	w, stop, err := startOutboxRelay(store, quietLogger())
+	start := time.Now()
+	w, stop, err := startOutboxRelay(store, []string{"127.0.0.1:1"}, quietLogger())
 	if err != nil {
-		t.Fatalf("startOutboxRelay: %v", err)
+		t.Fatalf("startOutboxRelay with an unreachable broker: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("startup took %v; it must not wait on Kafka", elapsed)
 	}
 	select {
 	case <-store.drains:
@@ -128,105 +204,35 @@ func TestStartOutboxRelay_DefaultsToTheLogSinkAndStops(t *testing.T) {
 		t.Fatal("the relay never drained")
 	}
 	stop()
+	await(quietLogger(), w)
 	select {
 	case <-w.done:
-	case <-time.After(5 * time.Second):
+	default:
 		t.Fatal("the relay did not stop")
 	}
 }
 
-// A broker that is down at boot must not crash or block startup.
-func TestStartOutboxRelay_KafkaModeDoesNotDialAtBoot(t *testing.T) {
-	t.Setenv("EVENT_PUBLISHER", "kafka")
-	t.Setenv("KAFKA_BROKERS", "127.0.0.1:1")
-	t.Setenv("OUTBOX_RELAY_INTERVAL", "10ms")
-	start := time.Now()
-	w, stop, err := startOutboxRelay(countingStore{drains: make(chan struct{}, 1)}, quietLogger())
+func TestStartOutboxRelay_WithoutBrokersIsABootError(t *testing.T) {
+	if _, _, err := startOutboxRelay(countingStore{}, nil, quietLogger()); !errors.Is(err, errMissingBrokers) {
+		t.Fatalf("err = %v, want errMissingBrokers", err)
+	}
+}
+
+func realtimeEnv() runtimeEnv {
+	rt, err := loadRuntime(withEnv(map[string]string{"KAFKA_BROKERS": "127.0.0.1:1"}))
 	if err != nil {
-		t.Fatalf("startOutboxRelay with an unreachable broker: %v", err)
+		panic(err)
 	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("startup took %v; it must not wait on Kafka", elapsed)
-	}
-	stop()
-	await(quietLogger(), w)
+	return rt
 }
 
-func TestStartOutboxRelay_ConfigErrors(t *testing.T) {
-	t.Setenv("EVENT_PUBLISHER", "kafka")
-	t.Setenv("KAFKA_BROKERS", "")
-	if _, _, err := startOutboxRelay(countingStore{}, quietLogger()); err == nil {
-		t.Fatal("EVENT_PUBLISHER=kafka needs KAFKA_BROKERS")
-	}
-	t.Setenv("EVENT_PUBLISHER", "nope")
-	if _, _, err := startOutboxRelay(countingStore{}, quietLogger()); err == nil {
-		t.Fatal("want an error for an unknown EVENT_PUBLISHER")
-	}
-}
-
-func inMemory(t *testing.T) adapters {
-	t.Helper()
-	ad, closeFn, err := buildAdapters(context.Background(), "", quietLogger())
-	if err != nil {
-		t.Fatalf("buildAdapters: %v", err)
-	}
-	t.Cleanup(closeFn)
-	return ad
-}
-
-func clearConsumerEnv(t *testing.T) {
-	t.Helper()
-	for _, k := range []string{"DEMAND_MODE", "PRODUCT_MODE", "LAYOUT_MODE", "RELOCATION_MODE", "DEMAND_CONSUMER_GROUP", "PRODUCT_CONSUMER_GROUP", "LAYOUT_CONSUMER_GROUP", "RELOCATION_CONSUMER_GROUP", "KAFKA_BROKERS"} {
-		t.Setenv(k, "")
-	}
-}
-
-func TestStartConsumers_PermissiveByDefaultStartsNothing(t *testing.T) {
-	clearConsumerEnv(t)
-	workers, stop, err := startConsumers(inMemory(t), quietLogger())
-	if err != nil || len(workers) != 0 {
-		t.Fatalf("workers=%d err=%v, want none", len(workers), err)
-	}
-	stop()
-}
-
-func TestStartConsumers_RelocationModeNeedsItsGroup(t *testing.T) {
-	clearConsumerEnv(t)
-	t.Setenv("RELOCATION_MODE", "kafka")
-	if _, _, err := startConsumers(inMemory(t), quietLogger()); err == nil || !strings.Contains(err.Error(), "RELOCATION_CONSUMER_GROUP") {
-		t.Fatalf("RELOCATION_MODE=kafka without its group must be a boot error, got %v", err)
-	}
-}
-
-func TestStartConsumers_KafkaModeNeedsItsGroupAndBrokers(t *testing.T) {
-	clearConsumerEnv(t)
-	ad := inMemory(t)
-	t.Setenv("DEMAND_MODE", "kafka")
-	if _, _, err := startConsumers(ad, quietLogger()); err == nil || !strings.Contains(err.Error(), "DEMAND_CONSUMER_GROUP") {
-		t.Fatalf("a kafka consumer without a group must be a boot error, got %v", err)
-	}
-	t.Setenv("DEMAND_CONSUMER_GROUP", "slotting-demand-test")
-	if _, _, err := startConsumers(ad, quietLogger()); err == nil || !strings.Contains(err.Error(), "KAFKA_BROKERS") {
-		t.Fatalf("a kafka consumer without brokers must be a boot error, got %v", err)
-	}
-	t.Setenv("LAYOUT_MODE", "bogus")
-	if _, _, err := startConsumers(ad, quietLogger()); err == nil || !strings.Contains(err.Error(), "LAYOUT_MODE") {
-		t.Fatalf("an unknown mode must be a boot error, got %v", err)
-	}
-}
-
-// Every consumer in kafka mode starts without dialling the broker, and stops.
-func TestStartConsumers_StartsOneWorkerPerKafkaModeAndStops(t *testing.T) {
-	clearConsumerEnv(t)
-	for _, c := range []string{"DEMAND", "PRODUCT", "LAYOUT", "RELOCATION"} {
-		t.Setenv(c+"_MODE", "kafka")
-		t.Setenv(c+"_CONSUMER_GROUP", "slotting-"+strings.ToLower(c)+"-test")
-	}
-	t.Setenv("KAFKA_BROKERS", "127.0.0.1:1")
+// Every consumer starts (they are always on) without dialling the broker, and
+// stops.
+func TestStartConsumers_AlwaysStartsOneWorkerPerConsumerAndStops(t *testing.T) {
 	start := time.Now()
-	workers, stop, err := startConsumers(inMemory(t), quietLogger())
-	if err != nil || len(workers) != 4 {
-		t.Fatalf("workers=%d err=%v, want 4", len(workers), err)
+	workers, stop := startConsumers(testDoubleAdapters(t), realtimeEnv(), quietLogger())
+	if len(workers) != 4 {
+		t.Fatalf("workers=%d, want 4", len(workers))
 	}
 	if time.Since(start) > time.Second {
 		t.Fatal("starting the consumers must not dial Kafka")
@@ -241,8 +247,37 @@ func TestStartConsumers_StartsOneWorkerPerKafkaModeAndStops(t *testing.T) {
 	}
 }
 
-func TestBuildAdapters_InMemoryWiresEveryPort(t *testing.T) {
-	ad := inMemory(t)
+// A worker that returns on its own is reported by name; a worker that was
+// never started (nil) is ignored. cmd/api exits on it (serveUntilSignal).
+func TestWatchWorkersReportsAWorkerThatDied(t *testing.T) {
+	dead := &worker{name: "DEMAND_MODE consumer", done: make(chan struct{})}
+	idle := &worker{name: "idle", done: make(chan struct{})}
+	close(dead.done)
+	select {
+	case name := <-watchWorkers(nil, idle, dead):
+		if name != "DEMAND_MODE consumer" {
+			t.Fatalf("reported %q, want the dead worker", name)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a worker that returned on its own was not reported")
+	}
+}
+
+func TestNewReadinessReportsTheDownDependency(t *testing.T) {
+	up := func(context.Context) error { return nil }
+	down := func(context.Context) error { return errors.New("connection refused") }
+	deadBroker := []string{"127.0.0.1:1"}
+
+	if got := newReadiness(up, deadBroker).Failing(context.Background()); len(got) != 1 || got[0] != "kafka" {
+		t.Fatalf("failing = %v, want [kafka]", got)
+	}
+	if got := newReadiness(down, deadBroker).Failing(context.Background()); len(got) != 2 {
+		t.Fatalf("failing = %v, want [postgres kafka]", got)
+	}
+}
+
+func TestBuildServer_WiresEveryPort(t *testing.T) {
+	ad := testDoubleAdapters(t)
 	for name, wired := range map[string]bool{
 		"plans": ad.plans != nil, "demand": ad.demand != nil, "profiles": ad.profiles != nil, "catalogue": ad.catalogue != nil,
 		"outbox": ad.outbox != nil, "outboxStore": ad.outboxStore != nil, "processed": ad.processed != nil, "uow": ad.uow != nil,
@@ -251,9 +286,6 @@ func TestBuildAdapters_InMemoryWiresEveryPort(t *testing.T) {
 		if !wired {
 			t.Errorf("port %s not wired", name)
 		}
-	}
-	if ad.idempotency != nil {
-		t.Fatal("the in-memory mode has no Idempotency-Key store")
 	}
 	if relocationMetrics() == nil {
 		t.Fatal("the relocation consumer must count its outcomes")
@@ -272,10 +304,11 @@ func TestBuildAdapters_InMemoryWiresEveryPort(t *testing.T) {
 	}
 }
 
-// The assembled in-memory service answers over HTTP: generate -> approve ->
-// read the forward-slot map, with the configured default lookback applied.
-func TestInMemoryServiceEndToEnd(t *testing.T) {
-	ad := inMemory(t)
+// The composition root over the TEST DOUBLES answers over HTTP: generate ->
+// approve -> read the forward-slot map, with the configured default lookback
+// applied. (The real Postgres/Kafka wiring is TestRunOnRealPostgresAndKafka.)
+func TestCompositionRootServesThePlanFlow(t *testing.T) {
+	ad := testDoubleAdapters(t)
 	s, err := buildServer(ad, config{defaultSite: "SITE-1", lookbackDays: 7, forwardZoneCodes: []string{"FWD"}}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)

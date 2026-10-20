@@ -88,14 +88,13 @@ Image reference shared by every Deployment (api, mcp).
 {{- end }}
 
 {{/*
-Fails chart rendering with a clear message if no DATABASE_URL source is
-configured. The binary would silently fall back to in-memory adapters (state
-lost on restart) -- fine for `go run`, never a deployable state, so surface it
-as a helm render-time error instead.
+MANDATORY (ADR 0011: Postgres is the only runtime). cmd/api and cmd/mcp exit
+at boot without DATABASE_URL; there is no in-memory mode. Fails the render
+naming the values instead of crash-looping.
 */}}
 {{- define "slotting-optimization.requireDatabase" -}}
 {{- if not (or .Values.database.url .Values.database.existingSecret) -}}
-{{- fail "slotting-optimization requires database.url or database.existingSecret to be set — without DATABASE_URL the binary silently runs on in-memory adapters, which is not a deployable state." -}}
+{{- fail "slotting-optimization requires database.url or database.existingSecret to be set (DATABASE_URL): the service runs on real Postgres only and exits at boot without it (ADR 0011)." -}}
 {{- end -}}
 {{- end -}}
 
@@ -128,64 +127,108 @@ analytics.url (analytics-secret.yaml).
 
 {{/*
 Analytics guard (ADR 0006 §9): the projector and reports binaries exit at
-boot without ANALYTICS_DATABASE_URL, and the projector additionally exits
-without KAFKA_BROKERS (it consumes warehouse.slotting-optimization.analytics;
-KAFKA_BROKERS is only rendered when kafka.enabled is true). Both would
-crash-loop, so refuse them at render time, only while analytics is on.
+boot without ANALYTICS_DATABASE_URL. The projector consumes
+warehouse.slotting-optimization.analytics from kafka.brokers, which the api
+Deployment already requires (requireKafka), so only the DSN source is checked
+here, and only while analytics is on.
 */}}
 {{- define "slotting-optimization.requireAnalyticsConfig" -}}
 {{- if not (or .Values.analytics.url .Values.analytics.existingSecret) -}}
 {{- fail "analytics.enabled is true but neither analytics.url nor analytics.existingSecret is set — the projector and reports binaries exit at boot without ANALYTICS_DATABASE_URL." -}}
 {{- end -}}
-{{- if not .Values.kafka.enabled -}}
-{{- fail "analytics.enabled is true but kafka.enabled is false — the projector exits at boot (it consumes warehouse.slotting-optimization.analytics, which requires KAFKA_BROKERS)." -}}
-{{- end -}}
 {{- end -}}
 
 {{/*
-config.eventPublisher must be one of the values the binary parses
-(parsePublisherMode): anything else exits at boot.
+MANDATORY (ADR 0011: Kafka is the only runtime). cmd/api exits at boot without
+KAFKA_BROKERS and rejects EVENT_PUBLISHER=log; the projector needs the brokers
+too. There is no default broker, no log sink and no way to switch Kafka off.
+kafka.enabled is kept only so values written before ADR 0011 still render
+(warehouse-infra sets it to "true"): it may be true, never false.
 */}}
-{{- define "slotting-optimization.requireKnownPublisher" -}}
-{{- if not (has .Values.config.eventPublisher (list "log" "kafka")) -}}
-{{- fail (printf "config.eventPublisher is %q — want \"log\" or \"kafka\" (the binary exits at boot otherwise)." .Values.config.eventPublisher) -}}
+{{- define "slotting-optimization.requireKafka" -}}
+{{- $_ := required "slotting-optimization requires kafka.brokers to be set (KAFKA_BROKERS, comma-separated): the service runs on real Kafka only and exits at boot without it (ADR 0011)." .Values.kafka.brokers -}}
+{{- if and (hasKey .Values.kafka "enabled") (or (not .Values.kafka.enabled) (eq (toString .Values.kafka.enabled) "false")) -}}
+{{- fail "kafka.enabled is false — Kafka cannot be switched off: the service runs on real Kafka only (ADR 0011). Drop the key or set it to true and set kafka.brokers." -}}
 {{- end -}}
-{{- end -}}
-
-{{/*
-EVENT_PUBLISHER=kafka makes the binary refuse to boot without KAFKA_BROKERS
-(cmd/api startOutboxRelay), and KAFKA_BROKERS is only rendered when
-kafka.enabled is true -- so that combination would crash-loop. Fail at render.
-*/}}
-{{- define "slotting-optimization.requireKafkaForPublisher" -}}
-{{- if and (eq .Values.config.eventPublisher "kafka") (not .Values.kafka.enabled) -}}
-{{- fail "config.eventPublisher is \"kafka\" but kafka.enabled is false — the binary exits at boot (EVENT_PUBLISHER=kafka requires KAFKA_BROKERS). Set kafka.enabled=true and kafka.brokers." -}}
+{{- if ne (toString .Values.config.eventPublisher) "kafka" -}}
+{{- fail (printf "config.eventPublisher is %q — the only publisher is \"kafka\": the log sink was removed (ADR 0011); the binary rejects EVENT_PUBLISHER=log at boot." (toString .Values.config.eventPublisher)) -}}
 {{- end -}}
 {{- end -}}
 
 {{/*
 DEMAND_MODE / PRODUCT_MODE / LAYOUT_MODE (ADR 0003) and RELOCATION_MODE
-(ADR 0010) must be permissive or
-kafka, and a kafka mode starts a consumer: it needs a stable consumer group id
-(cmd/api planConsumers refuses to boot without one) and KAFKA_BROKERS. Without
-a group the pod would crash-loop; without brokers it would too. Fail at render.
+(ADR 0010): the only mode is "kafka" (the names are kept because docs and
+infra set them). "permissive" and "off" no longer exist: the binary exits at
+boot on them (ADR 0011).
 */}}
-{{- define "slotting-optimization.requireConsumerConfig" -}}
-{{- range $c := list (dict "mode" "demandMode" "group" "demandConsumerGroup" "env" "DEMAND") (dict "mode" "productMode" "group" "productConsumerGroup" "env" "PRODUCT") (dict "mode" "layoutMode" "group" "layoutConsumerGroup" "env" "LAYOUT") (dict "mode" "relocationMode" "group" "relocationConsumerGroup" "env" "RELOCATION") -}}
-{{- $mode := index $.Values.config $c.mode -}}
-{{- if not (has $mode (list "permissive" "kafka")) -}}
-{{- fail (printf "config.%s is %q — want \"permissive\" or \"kafka\" (the binary exits at boot otherwise)." $c.mode $mode) -}}
-{{- end -}}
-{{- if and (eq $mode "kafka") (not (index $.Values.config $c.group)) -}}
-{{- fail (printf "config.%s is \"kafka\" but config.%s is empty — the binary exits at boot (%s_MODE=kafka requires %s_CONSUMER_GROUP). Use a STABLE id." $c.mode $c.group $c.env $c.env) -}}
-{{- end -}}
-{{- if and (index $.Values.config $c.group) (ne $mode "kafka") -}}
-{{- fail (printf "config.%s is set but config.%s is not \"kafka\" — the %s consumer would silently not start. Set %s=kafka or clear the group." $c.group $c.mode (lower $c.env) $c.mode) -}}
+{{- define "slotting-optimization.requireConsumerModes" -}}
+{{- range $key := list "demandMode" "productMode" "layoutMode" "relocationMode" -}}
+{{- $mode := index $.Values.config $key -}}
+{{- if ne (toString $mode) "kafka" -}}
+{{- fail (printf "config.%s is %q — the only mode is \"kafka\": the local copies are always fed from real Kafka and permissive/off were removed (ADR 0011); the binary exits at boot otherwise." $key (toString $mode)) -}}
 {{- end -}}
 {{- end -}}
-{{- if and (or (eq .Values.config.demandMode "kafka") (eq .Values.config.productMode "kafka") (eq .Values.config.layoutMode "kafka") (eq .Values.config.relocationMode "kafka")) (not .Values.kafka.enabled) -}}
-{{- fail "config.demandMode/productMode/layoutMode/relocationMode is \"kafka\" but kafka.enabled is false — the binary exits at boot (a consumer in kafka mode requires KAFKA_BROKERS). Set kafka.enabled=true and kafka.brokers." -}}
 {{- end -}}
+
+{{/*
+All four consumers always run, each under a STABLE consumer group id that must
+come from values (cmd/api exits at boot without DEMAND_CONSUMER_GROUP,
+PRODUCT_CONSUMER_GROUP, LAYOUT_CONSUMER_GROUP and RELOCATION_CONSUMER_GROUP).
+A stable id is what lets a rescheduled pod resume from its committed offsets.
+*/}}
+{{- define "slotting-optimization.requireConsumerGroups" -}}
+{{- range $c := list (dict "key" "demandConsumerGroup" "env" "DEMAND_CONSUMER_GROUP") (dict "key" "productConsumerGroup" "env" "PRODUCT_CONSUMER_GROUP") (dict "key" "layoutConsumerGroup" "env" "LAYOUT_CONSUMER_GROUP") (dict "key" "relocationConsumerGroup" "env" "RELOCATION_CONSUMER_GROUP") -}}
+{{- if not (index $.Values.config $c.key) -}}
+{{- fail (printf "config.%s is required (%s): the consumer always runs on real Kafka and cmd/api exits at boot without a group. Use a STABLE id (ADR 0011)." $c.key $c.env) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+extraEnv may not bring back a log or permissive/off mode (ADR 0011): no
+EVENT_PUBLISHER other than kafka and no *_MODE variable at all (the modes have
+dedicated values and the only legal value is "kafka"). Called with the list to
+check and the name of its value for the message.
+*/}}
+{{- define "slotting-optimization.requireNoInMemoryEnv" -}}
+{{- $where := .where -}}
+{{- range .list -}}
+{{- $name := toString .name -}}
+{{- $value := toString (default "" .value) -}}
+{{- if and (eq $name "EVENT_PUBLISHER") (ne $value "kafka") -}}
+{{- fail (printf "%s sets EVENT_PUBLISHER=%s — the only publisher is \"kafka\" (ADR 0011)." $where $value) -}}
+{{- end -}}
+{{- if hasSuffix "_MODE" $name -}}
+{{- fail (printf "%s sets %s — *_MODE variables are set through config.demandMode / productMode / layoutMode / relocationMode and the only legal value is \"kafka\": slotting-optimization runs on real Postgres and real Kafka only, with no permissive or off mode (ADR 0011)." $where $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The graceful shutdown is sequential (SHUTDOWN_DRAIN_DELAY 5s + HTTP drain 10s +
+consumers drain 10s + outbox relay drain 10s). A grace period under 20s would
+SIGKILL the pod between "consumers stopped" and "relay stopped", stranding an
+uncommitted offset or an in-flight outbox batch.
+*/}}
+{{- define "slotting-optimization.requireGracePeriod" -}}
+{{- if lt (int .Values.terminationGracePeriodSeconds) 20 -}}
+{{- fail (printf "terminationGracePeriodSeconds is %v — want at least 20: the consumers and the outbox relay drain after the HTTP server, and a shorter grace period SIGKILLs them mid-drain (ADR 0011)." .Values.terminationGracePeriodSeconds) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Every render-time requirement of the real runtime, in one include. The api
+Deployment (always rendered) includes it, so a mis-set release fails
+`helm template` / `helm install` whichever component is enabled.
+*/}}
+{{- define "slotting-optimization.requireRealRuntime" -}}
+{{- include "slotting-optimization.requireDatabase" . -}}
+{{- include "slotting-optimization.requireKafka" . -}}
+{{- include "slotting-optimization.requireConsumerModes" . -}}
+{{- include "slotting-optimization.requireConsumerGroups" . -}}
+{{- include "slotting-optimization.requireNoInMemoryEnv" (dict "list" .Values.extraEnv "where" "extraEnv") -}}
+{{- include "slotting-optimization.requireNoInMemoryEnv" (dict "list" .Values.mcp.extraEnv "where" "mcp.extraEnv") -}}
+{{- include "slotting-optimization.requireGracePeriod" . -}}
 {{- end -}}
 
 {{/*

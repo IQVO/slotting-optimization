@@ -20,18 +20,10 @@ data:
   LAYOUT_MODE: {{ .Values.config.layoutMode | quote }}
   RELOCATION_MODE: {{ .Values.config.relocationMode | quote }}
   ENVIRONMENT: {{ .Values.environment | quote }}
-  {{- with .Values.config.demandConsumerGroup }}
-  DEMAND_CONSUMER_GROUP: {{ . | quote }}
-  {{- end }}
-  {{- with .Values.config.productConsumerGroup }}
-  PRODUCT_CONSUMER_GROUP: {{ . | quote }}
-  {{- end }}
-  {{- with .Values.config.layoutConsumerGroup }}
-  LAYOUT_CONSUMER_GROUP: {{ . | quote }}
-  {{- end }}
-  {{- with .Values.config.relocationConsumerGroup }}
-  RELOCATION_CONSUMER_GROUP: {{ . | quote }}
-  {{- end }}
+  DEMAND_CONSUMER_GROUP: {{ .Values.config.demandConsumerGroup | quote }}
+  PRODUCT_CONSUMER_GROUP: {{ .Values.config.productConsumerGroup | quote }}
+  LAYOUT_CONSUMER_GROUP: {{ .Values.config.layoutConsumerGroup | quote }}
+  RELOCATION_CONSUMER_GROUP: {{ .Values.config.relocationConsumerGroup | quote }}
   {{- with .Values.config.demandSiteId }}
   DEMAND_SITE_ID: {{ . | quote }}
   {{- end }}
@@ -57,6 +49,4 @@ data:
   {{- if .Values.otel.enabled }}
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.endpoint | quote }}
   {{- end }}
-  {{- if .Values.kafka.enabled }}
   KAFKA_BROKERS: {{ .Values.kafka.brokers | quote }}
-  {{- end }}

@@ -39,8 +39,8 @@ spec:
               protocol: TCP
           # Env contract verified against cmd/slotting-projector/main.go:
           # ANALYTICS_DATABASE_URL (required, direct DSN -- the projector
-          # never opens the OLTP database), KAFKA_BROKERS (required, the
-          # guard above refuses analytics without kafka.enabled),
+          # never opens the OLTP database), KAFKA_BROKERS (required: the api
+          # Deployment's guard refuses to render without kafka.brokers),
           # ANALYTICS_CONSUMER_GROUP (stable group so a rescheduled pod
           # resumes from committed offsets), ADMIN_ADDR, LOG_LEVEL and the
           # telemetry trio (ENVIRONMENT is read by the telemetry adapter).

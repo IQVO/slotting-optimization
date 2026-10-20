@@ -1,0 +1,118 @@
+# slotting-optimization -- the slotting bounded context (forward pick-slot
+# plans by ABC velocity with stickiness and human approval). OLTP REST on
+# :8080 plus, in the SAME process, a transactional-outbox relay and four
+# Kafka consumers (slotting-optimization ADR 0003 and ADR 0010):
+#   - publishes warehouse.slotting-optimization.events (CloudEvents) through
+#     the outbox. wes-work-planning consumes SlotPlanApproved from it and plans
+#     each move as RELOCATE work (slotting ADR 0010, wes-work-planning
+#     ADR-0040; its inbound consumer runs whenever kafka.enabled, under its
+#     existing group, so nothing is set for it in wes-work-planning.yaml).
+#   - demand copy  <- warehouse.order-management.events (DEMAND_MODE=kafka,
+#                     SiteSkuDemandChanged)
+#   - product copy <- warehouse.product-master.events   (PRODUCT_MODE=kafka,
+#                     ABC class + physical profile)
+#   - layout copy  <- warehouse.facility.events         (LAYOUT_MODE=kafka,
+#                     forward slot catalogue)
+#   - execution progress <- warehouse.inventory.events  (RELOCATION_MODE=kafka,
+#                     inventory-storage's StockRelocated: executed moves /
+#                     total on GET /slot-plans/{planId} and the MCP plan tool)
+# Topics are auto-created by the first writer with the broker's
+# num.partitions / replication-factor-1 overrides (kafka.tf has no topic
+# resources -- the fleet norm), so warehouse.slotting-optimization.events,
+# warehouse.slotting-optimization.analytics (ADR 0006) and the .dlq topics
+# need no declaration here.
+#
+# Every key below is a DEDICATED chart value
+# (charts/slotting-optimization/values.yaml renders each one to its env var),
+# so none of this belongs in extraEnv (a duplicate env entry breaks ArgoCD's
+# diff).
+#
+# Startup: runs golang-migrate before serving, over MIGRATIONS_DATABASE_URL
+# (the direct, non-pooled DSN Terraform puts in the <svc>-db Secret);
+# DATABASE_URL itself goes through PgBouncer. The role/database are created
+# by modules/application's provisioning Job (ADR 0005), before the first sync.
+#
+# DEMAND_SITE_ID / DEFAULT_SITE_ID are deliberately left unset: every request
+# names its site and every site's demand is ingested (no invented default).
+# The read-only MCP server is switched on below (mcp.enabled); the ops-agent
+# consumes it (warehouse-ops-agent.yaml, warehouse-ops-agent #151).
+
+replicaCount: 1
+
+config:
+  httpAddr: ":8080"
+  logLevel: "info"
+  # Relay Slotting events onto warehouse.slotting-optimization.events instead
+  # of the log sink. Requires kafka.enabled (below); the chart refuses to
+  # render otherwise.
+  eventPublisher: "kafka"
+  outboxRelayInterval: "1s"
+  # Fixed, stable group ids (the same names the chart's own
+  # ci/all-components-values.yaml uses): a rescheduled pod resumes from its
+  # committed offsets; a brand-new group starts at the earliest retained
+  # message and rebuilds the copy from history. Each *_CONSUMER_GROUP is
+  # required when its mode is "kafka" (the chart refuses an empty one).
+  demandMode: "kafka"
+  demandConsumerGroup: "slotting-optimization-demand"
+  productMode: "kafka"
+  productConsumerGroup: "slotting-optimization-product"
+  layoutMode: "kafka"
+  layoutConsumerGroup: "slotting-optimization-layout"
+  # StockRelocated (inventory-storage, warehouse.inventory.events) -> per-plan
+  # execution progress (slotting ADR 0010). inventory-storage raises it for
+  # POST /relocations and for completed RELOCATE tasks, the latter only with
+  # its TaskCompleted consumer on (helm-values/inventory-storage.yaml).
+  relocationMode: "kafka"
+  relocationConsumerGroup: "slotting-optimization-relocation"
+
+kafka:
+  enabled: true
+analytics:
+  enabled: true
+  consumerGroup: "slotting-optimization-analytics"
+  existingSecret: slotting-optimization-analytics-db
+
+# Formerly computed by terraform/services.tf (ADR 0002 phase 3, docs/adr/0002-application-delivery-boundary.md).
+# Platform facts (Gateway parentRefs, Kafka brokers, OTLP endpoint, CORS origin) come from
+# _platform.yaml; image tags from Terraform (the Application's valuesObject).
+database:
+  existingSecret: slotting-optimization-db
+extraEnv: []
+gatewayApi:
+  enabled: true
+  hosts:
+    - path: /api/slotting-optimization
+      pathType: PathPrefix
+  stripPath: true
+image:
+  pullPolicy: IfNotPresent
+  repository: warehouse/slotting-optimization
+ingress:
+  annotations:
+    konghq.com/strip-path: 'true'
+  className: kong
+  enabled: false
+  hosts:
+    - host: ''
+      paths:
+        - path: /api/slotting-optimization
+          pathType: Prefix
+kongPlugins:
+  cors:
+    enabled: true
+  opentelemetry:
+    enabled: true
+  prometheus:
+    enabled: true
+mcp:
+  enabled: true
+  route:
+    enabled: true
+    path: /api/mcp/slotting-optimization
+pathCatalogue:
+  content: ''
+  enabled: false
+service:
+  port: 80
+  targetPort: 8080
+  type: ClusterIP
