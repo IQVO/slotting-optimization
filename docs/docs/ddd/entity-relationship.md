@@ -7,7 +7,7 @@ sidebar_position: 18
 
 # Entity-relationship diagram
 
-The OLTP schema created by the migrations
+The OLTP schema (migrations `0001`-`0002`) created by the migrations
 `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.sql`
 and `0002_slot_plan_move_executions.up.sql` (ADR 0010, additive), applied at
 boot (see [Runbook](/docs/operations/runbook#migrations)). Text
@@ -177,3 +177,48 @@ Source: `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.
 
 `slots.zone_id` has no foreign key on purpose: zone and slot events may
 arrive in any order, and the join happens at plan time.
+
+## The analytical database (ADR 0006)
+
+A separate database (`ANALYTICS_DATABASE_URL`; warehouse-infra names it
+`slotting_optimization_analytics`), created by the one migration
+`analytics/migrations/0001_slot_plan_funnel.up.sql` and applied by
+`cmd/slotting-projector` only. It is a projection of
+`warehouse.slotting-optimization.analytics`, not a source of truth: drop it
+and replay the topic under a new consumer group to rebuild it. No foreign
+key links the two tables or reaches the OLTP schema.
+
+```mermaid
+erDiagram
+    analytics_processed_events {
+        text event_id PK "CloudEvents id"
+        text event_type "SlotPlanGenerated, SlotPlanApproved, SlotPlanRejected"
+        timestamptz occurred_at "CloudEvents time, max is the freshness"
+        timestamptz applied_at
+    }
+    slot_plan_facts {
+        text plan_id PK
+        text site_id
+        timestamptz generated_at "earliest SlotPlanGenerated"
+        timestamptz approved_at "earliest SlotPlanApproved"
+        timestamptz rejected_at "earliest SlotPlanRejected"
+        timestamptz superseded_at "set by the later approval that names this plan"
+        text supersedes_plan_id
+    }
+```
+
+Source: `analytics/migrations/0001_slot_plan_funnel.up.sql`,
+`internal/adapters/outbound/analyticsstore/postgres_projection.go`.
+
+| Table | Backs | Written by | Read by |
+| --- | --- | --- | --- |
+| `analytics_processed_events` | projector idempotency (one row per applied CloudEvents id) and the freshness basis | `Projection.Apply`: `INSERT ... ON CONFLICT (event_id) DO NOTHING`, in the same transaction as the fact upsert | `Reader.LastEventAt` (`GET /reports/freshness`) |
+| `slot_plan_facts` | one row per plan the projection has seen, one column per milestone | `Projection.Apply`: upsert keeping the EARLIEST time per milestone (`LEAST` ignores NULLs), so arrival order does not matter; an approval with `supersedes_plan_id` also stamps `superseded_at` on that plan's row | `Reader.FunnelDays` (`GET /reports/slot-plan-funnel`): per UTC day window, the counts of generated, approved and rejected milestones, the approval latency (`approved_at - generated_at`, only when both were seen) and the supersessions |
+
+| Object | Rule |
+| --- | --- |
+| `analytics_processed_events_pkey` (`event_id`) | an event is applied once, whatever the redelivery |
+| `idx_analytics_processed_events_occurred_at` | the freshness query |
+| `idx_slot_plan_facts_site` | the `siteId` filter |
+| `idx_slot_plan_facts_{generated,approved,rejected,superseded}_at` (partial, `IS NOT NULL`) | the per-milestone day-window counts |
+| `COLLATE "C"` on `plan_id`, `site_id`, `supersedes_plan_id` | byte order, like the OLTP text keys |

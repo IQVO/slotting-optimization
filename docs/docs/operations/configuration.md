@@ -7,8 +7,9 @@ sidebar_position: 1
 
 # Configuration
 
-`slotting-optimization` ships two binaries, `cmd/api` and `cmd/mcp`, and
-both are configured only through environment variables. There is no config
+`slotting-optimization` ships four binaries, `cmd/api`, `cmd/mcp`,
+`cmd/slotting-projector` and `cmd/slotting-reports`, and all four are
+configured only through environment variables (one table per binary below). There is no config
 file and no flag. Every variable below is read in `cmd/api/main.go` unless
 the *Source* column says otherwise, and the list is complete: it comes from
 every `os.Getenv` / `getenv` call in `cmd/` and `internal/` outside
@@ -19,9 +20,10 @@ In the Helm chart every `cmd/api` variable has a `config.*` (or `kafka.*`,
 on the api Deployment and is also in the chart ConfigMap, which the api
 Deployment mounts with `envFrom` (explicit `env` wins for the same key).
 `charts/slotting-optimization/tests/render_test.sh` (CI job `chart-tests`)
-reads the `os.Getenv` / `getenv` literals of `cmd/api/main.go` and
-`cmd/mcp/main.go` and fails when the chart does not render one of them, and
-when the ConfigMap has a key no binary reads.
+reads the `os.Getenv` / `getenv` literals of `cmd/api/main.go`,
+`cmd/mcp/main.go`, `cmd/slotting-projector/main.go` and
+`cmd/slotting-reports/main.go` and fails when the matching Deployment does
+not render one of them, and when the ConfigMap has a key no binary reads.
 
 ## `cmd/api`
 
@@ -112,6 +114,40 @@ with the api values.
 | `DEMAND_SITE_ID`, `DEFAULT_SITE_ID` | unset | no | The site `get_forward_slots` and `get_sku_velocity` default to (`DEMAND_SITE_ID`, else `DEFAULT_SITE_ID`), matching `cmd/api`. | `cmd/mcp/main.go` (`defaultSite`) |
 | `LOG_LEVEL`, `SERVICE_VERSION`, `ENVIRONMENT`, `OTEL_EXPORTER_OTLP_ENDPOINT` | as for `cmd/api` | no | Logging and telemetry, parsed the same way. | `cmd/mcp/main.go`, `telemetry.go` |
 
+## `cmd/slotting-projector`
+
+The analytics writer (ADR 0006). It opens only the analytical database and
+Kafka, never the OLTP database. Chart: `analytics.enabled` (default `false`),
+`analytics.url` or `analytics.existingSecret` / `analytics.existingSecretKey`
+(the chart refuses `analytics.enabled` without one of them),
+`analytics.consumerGroup`, `analytics.projector.adminAddr`; `KAFKA_BROKERS`
+comes from `kafka.brokers`, `LOG_LEVEL` from `config.logLevel`.
+
+| Variable | Default | Required | Meaning | Source |
+| --- | --- | --- | --- | --- |
+| `ANALYTICS_DATABASE_URL` | none | **yes** | DIRECT (non-PgBouncer) DSN of the analytical database. The projector runs the embedded `analytics/migrations` through it (5 boot-retry attempts), then opens its writer pool (`MaxConns = 5`, `statement_timeout = 10s`). Unset exits at boot with `ANALYTICS_DATABASE_URL is required: the projector writes only to the analytical database`. | `cmd/slotting-projector/main.go` (`loadConfig`, `openAnalyticsPool`), `analyticsstore/pool.go` |
+| `KAFKA_BROKERS` | none | **yes** | Comma-separated brokers of the analytics reader and its DLQ writer. Unset exits with `KAFKA_BROKERS is required: the projector consumes the analytics topic`. The reader dials lazily, so a broker outage does not fail the boot. | `cmd/slotting-projector/main.go` (`loadConfig`) |
+| `ANALYTICS_CONSUMER_GROUP` | `slotting-optimization-analytics` | no | Consumer group on `warehouse.slotting-optimization.analytics`. A new group starts at the first retained offset: that is the backfill / rebuild. | `cmd/slotting-projector/main.go` (`defaultConsumerGroup`) |
+| `ADMIN_ADDR` | `:8091` | no | Listen address of `GET /healthz` and `GET /readyz` (no other route). | `cmd/slotting-projector/main.go` (`loadConfig`) |
+| `LOG_LEVEL` | `info` | no | As for `cmd/api`. | `cmd/slotting-projector/main.go` (`newLogger`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | no | As for `cmd/api`; `service.name` is `slotting-optimization-projector`. | `cmd/slotting-projector/main.go` (`setupTelemetry`) |
+| `SERVICE_VERSION`, `ENVIRONMENT` | `dev`, `local` | no | OTel resource attributes, as for `cmd/api`. | `cmd/slotting-projector/main.go`, `telemetry.go` |
+
+## `cmd/slotting-reports`
+
+The read-only reports binary (ADR 0006). It opens only the analytical
+database, through a read-only pool, and never Kafka. Chart: the same
+`analytics.*` DSN values as the projector, `analytics.reports.httpAddr`,
+`analytics.reports.service.port` (default `80`, target `8092`).
+
+| Variable | Default | Required | Meaning | Source |
+| --- | --- | --- | --- | --- |
+| `ANALYTICS_DATABASE_URL` | none | **yes** | DSN of the analytical database, ideally a read-only role. The pool sets `default_transaction_read_only = on`, `MaxConns = 5`, `statement_timeout = 15s`; the first ping is boot-retried. Unset exits with `ANALYTICS_DATABASE_URL is required: the reports are served from the analytical database`. warehouse-infra's `slotting-optimization-analytics-db` Secret holds the same direct DSN under `ANALYTICS_DATABASE_URL` and `ANALYTICS_READER_DATABASE_URL`; the chart reads only `ANALYTICS_DATABASE_URL`, so the reports run as the projector's role, made read-only by the pool (ADR 0006 names a single analytics DSN). | `cmd/slotting-reports/main.go` (`run`), `analyticsstore/pool.go` (`NewReadOnlyPool`) |
+| `HTTP_ADDR` | `:8092` | no | Listen address of `/reports/slot-plan-funnel`, `/reports/freshness` and `/healthz`. | `cmd/slotting-reports/main.go` (`run`) |
+| `LOG_LEVEL` | `info` | no | As for `cmd/api`. | `cmd/slotting-reports/main.go` (`newLogger`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | no | As for `cmd/api`; `service.name` is `slotting-optimization-reports`. | `cmd/slotting-reports/main.go` (`run`) |
+| `SERVICE_VERSION`, `ENVIRONMENT` | `dev`, `local` | no | OTel resource attributes, as for `cmd/api`. | `cmd/slotting-reports/main.go`, `telemetry.go` |
+
 ## Fixed values (not configurable)
 
 These are constants in code; changing them is a code change.
@@ -119,10 +155,14 @@ These are constants in code; changing them is a code change.
 | Value | Constant | Source |
 | --- | --- | --- |
 | HTTP graceful drain budget 10 s; consumer and relay drain 10 s each; telemetry flush 5 s | `shutdownTimeout`, `workerDrainTimeout` | `cmd/api/main.go` |
+| Projector and reports drain 10 s | `shutdownTimeout` | `cmd/slotting-projector/main.go`, `cmd/slotting-reports/main.go` |
+| Analytical pools: projector `MaxConns = 5`, `statement_timeout = 10s`; reports `MaxConns = 5`, `statement_timeout = 15s`, read-only | `analyticsstore.MaxConns`, `StatementTimeout`, `ReportsMaxConns`, `ReportsStatementTimeout` | `internal/adapters/outbound/analyticsstore/pool.go` |
+| Report range: default 30 days ending now, at most 366 days; granularity `day` only | `report.DefaultWindow`, `report.MaxWindow`, `report.GranularityDay` | `internal/analytics/report/range.go` |
 | Boot retry: 5 attempts with 1 s, 2 s, 4 s, 8 s waits (15 s of backoff in total, no wait after the last attempt) for the migrations and the first ping | `bootretry.Retries`, `bootretry.Delay` | `internal/bootretry/bootretry.go` |
 | Pool: `MaxConns = 10`, `statement_timeout = 5s` | `postgres.MaxConns`, `postgres.StatementTimeout` | `internal/adapters/outbound/postgres/pool.go` |
 | Relay batch 100 rows | `outbox.DefaultBatchSize` | `internal/adapters/outbound/outbox/relay.go` |
 | Consumer retry: 200 ms doubling to 5 s, 5 handling attempts, then `<topic>.dlq` | `DefaultRetryInitial`, `DefaultRetryMax`, `domainMaxHandlerAttempts` | `internal/adapters/inbound/kafka/kafka.go`, `deadletter.go` |
+| Projector consumer: a transient failure retries the same message forever (200 ms doubling to 5 s); a deterministic failure is dead-lettered at once | `AnalyticsConsumer.Run` (no `maxAttempts`) | `internal/adapters/inbound/kafka/analytics_consumer.go` |
 | ABC thresholds 80 % / 95 % of picks | `planning.DefaultParameters` | `internal/domain/planning/planner.go` |
 | Request body limit 64 KiB | `maxBodyBytes` | `internal/adapters/inbound/http/response.go` |
 | OTLP metric export every 30 s | `metricExportInterval` | `internal/adapters/outbound/telemetry/telemetry.go` |
@@ -133,4 +173,5 @@ These are constants in code; changing them is a code change.
 | --- | --- |
 | Unit tests, BDD | nothing: they use the in-memory test doubles directly and never boot the binary |
 | Local run (`docker compose up -d`, [Quickstart](/docs/overview/quickstart)) | `DATABASE_URL`, `KAFKA_BROKERS`, the four `*_CONSUMER_GROUP`, and `DEFAULT_SITE_ID=WH1` to omit `siteId` |
-| A cluster deployment | everything above with real DSNs and brokers, plus `MIGRATIONS_DATABASE_URL` when `DATABASE_URL` goes through a pooler, `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` and `CORS_ALLOWED_ORIGINS`, all set by `charts/slotting-optimization` from its values; the chart refuses to render without `database.*`, `kafka.brokers` and the four consumer groups ([Runbook](/docs/operations/runbook#deployment)). |
+| Local analytics read side ([Quickstart](/docs/overview/quickstart#run-the-analytics-read-side-optional)) | `ANALYTICS_DATABASE_URL` (a second database), `KAFKA_BROKERS` and a `*-local` `ANALYTICS_CONSUMER_GROUP` for the projector; `ANALYTICS_DATABASE_URL` for the reports |
+| A cluster deployment | everything above with real DSNs and brokers, plus `MIGRATIONS_DATABASE_URL` when `DATABASE_URL` goes through a pooler, `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` and `CORS_ALLOWED_ORIGINS`, all set by `charts/slotting-optimization` from its values; the chart refuses to render without `database.*`, `kafka.brokers` and the four consumer groups, and without an analytics DSN source when `analytics.enabled` ([Runbook](/docs/operations/runbook#deployment)). warehouse-infra sets `mcp.enabled: true` and `analytics.enabled: true` with `analytics.existingSecret: slotting-optimization-analytics-db`. |

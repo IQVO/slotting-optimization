@@ -9,16 +9,15 @@ sidebar_position: 1
 
 The test pyramid as it exists on `develop`, the `make` targets that run each
 layer, and the CI jobs that gate a pull request. Every count on this page
-was taken from the repository on 2026-10-10 (`develop` at `ab0f53e`) and
-updated on 2026-10-12 for the gap-fix wave (attempt cap, trace context,
-sensors, chart render test).
+was recounted on 2026-10-19 from `develop` at `3312858` (after the analytics
+read side, ADR 0006, and the real-only runtime, ADR 0011).
 
 ```mermaid
 flowchart TB
-    arch["Architecture fitness: internal/architecture (18 tests, arch-go + AST)"]
+    arch["Architecture fitness: internal/architecture (24 tests, arch-go + AST)"]
     mut["Mutation: gremlins on internal/domain/slotplan and internal/domain/planning (efficacy and mutant coverage at least 99 %)"]
     bdd["BDD: 5 features, 50 Scenario / Scenario Outline blocks, real router + real consumers over in-memory adapters"]
-    integ["Integration: 17 files in 8 packages tagged integration, testcontainers Postgres 16 and Kafka"]
+    integ["Integration: 21 files in 10 packages tagged integration, testcontainers Postgres 16 and Kafka"]
     unit["Unit: domain, use cases with fakes, HTTP handlers through httptest, consumers with fake readers"]
     unit --> integ --> bdd
     mut -.-> unit
@@ -63,12 +62,17 @@ Plain `go test`, no build tag, no I/O.
 | HTTP / MCP execution view | `internal/adapters/inbound/http/execution_handlers_test.go`, `internal/adapters/inbound/mcp/execution_tool_test.go` | `execution` on `GET /slot-plans/{planId}` and `get_slot_plan` (camelCase vs snake_case, omitted fields) |
 | Kafka out, relay | `internal/adapters/outbound/{kafka,outbox}/*_test.go` | CloudEvents encoding (golden), sink settings, relay batching; the attempt cap over the in-memory store (`relay_cap_test.go`: `TestRelay_MaxAttempts_PoisonRowExcludedThenGoodRowPublishes`, `TestRelay_NoCap_PoisonRowBlocksLaterRows`, `TestRelay_MaxAttemptsNegativeIgnoredAndDefaultIsTwenty`, `TestRelay_SendFailureCarriesTheRow`; ADR 0008) |
 | In-memory adapters | `internal/adapters/outbound/memory/memory_test.go` | the shared repository contract in `internal/testing/repocontract` |
+| Analytics read model (ADR 0006) | `internal/analytics/report/report_test.go` | the three projected kinds, `Event.Validate`, `MilestonesOf`, `ParseGranularity`, `ParseRange` (defaults, 366-day cap, inverted ranges), `DayWindows`, `ComputeFreshness` (no negative lag), `Percentile` (linear interpolation, the `percentile_cont` definition), `TimingOf` |
+| Analytics store | `internal/adapters/outbound/analyticsstore/contract_test.go` | `TestMemory_Contract`: the shared projection/reader contract over the in-memory twin (the Postgres twin runs it under the integration tag) |
+| Analytics stream and projector consumer | `internal/adapters/outbound/kafka/analytics_encoder_test.go`, `internal/adapters/inbound/kafka/analytics_consumer_test.go`, `analytics_consumer_internal_test.go` | the analytics golden wire format; `FanoutEncoder`: two rows and one id per event, the whole call fails on an unknown event, topic overrides, unique ids across occurrences; the consumer applies valid events, skips what it cannot route, dead-letters deterministic failures at once, retries transient ones without committing, never fails on a skip; the skip sampler; `TestAnalyticsKindsCoverExactlyTheThreePublishedTypes` |
+| Reports HTTP | `internal/adapters/inbound/http/reports_handler_test.go` | funnel report shape, defaults and validation (`invalid-report-range`, `invalid-report-granularity`), freshness, `500 report-store-error`, `/healthz` |
+| Projector and reports roots | `cmd/slotting-projector/main_test.go`, `cmd/slotting-reports/main_test.go` | `loadConfig` defaults and overrides, fail-fast without the analytical DSN or brokers, `/healthz` vs `/readyz` flip on shutdown, a malformed DSN, `LOG_LEVEL` mapping |
 | Composition root | `cmd/api/main_test.go`, `outbox_relay_config_test.go`, `logger_level_test.go`; `cmd/mcp/main_test.go`; `cmd/api/e2e_integration_test.go` | env parsing (the boot refusals of `loadRuntime` as a table asserting the error names the variable: `TestLoadRuntimeRefusesWithAnErrorNamingTheVariable`, `TestLoadRuntimePermissiveMessageNamesRealKafka`, `TestNoDatabaseURLIsABootErrorEverywhere`; relay interval, `OUTBOX_MAX_ATTEMPTS` (`TestOutboxMaxAttempts`, `TestDefaultOutboxMaxAttemptsIsTwenty`), `LOG_LEVEL` incl. `warning` (`TestNewLoggerLevels` in both binaries), `LOOKBACK_DAYS`, `FORWARD_ZONE_CODES`, `DEMAND_SITE_ID`/`DEFAULT_SITE_ID`, drain delay, `MIGRATIONS_DATABASE_URL`), consumers and relay start and stop, a worker that dies (`TestWatchWorkersReportsAWorkerThatDied`), the readiness dependencies, and `TestRunOnRealPostgresAndKafka` (integration tag): the real `run()` on testcontainers Postgres and Kafka driven only through REST and Kafka, including the exit when Kafka goes away. The composition root has no in-memory runtime: unit tests build the doubles directly (`cmd/api/testdoubles_test.go`) |
 | Boot retry, telemetry, ids, clock | their packages | |
 
 ## Integration tests (testcontainers)
 
-Eighteen files in eight packages carry `//go:build integration`:
+Twenty-one files in ten packages carry `//go:build integration`:
 
 | Package | Files | Backing services and what the suite proves |
 | --- | --- | --- |
@@ -77,7 +81,9 @@ Eighteen files in eight packages carry `//go:build integration`:
 | `internal/adapters/outbound/outbox` | `main_integration_test.go`, `relay_integration_test.go`, `relay_cap_integration_test.go`, `outbox_trace_integration_test.go` | Postgres + Kafka: `TestRelay_RealPostgresAndKafka_PublishesCloudEventsKeyedByPlanID`. The attempt cap over real Postgres (ADR 0008): a poison row is excluded after the cap, logged once at ERROR with id, topic, type and key, and the good row of the same key behind it publishes (`TestOutboxRelay_MaxAttempts_PoisonRowExcludedThenGoodRowPublishes`); the runbook's re-arm SQL makes it claimable again (`TestOutboxRelay_MaxAttempts_ReArmedRowIsClaimedAgain`); without a cap the poison row blocks everything (`TestOutboxRelay_NoCap_PoisonRowBlocksLaterRows`). Trace continuity (ADR 0009): the approve request's `traceparent` is stored in `outbox_events.headers`, relayed by a background pass and extracts to the request span (`TestOutboxTrace_TraceparentCrossesTheOutboxToKafka`); a row without stored headers relays unchanged with none (`TestOutboxTrace_RowWithoutTraceHeadersRelaysUnchanged`) |
 | `internal/adapters/outbound/kafka` | `main_integration_test.go`, `publisher_integration_test.go` | Kafka: the production `Encoder` and `RelaySink` (the writer settings `cmd/api` builds) publish the aggregate's three event kinds, then the test reads them back from the broker and asserts the CloudEvents 1.0 envelope (`specversion`, `id`, `source`, the `com.warehouse.wms.slotting-optimization.slotplan.<Event>` type), the `content-type` header, the payloads pinned in `apis/asyncapi.yaml` and a re-sent outbox row carrying the same CloudEvents `id` (`TestKafkaPublisher_RealBrokerPublishesTheCloudEventsContract`); every event of one plan carries the plan id as the Kafka key (`TestKafkaPublisher_OnePlanSticksToOnePartitionKeysOrdering`) |
 | `internal/adapters/inbound/http` | `main_integration_test.go`, `helpers_integration_test.go`, `idempotency_integration_test.go` | Postgres: the `Idempotency-Key` middleware (400 without a key, replay of the original plan, 422 on a different body, different keys make different plans, a rejected request is cached too, concurrent requests with one key create one plan), approve end to end, racing approvals of one site leave one Approved plan |
-| `internal/adapters/inbound/kafka` | `main_integration_test.go`, `consumers_integration_test.go`, `stock_consumer_integration_test.go` | Postgres + Kafka: the demand, product and layout consumers end to end; the StockRelocated consumer (ADR 0010, `TestStockConsumer_RealKafkaAndPostgres`): a relocation with the move reference updates the plan's progress, a redelivery and a replay under a new id count once, an unmatched relocation is committed past, and the poison message is the only one on `warehouse.inventory.events.dlq` |
+| `internal/adapters/inbound/kafka` | `main_integration_test.go`, `consumers_integration_test.go`, `stock_consumer_integration_test.go`, `analytics_consumer_integration_test.go` | Postgres + Kafka: the demand, product and layout consumers end to end; the StockRelocated consumer (ADR 0010, `TestStockConsumer_RealKafkaAndPostgres`): a relocation with the move reference updates the plan's progress, a redelivery and a replay under a new id count once, an unmatched relocation is committed past, and the poison message is the only one on `warehouse.inventory.events.dlq`; the projector's consumer over a real analytical database (`TestAnalyticsConsumer_RealKafkaAndPostgres`) |
+| `internal/adapters/outbound/analyticsstore` | `postgres_integration_test.go` | Postgres: the shared contract over the real store (`TestPostgres_Contract`), the analytical migrations up and down repeatably, the claim and the effect commit atomically, an integrity violation becomes `ErrRejected`, the read-only pool cannot write, the SQL day windows equal the Go definition |
+| `cmd/api` | `e2e_integration_test.go` | Postgres + Kafka: `TestRunOnRealPostgresAndKafka` boots the real `run()` and drives it only through REST and Kafka, including the exit when Kafka goes away |
 | `cmd/mcp` | `main_integration_test.go` | Postgres: the MCP binary migrates a database itself, reads through every tool what the api's write use cases persisted, and adds no outbox row (`TestMCPAgainstPostgres_ReadsWhatTheAPIWroteAndNeverWrites`) |
 | `internal/application/usecases` | `main_integration_test.go`, `wiring_integration_test.go` | Postgres: the write use cases wired like `cmd/api` (real Postgres repositories, unit of work, CloudEvents encoder and read-model adapters; only the clock is fixed). The local copies are seeded through the real ledger, profile directory and slot catalogue, then generate, approve, a second approval that supersedes the first, regeneration stickiness and a rejection are checked against the persisted state and the read models (`TestUsecases_WiringPlanLifecycleEndToEnd`). Every outbox row the lifecycle wrote is decoded as a CloudEvents 1.0 envelope with its pinned payload (`TestUsecases_WiringPublishedEventsCarryTheCloudEventsContract`) |
 
@@ -134,7 +140,8 @@ lived, `internal/domain/planning` 46 killed / 0 lived, both 100 %.
 
 | Test | Rule |
 | --- | --- |
-| `TestHexagonalArchitecture` | domain imports nothing from application or adapters; `ports` holds interfaces only; adapters never import each other (arch-go) |
+| `TestHexagonalArchitecture` | domain imports nothing from application or adapters; `ports` holds interfaces only; adapters never import each other; `internal/analytics/**` imports nothing internal but itself, and the OLTP domain and application never import it or `analyticsstore` (ADR 0006) (arch-go) |
+| `TestRuntimeBinaryHasNoInMemoryAdapters`, `TestRuntimeBinarySensorBites` | no file under `cmd/**` imports `internal/adapters/outbound/memory` (ADR 0011) |
 | `TestMCPAdapterDependencyRule` | the MCP adapter (`internal/adapters/inbound/mcp`) depends only on the application and domain layers and nothing imports it |
 | `TestMCPOptionalToolInputsCarryOmitempty`, `TestMCPOptionalToolInputsSensorFailsOnBadFixtures` | an MCP tool input whose `jsonschema` description calls it optional (`optional` / `omitted`) has `omitempty` in its `json` tag, or the SDK would mark it required (gap fix D16) |
 | `TestOutboxRelaysPassAttemptCap`, `TestOutboxRelayCapSensorFailsOnBadFixtures` | every non-test file under `cmd/` that builds an outbox relay passes `WithMaxAttempts` (gap fix D12, ADR 0008) |
@@ -142,7 +149,7 @@ lived, `internal/domain/planning` 46 killed / 0 lived, both 100 %.
 | `TestKafkaConsumerGroupNeverHardcodedInline` | group ids come from the environment |
 | `TestKafkaIntegrationTestsUseTestcontainers`, `TestPostgresIntegrationTestsUseTestcontainers`, `TestPostgresIntegrationSensorFailsOnBadFixtures` | integration tests boot real containers and never skip |
 | `TestNoEventEnvelopeToggleOrFlatEnvelope`, `TestCloudEventsOnly` | CloudEvents 1.0 only, built in one package |
-| `TestReplayConsumersSetCommitInterval` | a reader whose `GroupID` is a per-run unique group must set `CommitInterval` (no such reader exists here; the three consumers use env-provided groups and synchronous commits) |
+| `TestReplayConsumersSetCommitInterval` | a reader whose `GroupID` is a per-run unique group must set `CommitInterval` (no such reader exists here; the four api consumers and the projector use env-provided groups and synchronous commits) |
 | `TestEventCatalogueMatchesContract`, `TestEventCatalogueDetector` | the published types match `apis/asyncapi.yaml` |
 | `TestKafkaWritersSetRequiredAcks`, `TestKafkaWriterAcksSensorBites` | Every kafka-go `Writer` composite literal in a non-test file under `internal/` or `cmd/` sets `RequiredAcks` (the import alias is resolved per file). kafka-go defaults it to `RequireNone` (acks=0): the broker never confirms the write, so a broker blip silently drops the message while `WriteMessages` returns nil. The twin proves the sensor flags a bad fixture under any alias. |
 | `TestDeadLetterCallsGuardCancellation` (+ `TestDeadLetterShutdownSensorBites`, `kafka_dlq_shutdown_fitness_test.go`) | Every function in a non-test file under `internal/adapters/inbound/kafka` that sends to the dead-letter topic must reference `ctx.Err()` (any context-named value) or `context.Canceled` in its own body, or carry a `//dlq:deterministic <reason>` comment on the call line or the line above it. A handler that fails because the process is stopping must not dead-letter a good message and commit past it (network-fulfillment #89); a guard in the caller does not count. The sensor test proves the detector flags the pre-fix shape. |
@@ -184,7 +191,8 @@ into them, weekly schedule, manual dispatch):
 | `vuln` | `govulncheck ./...` | blocking |
 | `arch-test` | `go test ./internal/architecture/... -v` | blocking |
 | `helm-lint` | `ct lint` and the Service selector test | pull requests only |
-| `chart-tests` | `charts/slotting-optimization/tests/render_test.sh` (the api Deployment mounts the ConfigMap with `envFrom`; `OUTBOX_MAX_ATTEMPTS` defaults to 20 and renders `0`; every `os.Getenv` / `getenv` literal of `cmd/api/main.go` and `cmd/mcp/main.go` is rendered into its Deployment; no ConfigMap key is read by no binary; mcp does not mount the ConfigMap) and `test_service_selectors.py` | every push and PR; not a required check (branch protection unchanged) |
+| `chart-tests` | `charts/slotting-optimization/tests/render_test.sh` (the api Deployment mounts the ConfigMap with `envFrom`; `OUTBOX_MAX_ATTEMPTS` defaults to 20 and renders `0`; every `os.Getenv` / `getenv` literal of the four `cmd/*/main.go` is rendered into its Deployment; no ConfigMap key is read by no binary; mcp does not mount the ConfigMap; the analytics components render only with `analytics.enabled` and a DSN source, the projector without a Service and without the api's OLTP env), and `test_service_selectors.py` (`tests/test_kong_config.py` exists, but no CI job runs it) | every push and PR; not a required check (branch protection unchanged) |
+| `trivy-scan` | builds the image locally and scans it with Trivy (SARIF uploaded; blocking on CRITICAL/HIGH with a fix available) | pull requests only |
 | `docker-publish`, `release` | image, signature, SBOM, Helm chart, GitHub release | skipped (push to `main` only) |
 
 Other workflows: `docs.yml` builds this site on every pull request touching

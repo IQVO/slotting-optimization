@@ -40,10 +40,12 @@ flowchart LR
     classDef none fill:#f8f9fa,stroke:#adb5bd,stroke-dasharray:5 5,color:#495057
     subgraph IN["Inbound - who commands, queries or feeds it"]
         direction TB
-        in0(["Planner (human, console,<br/>agent)"]):::actor
+        in0(["Planner (human, REST<br/>or web remote slotting_mfe)"]):::actor
+        in4(["warehouse-ops-agent<br/>(slot-plan watch)"]):::actor
         in1["order-management"]:::ctx
         in2["product-master"]:::ctx
         in3["facility-layout"]:::ctx
+        in5["inventory-storage"]:::ctx
     end
     subgraph BC["slotting-optimization - Supporting subdomain - WMS tier"]
         direction TB
@@ -57,11 +59,15 @@ flowchart LR
     in1 ==>|"evt - Kafka<br/>warehouse.order-management.events<br/>SiteSkuDemandChanged"| BC
     in2 ==>|"evt - Kafka<br/>warehouse.product-master.events<br/>ProductClassified,<br/>ProductDimensionsDeclared,<br/>ProductMeasured"| BC
     in3 ==>|"evt - Kafka<br/>warehouse.facility.events<br/>ZoneRegistered,<br/>LocationSlotRegistered,<br/>LocationSlotDecommissioned"| BC
+    in4 -.->|"qry - MCP<br/>list_slot_plans, get_slot_plan"| BC
+    in5 ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>StockRelocated"| BC
     linkStyle 0 stroke:#1971c2,stroke-width:1.5px
     linkStyle 1 stroke:#2f9e44,stroke-width:1.5px
     linkStyle 2 stroke:#e8590c,stroke-width:2.5px
     linkStyle 3 stroke:#e8590c,stroke-width:2.5px
     linkStyle 4 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 5 stroke:#2f9e44,stroke-width:1.5px
+    linkStyle 6 stroke:#e8590c,stroke-width:2.5px
     class BC bc
 ```
 
@@ -80,10 +86,16 @@ flowchart LR
     BC["<b>slotting-optimization - Supporting subdomain - WMS tier</b>"]:::bc
     subgraph OUT["Outbound - whom it calls or notifies"]
         direction TB
-        out0["wes-work-planning<br/>(RELOCATE work per move)"]
+        out0["wes-work-planning<br/>(RELOCATE work per move)"]:::ctx
+        out1["pick-face-replenishment<br/>(forward assignment map)"]:::ctx
+        out2["slotting-projector<br/>(this repository, ADR 0006)"]:::self
     end
-    BC ==>|"evt - Kafka<br/>warehouse.slotting-optimization.events<br/>SlotPlanGenerated,<br/>SlotPlanApproved,<br/>SlotPlanRejected"| out0
+    BC ==>|"evt - Kafka<br/>warehouse.slotting-optimization.events<br/>SlotPlanApproved"| out0
+    BC ==>|"evt - Kafka<br/>warehouse.slotting-optimization.events<br/>SlotPlanApproved"| out1
+    BC ==>|"evt - Kafka<br/>warehouse.slotting-optimization.analytics<br/>SlotPlanGenerated,<br/>SlotPlanApproved,<br/>SlotPlanRejected"| out2
     linkStyle 0 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 1 stroke:#e8590c,stroke-width:2.5px
+    linkStyle 2 stroke:#e8590c,stroke-width:2.5px
 ```
 
 Source: the Inbound Communication and Outbound Communication tables of this
@@ -126,37 +138,45 @@ flowchart LR
     om["order-management"] -->|"SiteSkuDemandChanged (event)"| so["slotting-optimization"]
     pm["product-master"] -->|"ProductClassified, ProductDimensionsDeclared, ProductMeasured (events)"| so
     fl["facility-layout"] -->|"ZoneRegistered, LocationSlotRegistered, LocationSlotDecommissioned (events)"| so
-    pl["planner, console, agent"] -->|"Generate, Approve, Reject (REST commands)"| so
+    is["inventory-storage"] -->|"StockRelocated (event)"| so
+    pl["planner (REST, web remote)"] -->|"Generate, Approve, Reject (REST commands)"| so
     pl -->|"plans, forward slots, velocity (REST queries)"| so
+    ag["warehouse-ops-agent"] -->|"list_slot_plans, get_slot_plan (MCP queries)"| so
 ```
 
-Source: `internal/adapters/inbound/kafka/{demand,product,layout}_consumer.go`,
-`internal/adapters/inbound/http/server.go`.
+Source: `internal/adapters/inbound/kafka/{demand,product,layout,stock}_consumer.go`,
+`internal/adapters/inbound/http/server.go`, `internal/adapters/inbound/mcp/`.
 
 | Collaborator | Message | Kind | Channel |
 | --- | --- | --- | --- |
 | order-management | `SiteSkuDemandChanged` | event | `warehouse.order-management.events` |
 | product-master | `ProductClassified`, `ProductDimensionsDeclared`, `ProductMeasured` | events | `warehouse.product-master.events` |
 | facility-layout | `ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned` | events | `warehouse.facility.events` |
-| planner (human, console, agent) | Generate slot plan, Approve, Reject | commands | `POST /slot-plans`, `POST /slot-plans/{planId}/approve`, `POST /slot-plans/{planId}/reject` |
-| planner (human, console, agent) | Get plan, List plans, Forward slots, SKU velocity | queries | `GET /slot-plans/{planId}`, `GET /slot-plans`, `GET /forward-slots`, `GET /sku-velocity` |
+| inventory-storage | `StockRelocated` | event | `warehouse.inventory.events` (execution progress, ADR 0010) |
+| planner (human, or the web remote `slotting_mfe`) | Generate slot plan, Approve, Reject | commands | `POST /slot-plans`, `POST /slot-plans/{planId}/approve`, `POST /slot-plans/{planId}/reject` |
+| planner (human, or the web remote `slotting_mfe`) | Get plan, List plans, Forward slots, SKU velocity | queries | `GET /slot-plans/{planId}`, `GET /slot-plans`, `GET /forward-slots`, `GET /sku-velocity` |
+| warehouse-ops-agent (its ADR 0024, slot-plan watch) and any MCP client | Get plan, List plans (the agent); Forward slots, SKU velocity (other clients) | queries | MCP `get_slot_plan`, `list_slot_plans`, `get_forward_slots`, `get_sku_velocity` (`cmd/mcp`, read-only) |
+| warehouse-console reports screen | Slot-plan funnel, freshness | queries | `GET /reports/slot-plan-funnel`, `GET /reports/freshness` on `cmd/slotting-reports` (no Kong route to it, see [Integration](/docs/ecosystem/integration)) |
 
 ## Outbound communication
 
 ```mermaid
 flowchart LR
     so["slotting-optimization"] -->|"SlotPlanGenerated, SlotPlanApproved, SlotPlanRejected (events)"| topic["warehouse.slotting-optimization.events"]
+    so -->|"same three events, same ids"| atopic["warehouse.slotting-optimization.analytics"]
     topic -->|"SlotPlanApproved: RELOCATE work per move"| exec["wes-work-planning, fulfillment-execution"]
+    topic -->|"SlotPlanApproved: forward assignment map"| pfr["pick-face-replenishment"]
+    atopic --> proj["slotting-projector (this repository)"]
     exec -->|"StockRelocated via inventory-storage"| so
 ```
 
-Source: `internal/adapters/outbound/kafka/encoder.go`, ADR 0001 (context map).
+Source: `internal/adapters/outbound/kafka/encoder.go` (`FanoutEncoder`), ADR 0001 (context map), ADR 0006.
 
 | Message | Kind | Channel | Consumers |
 | --- | --- | --- | --- |
-| `SlotPlanGenerated` | event | `warehouse.slotting-optimization.events` | none yet |
-| `SlotPlanApproved` | event | same | wes-work-planning (RELOCATE work per move, its ADR 0040; ADR 0010) |
-| `SlotPlanRejected` | event | same | none yet |
+| `SlotPlanGenerated` | event | `warehouse.slotting-optimization.events` and `warehouse.slotting-optimization.analytics` | no sibling (wes-work-planning and pick-face-replenishment skip it); this repository's `slotting-projector` reads the analytics copy |
+| `SlotPlanApproved` | event | same | wes-work-planning (RELOCATE work per move, its ADR 0040; ADR 0010), pick-face-replenishment (forward assignment map, `ApplyForwardAssignmentMap`); `slotting-projector` (analytics copy) |
+| `SlotPlanRejected` | event | same | no sibling; `slotting-projector` (analytics copy) |
 
 ## Ubiquitous language
 
@@ -203,6 +223,8 @@ forward slot, eligibility, stickiness, local copy. Full glossary:
   (wes-work-planning RELOCATE work, inventory-storage records it; progress
   comes back as `StockRelocated`). Should a new proposal wait for the
   previous plan's execution? Not in v1.
-- Which consumer will read `SlotPlanApproved` first?
+- Which consumer reads `SlotPlanApproved`? Answered on `develop`:
+  wes-work-planning (RELOCATE work) and pick-face-replenishment (forward
+  assignment map). No sibling reads `SlotPlanGenerated` or `SlotPlanRejected`.
 - A travel-distance ranking needs layout geometry the consumer does not read
   yet (`LocationGeometryUpdated` is ignored today).

@@ -32,6 +32,24 @@ Topic `warehouse.slotting-optimization.events`, `source`
 Superseding the previous Approved plan raises no event of its own: it is
 carried by `supersedes_plan_id` on the new `SlotPlanApproved`.
 
+Consumers of this integration topic on `origin/develop` of the siblings:
+`wes-work-planning` (`SlotPlanApproved`: one RELOCATE work unit per move,
+its ADR-0040) and `pick-face-replenishment` (`SlotPlanApproved`: its local
+forward-assignment map, `internal/adapters/inbound/kafka/slotting_consumer.go`).
+No sibling consumes `SlotPlanGenerated` or `SlotPlanRejected`.
+
+### Analytics stream
+
+Topic `warehouse.slotting-optimization.analytics` (ADR 0006) carries the same
+three types with the same CloudEvents `id`, `type`, `source`, `subject` and
+key, and a byte-identical `data`; only the `dataschema` differs
+(`urn:warehouse:slotting-optimization:analytics:<EventName>:v1`). `cmd/api`
+writes both rows in one transaction (`FanoutEncoder`, integration row
+first). It is not an integration contract: the only consumer is this
+repository's `cmd/slotting-projector` (group `ANALYTICS_CONSUMER_GROUP`,
+default `slotting-optimization-analytics`), whose poison messages go to
+`warehouse.slotting-optimization.analytics.dlq`.
+
 ## Consumed
 
 | Type | Topic | Consumer |
@@ -44,7 +62,9 @@ carried by `supersedes_plan_id` on the new `SlotPlanApproved`.
 | `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` | `warehouse.facility.events` | layout consumer |
 | `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | `warehouse.facility.events` | layout consumer |
 | `com.warehouse.wms.inventory-storage.stock.StockRelocated` | `warehouse.inventory.events` | relocation consumer (`RELOCATION_MODE`): slot-plan execution progress (ADR 0010) |
+| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated`, `...SlotPlanApproved`, `...SlotPlanRejected` | `warehouse.slotting-optimization.analytics` | `cmd/slotting-projector` (analytics read side, ADR 0006) |
 
-Dead-letter topics: `<topic>.dlq` for each consumed topic
+Dead-letter topics: `<topic>.dlq` for each consumed topic, including
+`warehouse.slotting-optimization.analytics.dlq`
 ([Runbook](/docs/operations/runbook#delivery-semantics)). A malformed
 `StockRelocated` goes there at once; a relocation of no known move does not.

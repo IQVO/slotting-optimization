@@ -43,7 +43,7 @@ memory:
 | `process-path-management` | Generic | `wes` | indirect: its `RELOCATE` path (intake `SLOT_RELOCATION`) routes the moves (its ADR 0033/0034) |
 | `wes-work-planning` | Core | `wes` | downstream: `SlotPlanApproved` -> RELOCATE work (its ADR 0040, ADR 0010) |
 | `fulfillment-execution` | Core | `wes` | indirect: executes the RELOCATE tasks (its ADR 0047) |
-| `warehouse-ops-agent` | Supporting | `wes` | planned REST/MCP reader (not built) |
+| `warehouse-ops-agent` | Supporting | `wes` | downstream reader: calls the MCP tools `list_slot_plans` and `get_slot_plan` for its slot-plan watch (its ADR 0024); live in warehouse-infra (`SLOTTING_OPTIMIZATION_MCP_ENDPOINT` in `helm-values/warehouse-ops-agent.yaml`) |
 
 ## Tier is not classification
 
