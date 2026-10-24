@@ -42,9 +42,15 @@ type generatedData struct {
 	UnassignedCount int    `json:"unassigned_count"`
 }
 
+// assignmentData is one entry of SlotPlanApproved.assignments. pick_unit and
+// cases_capacity are additive (ADR 0012) and written only for a CASE-pick
+// assignment, so the payload of an EACH assignment is byte-identical to the
+// one before; absent pick_unit means EACH.
 type assignmentData struct {
-	SKU  string `json:"sku"`
-	Slot string `json:"slot"`
+	SKU           string `json:"sku"`
+	Slot          string `json:"slot"`
+	PickUnit      string `json:"pick_unit,omitempty"`
+	CasesCapacity int64  `json:"cases_capacity,omitempty"`
 }
 
 type moveData struct {
@@ -172,6 +178,9 @@ func approved(e slotplan.SlotPlanApproved) approvedData {
 	}
 	for i, a := range e.Assignments {
 		out.Assignments[i] = assignmentData{SKU: string(a.SKU), Slot: string(a.Slot)}
+		if a.PickUnit == slotplan.PickCase {
+			out.Assignments[i].PickUnit, out.Assignments[i].CasesCapacity = string(a.PickUnit), a.CasesCapacity
+		}
 	}
 	for i, m := range e.Moves {
 		out.Moves[i] = moveData{SKU: string(m.SKU), FromSlot: string(m.From), ToSlot: string(m.To), Kind: string(m.Kind)}

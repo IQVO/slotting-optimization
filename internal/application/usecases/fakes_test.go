@@ -241,6 +241,9 @@ func (s *sequenceIDs) NewPlanID() slotplan.PlanID {
 // fakeDemand serves canned velocities and records lines.
 type fakeDemand struct {
 	velocities       []planning.SkuVelocity
+	gcd              map[slotplan.SKU]int64
+	gcdErr           error
+	gcdCalls         int
 	velErr, applyErr error
 	lines            []repository.DemandLine
 	site             slotplan.SiteID
@@ -258,6 +261,11 @@ func (d *fakeDemand) Apply(_ context.Context, l repository.DemandLine) error {
 func (d *fakeDemand) Velocity(_ context.Context, site slotplan.SiteID, from, to time.Time) ([]planning.SkuVelocity, error) {
 	d.site, d.from, d.to = site, from, to
 	return d.velocities, d.velErr
+}
+
+func (d *fakeDemand) LineUnitsGCD(_ context.Context, _ slotplan.SiteID, _, _ time.Time) (map[slotplan.SKU]int64, error) {
+	d.gcdCalls++
+	return d.gcd, d.gcdErr
 }
 
 // fakeProfiles is an in-memory ProfileDirectory.
