@@ -9,6 +9,7 @@ config:
   defaultSiteId: "SITE-1"
   lookbackDays: "28"
   forwardZoneCodes: "FWD,FWD2"
+  casePickZoneCodes: "CASEPICK"
   demandMode: "kafka"
   demandConsumerGroup: "slotting-optimization-demand"
   productMode: "kafka"
@@ -17,6 +18,8 @@ config:
   layoutConsumerGroup: "slotting-optimization-layout"
   relocationMode: "kafka"
   relocationConsumerGroup: "slotting-optimization-relocation"
+  packLevelMode: "kafka"
+  packLevelConsumerGroup: "slotting-optimization-pack-level"
   shutdownDrainDelay: "5s"
   corsAllowedOrigins: "http://localhost:5173"
 kafka:

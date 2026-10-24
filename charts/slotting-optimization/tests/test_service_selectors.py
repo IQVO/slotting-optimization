@@ -33,13 +33,14 @@ CHART_DIR = Path(__file__).resolve().parents[1]
 RELEASE = "slotting-optimization"
 
 # Dummy values, no password: the chart refuses to render without a database
-# source, the Kafka brokers and the four consumer groups (ADR 0011: Postgres
+# source, the Kafka brokers and the five consumer groups (ADR 0011: Postgres
 # and Kafka are the only runtime). None is ever dialled.
 GROUPS = {
     "demandConsumerGroup": "slotting-optimization-demand",
     "productConsumerGroup": "slotting-optimization-product",
     "layoutConsumerGroup": "slotting-optimization-layout",
     "relocationConsumerGroup": "slotting-optimization-relocation",
+    "packLevelConsumerGroup": "slotting-optimization-pack-level",
 }
 
 
@@ -65,6 +66,7 @@ ENABLE_EVERYTHING = BASE + [
     "--set", "config.defaultSiteId=SITE-1",
     "--set", "config.lookbackDays=28",
     "--set", "config.forwardZoneCodes=FWD\\,FWD2",
+    "--set", "config.casePickZoneCodes=CASEPICK",
     "--set", "kafka.enabled=true",
     "--set", "gatewayApi.enabled=true",
     "--set", "ingress.enabled=true",
@@ -80,6 +82,7 @@ API_ENV = (
     "DEMAND_SITE_ID", "DEFAULT_SITE_ID", "LOOKBACK_DAYS", "FORWARD_ZONE_CODES",
     "DEMAND_MODE", "DEMAND_CONSUMER_GROUP", "PRODUCT_MODE", "PRODUCT_CONSUMER_GROUP",
     "LAYOUT_MODE", "LAYOUT_CONSUMER_GROUP", "RELOCATION_MODE", "RELOCATION_CONSUMER_GROUP",
+    "PACK_LEVEL_MODE", "PACK_LEVEL_CONSUMER_GROUP", "CASE_PICK_ZONE_CODES",
     "ENVIRONMENT", "SERVICE_VERSION", "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OUTBOX_MAX_ATTEMPTS",
 )
@@ -153,6 +156,7 @@ def check_components(docs: list[dict], failures: list[str]) -> None:
             "KAFKA_BROKERS", "EVENT_PUBLISHER", "OUTBOX_RELAY_INTERVAL", "OUTBOX_MAX_ATTEMPTS",
             "DEMAND_MODE", "DEMAND_CONSUMER_GROUP", "PRODUCT_MODE", "PRODUCT_CONSUMER_GROUP",
             "LAYOUT_MODE", "LAYOUT_CONSUMER_GROUP", "LOOKBACK_DAYS", "FORWARD_ZONE_CODES",
+            "PACK_LEVEL_MODE", "PACK_LEVEL_CONSUMER_GROUP", "CASE_PICK_ZONE_CODES",
         } & mcp_env
         if stray:
             failures.append(f"the MCP Deployment must not get Kafka/relay/consumer/planning env (it never dials Kafka): {sorted(stray)}")
@@ -195,6 +199,7 @@ def check_components(docs: list[dict], failures: list[str]) -> None:
             "OUTBOX_MAX_ATTEMPTS", "DEMAND_MODE", "DEMAND_CONSUMER_GROUP", "PRODUCT_MODE",
             "PRODUCT_CONSUMER_GROUP", "LAYOUT_MODE", "LAYOUT_CONSUMER_GROUP", "RELOCATION_MODE",
             "RELOCATION_CONSUMER_GROUP", "LOOKBACK_DAYS", "FORWARD_ZONE_CODES",
+            "PACK_LEVEL_MODE", "PACK_LEVEL_CONSUMER_GROUP", "CASE_PICK_ZONE_CODES",
         } & projector_env
         if stray:
             failures.append(f"the projector Deployment must not get the api's OLTP env: {sorted(stray)}")
@@ -258,7 +263,7 @@ def check_components(docs: list[dict], failures: list[str]) -> None:
     duplicates = sorted({n for n in api_env if api_env.count(n) > 1})
     if duplicates:
         failures.append(f"the api Deployment renders env vars twice: {duplicates}")
-    for name, want in (("DEMAND_SITE_ID", "SITE-1"), ("LOOKBACK_DAYS", "28"), ("FORWARD_ZONE_CODES", "FWD,FWD2")):
+    for name, want in (("DEMAND_SITE_ID", "SITE-1"), ("LOOKBACK_DAYS", "28"), ("FORWARD_ZONE_CODES", "FWD,FWD2"), ("CASE_PICK_ZONE_CODES", "CASEPICK")):
         if env_value(api, name) != want:
             failures.append(f"the api Deployment renders {name}={env_value(api, name)!r}, want {want!r}")
 
@@ -304,11 +309,11 @@ def main() -> int:
         failures.append(f"optional components rendered with default values: {stray}")
     dep = next(d for d in defaults if d.get("kind") == "Deployment")
     names = env_names(dep)
-    off = {"DEMAND_SITE_ID", "DEFAULT_SITE_ID", "LOOKBACK_DAYS", "FORWARD_ZONE_CODES"}
+    off = {"DEMAND_SITE_ID", "DEFAULT_SITE_ID", "LOOKBACK_DAYS", "FORWARD_ZONE_CODES", "CASE_PICK_ZONE_CODES"}
     if off & set(names):
         failures.append(f"these must be off with default values: {sorted(off & set(names))}")
     # ADR 0011: the real runtime is always rendered, every mode is kafka.
-    for mode in ("EVENT_PUBLISHER", "DEMAND_MODE", "PRODUCT_MODE", "LAYOUT_MODE", "RELOCATION_MODE"):
+    for mode in ("EVENT_PUBLISHER", "DEMAND_MODE", "PRODUCT_MODE", "LAYOUT_MODE", "RELOCATION_MODE", "PACK_LEVEL_MODE"):
         if env_value(dep, mode) != "kafka":
             failures.append(f"{mode} must always be rendered as kafka, got {env_value(dep, mode)!r}")
     for want in ("KAFKA_BROKERS", *(k for k in API_ENV if k.endswith("_CONSUMER_GROUP"))):

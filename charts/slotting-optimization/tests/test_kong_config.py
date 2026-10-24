@@ -41,6 +41,7 @@ REAL_RUNTIME = [
     "--set", "config.productConsumerGroup=slotting-optimization-product",
     "--set", "config.layoutConsumerGroup=slotting-optimization-layout",
     "--set", "config.relocationConsumerGroup=slotting-optimization-relocation",
+    "--set", "config.packLevelConsumerGroup=slotting-optimization-pack-level",
 ]
 
 ENABLE_KONG = REAL_RUNTIME + [

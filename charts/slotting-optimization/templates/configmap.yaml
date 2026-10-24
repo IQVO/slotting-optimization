@@ -19,11 +19,13 @@ data:
   PRODUCT_MODE: {{ .Values.config.productMode | quote }}
   LAYOUT_MODE: {{ .Values.config.layoutMode | quote }}
   RELOCATION_MODE: {{ .Values.config.relocationMode | quote }}
+  PACK_LEVEL_MODE: {{ .Values.config.packLevelMode | quote }}
   ENVIRONMENT: {{ .Values.environment | quote }}
   DEMAND_CONSUMER_GROUP: {{ .Values.config.demandConsumerGroup | quote }}
   PRODUCT_CONSUMER_GROUP: {{ .Values.config.productConsumerGroup | quote }}
   LAYOUT_CONSUMER_GROUP: {{ .Values.config.layoutConsumerGroup | quote }}
   RELOCATION_CONSUMER_GROUP: {{ .Values.config.relocationConsumerGroup | quote }}
+  PACK_LEVEL_CONSUMER_GROUP: {{ .Values.config.packLevelConsumerGroup | quote }}
   {{- with .Values.config.demandSiteId }}
   DEMAND_SITE_ID: {{ . | quote }}
   {{- end }}
@@ -35,6 +37,9 @@ data:
   {{- end }}
   {{- with .Values.config.forwardZoneCodes }}
   FORWARD_ZONE_CODES: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.casePickZoneCodes }}
+  CASE_PICK_ZONE_CODES: {{ . | quote }}
   {{- end }}
   {{- with .Values.config.outboxRelayInterval }}
   OUTBOX_RELAY_INTERVAL: {{ . | quote }}

@@ -82,9 +82,14 @@ func packLevelRoundTrip(t *testing.T, v ports.PackLevelView) {
 	if got.Declared == nil || *got.Declared != *caseDims() || got.Measured == nil || *got.Measured != *l.Measured {
 		t.Fatalf("dims = %+v / %+v", got.Declared, got.Measured)
 	}
+	packLevelRoundTripOpen(t, v)
+}
+
+// packLevelRoundTripOpen: a level with no dims and no end date reads back bare.
+func packLevelRoundTripOpen(t *testing.T, v ports.PackLevelView) {
 	open := caseLevel(t, "SKU-2", "g2", nil, T0, 1)
 	saveLevel(t, v, open)
-	got, _, err = v.Get(context.Background(), "SKU-2", packlevel.Case)
+	got, _, err := v.Get(context.Background(), "SKU-2", packlevel.Case)
 	must(t, err)
 	if got.Declared != nil || got.Measured != nil || got.EffectiveTo != nil {
 		t.Fatalf("a level with no dims and no end: %+v", got)
