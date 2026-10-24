@@ -72,6 +72,26 @@ func (d *DemandLedger) Velocity(_ context.Context, site slotplan.SiteID, from, t
 	return out, nil
 }
 
+// LineUnitsGCD implements ports.DemandLedger.
+func (d *DemandLedger) LineUnitsGCD(_ context.Context, site slotplan.SiteID, from, to time.Time) (map[slotplan.SKU]int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	lines := map[slotplan.SKU][]int64{}
+	for _, l := range d.lines {
+		if !l.Active || l.Site != site || l.DueAt.Before(from) || !l.DueAt.Before(to) {
+			continue
+		}
+		lines[l.SKU] = append(lines[l.SKU], l.Units)
+	}
+	out := make(map[slotplan.SKU]int64, len(lines))
+	for sku, units := range lines {
+		if g := planning.GCDOf(units); g > 0 {
+			out[sku] = g
+		}
+	}
+	return out, nil
+}
+
 // Snapshot implements Snapshotter.
 func (d *DemandLedger) Snapshot() func() {
 	d.mu.Lock()

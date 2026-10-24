@@ -21,6 +21,10 @@ func TestDemandLedgerContract(t *testing.T) {
 	repocontract.DemandLedger(t, func(*testing.T) ports.DemandLedger { return memory.NewDemandLedger() })
 }
 
+func TestPackLevelViewContract(t *testing.T) {
+	repocontract.PackLevelView(t, func(*testing.T) ports.PackLevelView { return memory.NewPackLevelView() })
+}
+
 func TestProfileDirectoryContract(t *testing.T) {
 	repocontract.ProfileDirectory(t, func(*testing.T) ports.ProfileDirectory { return memory.NewProfileDirectory() })
 }
