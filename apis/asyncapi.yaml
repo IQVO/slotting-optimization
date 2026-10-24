@@ -721,6 +721,8 @@ components:
       properties:
         sku: { type: string }
         slot: { type: string, description: The facility-layout location code of the forward slot. }
+        pick_unit: { type: string, enum: [CASE], description: "Additive (ADR 0012). Present only for a CASE-pick face; absent means EACH." }
+        cases_capacity: { type: integer, format: int64, minimum: 1, description: "Additive (ADR 0012). Whole cases the CASE-pick face holds; present only with pick_unit CASE." }
 
     SlotMove:
       type: object
