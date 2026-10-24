@@ -24,6 +24,7 @@ func validEnv() map[string]string {
 		"DATABASE_URL": "postgres://u@db:5432/x", "KAFKA_BROKERS": "a:9092,b:9092",
 		"DEMAND_CONSUMER_GROUP": "g-demand", "PRODUCT_CONSUMER_GROUP": "g-product",
 		"LAYOUT_CONSUMER_GROUP": "g-layout", "RELOCATION_CONSUMER_GROUP": "g-relocation",
+		"PACK_LEVEL_CONSUMER_GROUP": "g-pack-level",
 	}
 }
 
@@ -44,13 +45,13 @@ func TestLoadRuntimeAcceptsTheMinimalRealEnvironment(t *testing.T) {
 	if err != nil || len(rt.brokers) != 2 || rt.brokers[1] != "b:9092" {
 		t.Fatalf("rt = %+v, err = %v", rt, err)
 	}
-	for env, want := range map[string]string{"DEMAND_CONSUMER_GROUP": "g-demand", "PRODUCT_CONSUMER_GROUP": "g-product", "LAYOUT_CONSUMER_GROUP": "g-layout", "RELOCATION_CONSUMER_GROUP": "g-relocation"} {
+	for env, want := range map[string]string{"DEMAND_CONSUMER_GROUP": "g-demand", "PRODUCT_CONSUMER_GROUP": "g-product", "LAYOUT_CONSUMER_GROUP": "g-layout", "RELOCATION_CONSUMER_GROUP": "g-relocation", "PACK_LEVEL_CONSUMER_GROUP": "g-pack-level"} {
 		if rt.groups[env] != want {
 			t.Errorf("group %s = %q, want %q", env, rt.groups[env], want)
 		}
 	}
 	// The explicit values the chart renders are accepted too.
-	explicit := map[string]string{"DEMAND_MODE": "kafka", "PRODUCT_MODE": "kafka", "LAYOUT_MODE": "kafka", "RELOCATION_MODE": "kafka", "EVENT_PUBLISHER": "kafka"}
+	explicit := map[string]string{"DEMAND_MODE": "kafka", "PRODUCT_MODE": "kafka", "LAYOUT_MODE": "kafka", "RELOCATION_MODE": "kafka", "PACK_LEVEL_MODE": "kafka", "EVENT_PUBLISHER": "kafka"}
 	if _, err := loadRuntime(withEnv(explicit)); err != nil {
 		t.Fatalf("explicit kafka modes: %v", err)
 	}
@@ -71,6 +72,9 @@ func TestLoadRuntimeRefusesWithAnErrorNamingTheVariable(t *testing.T) {
 		{"no PRODUCT_CONSUMER_GROUP", map[string]string{"PRODUCT_CONSUMER_GROUP": "-"}, "PRODUCT_CONSUMER_GROUP"},
 		{"no LAYOUT_CONSUMER_GROUP", map[string]string{"LAYOUT_CONSUMER_GROUP": "-"}, "LAYOUT_CONSUMER_GROUP"},
 		{"no RELOCATION_CONSUMER_GROUP", map[string]string{"RELOCATION_CONSUMER_GROUP": "-"}, "RELOCATION_CONSUMER_GROUP"},
+		{"no PACK_LEVEL_CONSUMER_GROUP", map[string]string{"PACK_LEVEL_CONSUMER_GROUP": "-"}, "PACK_LEVEL_CONSUMER_GROUP"},
+		{"PACK_LEVEL_MODE=permissive", map[string]string{"PACK_LEVEL_MODE": "permissive"}, "PACK_LEVEL_MODE=permissive is not supported"},
+		{"PACK_LEVEL_MODE=off", map[string]string{"PACK_LEVEL_MODE": "off"}, "PACK_LEVEL_MODE=off is not supported"},
 		{"DEMAND_MODE=permissive", map[string]string{"DEMAND_MODE": "permissive"}, "DEMAND_MODE=permissive is not supported"},
 		{"PRODUCT_MODE=permissive", map[string]string{"PRODUCT_MODE": "permissive"}, "PRODUCT_MODE=permissive is not supported"},
 		{"LAYOUT_MODE=permissive", map[string]string{"LAYOUT_MODE": "permissive"}, "LAYOUT_MODE=permissive is not supported"},
@@ -140,14 +144,30 @@ func TestParseZoneCodes(t *testing.T) {
 	}
 }
 
+func TestParseCasePickZoneCodes(t *testing.T) {
+	for raw, want := range map[string]string{"": "", " , ": "", "CASEPICK": "CASEPICK", " CASEPICK, BULK ,": "CASEPICK,BULK"} {
+		if got := strings.Join(parseCasePickZoneCodes(raw), ","); got != want {
+			t.Errorf("parseCasePickZoneCodes(%q) = %q, want %q", raw, got, want)
+		}
+	}
+	if parseCasePickZoneCodes("") != nil {
+		t.Error("unset means no case-pick zones, not a default zone")
+	}
+}
+
 func TestConfigFromEnv(t *testing.T) {
+	t.Setenv("CASE_PICK_ZONE_CODES", "")
 	t.Setenv("DEMAND_SITE_ID", "")
 	t.Setenv("DEFAULT_SITE_ID", "")
 	t.Setenv("LOOKBACK_DAYS", "")
 	t.Setenv("FORWARD_ZONE_CODES", "")
 	cfg := configFromEnv(quietLogger())
-	if cfg.defaultSite != "" || cfg.onlySite != "" || cfg.lookbackDays != 0 || len(cfg.forwardZoneCodes) != 1 {
+	if cfg.defaultSite != "" || cfg.onlySite != "" || cfg.lookbackDays != 0 || len(cfg.forwardZoneCodes) != 1 || len(cfg.casePickZoneCodes) != 0 {
 		t.Fatalf("defaults = %+v", cfg)
+	}
+	t.Setenv("CASE_PICK_ZONE_CODES", "CASEPICK,BULK")
+	if cfg = configFromEnv(quietLogger()); strings.Join(cfg.casePickZoneCodes, ",") != "CASEPICK,BULK" {
+		t.Fatalf("CASE_PICK_ZONE_CODES = %+v", cfg.casePickZoneCodes)
 	}
 	t.Setenv("DEMAND_SITE_ID", "WH1")
 	t.Setenv("LOOKBACK_DAYS", "7")
@@ -231,8 +251,8 @@ func realtimeEnv() runtimeEnv {
 func TestStartConsumers_AlwaysStartsOneWorkerPerConsumerAndStops(t *testing.T) {
 	start := time.Now()
 	workers, stop := startConsumers(testDoubleAdapters(t), realtimeEnv(), quietLogger())
-	if len(workers) != 4 {
-		t.Fatalf("workers=%d, want 4", len(workers))
+	if len(workers) != 5 {
+		t.Fatalf("workers=%d, want 5", len(workers))
 	}
 	if time.Since(start) > time.Second {
 		t.Fatal("starting the consumers must not dial Kafka")

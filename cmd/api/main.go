@@ -16,11 +16,14 @@
 //	DEMAND_SITE_ID              the site plans default to; when set, demand for other sites is ignored
 //	LOOKBACK_DAYS               default demand window of a new plan (default 28)
 //	FORWARD_ZONE_CODES          comma-separated zone codes of the forward pick slots (default FWD)
-//	DEMAND_MODE, PRODUCT_MODE, LAYOUT_MODE, RELOCATION_MODE
+//	CASE_PICK_ZONE_CODES        comma-separated zone codes whose faces are CASE-pick faces (default empty:
+//	                            every face is an EACH-pick face and plans are what they were; ADR 0012)
+//	DEMAND_MODE, PRODUCT_MODE, LAYOUT_MODE, RELOCATION_MODE, PACK_LEVEL_MODE
 //	                            kafka (default kafka); permissive and off are boot errors
-//	DEMAND_CONSUMER_GROUP, PRODUCT_CONSUMER_GROUP, LAYOUT_CONSUMER_GROUP, RELOCATION_CONSUMER_GROUP
+//	DEMAND_CONSUMER_GROUP, PRODUCT_CONSUMER_GROUP, LAYOUT_CONSUMER_GROUP, RELOCATION_CONSUMER_GROUP, PACK_LEVEL_CONSUMER_GROUP
 //	                            stable group ids (ALL REQUIRED, boot error naming the variable)
 //	                            (RELOCATION_*: inventory-storage's StockRelocated -> plan execution progress, ADR 0010)
+//	                            (PACK_LEVEL_*: product-master's ProductPackLevel* -> the local PackLevelView, ADR 0012)
 //	OTEL_EXPORTER_OTLP_ENDPOINT OTLP/gRPC collector (default localhost:4317)
 //	SHUTDOWN_DRAIN_DELAY        wait after flipping /readyz before closing (default 5s)
 //	LOG_LEVEL, SERVICE_VERSION, ENVIRONMENT, CORS_ALLOWED_ORIGINS
@@ -214,6 +217,7 @@ type adapters struct {
 	outboxStore outboxrelay.Store
 	processed   ports.ProcessedEvents
 	executions  ports.MoveExecutionLedger
+	packLevels  ports.PackLevelView
 	uow         ports.UnitOfWork
 	// idempotency is the Idempotency-Key middleware of POST /slot-plans.
 	idempotency func(http.Handler) http.Handler
@@ -242,15 +246,18 @@ type config struct {
 	onlySite         string
 	lookbackDays     int
 	forwardZoneCodes []string
+	// casePickZoneCodes: CASE_PICK_ZONE_CODES; empty = no case-pick faces.
+	casePickZoneCodes []string
 }
 
 func configFromEnv(logger *slog.Logger) config {
 	site := os.Getenv("DEMAND_SITE_ID")
 	return config{
-		defaultSite:      getenv("DEMAND_SITE_ID", os.Getenv("DEFAULT_SITE_ID")),
-		onlySite:         site,
-		lookbackDays:     parseLookbackDays(os.Getenv("LOOKBACK_DAYS"), logger),
-		forwardZoneCodes: parseZoneCodes(os.Getenv("FORWARD_ZONE_CODES")),
+		defaultSite:       getenv("DEMAND_SITE_ID", os.Getenv("DEFAULT_SITE_ID")),
+		onlySite:          site,
+		lookbackDays:      parseLookbackDays(os.Getenv("LOOKBACK_DAYS"), logger),
+		forwardZoneCodes:  parseZoneCodes(os.Getenv("FORWARD_ZONE_CODES")),
+		casePickZoneCodes: parseCasePickZoneCodes(os.Getenv("CASE_PICK_ZONE_CODES")),
 	}
 }
 
@@ -283,6 +290,18 @@ func parseZoneCodes(raw string) []string {
 	return codes
 }
 
+// parseCasePickZoneCodes reads CASE_PICK_ZONE_CODES (comma separated). Unlike
+// FORWARD_ZONE_CODES it has no default: unset means no case-pick faces.
+func parseCasePickZoneCodes(raw string) []string {
+	var codes []string
+	for _, c := range strings.Split(raw, ",") {
+		if c = strings.TrimSpace(c); c != "" {
+			codes = append(codes, c)
+		}
+	}
+	return codes
+}
+
 func buildServer(ad adapters, cfg config, readiness *inboundhttp.Readiness, metrics http.Handler, planMetrics ports.PlanDecisionMetrics) (*inboundhttp.Server, error) {
 	planner, err := planning.NewPlanner(planning.LexicalRanking{})
 	if err != nil {
@@ -293,6 +312,7 @@ func buildServer(ad adapters, cfg config, readiness *inboundhttp.Readiness, metr
 		GeneratePlan: &usecases.GeneratePlan{
 			Writer: w, Demand: ad.demand, Profiles: ad.profiles, Catalogue: ad.catalogue, IDs: ids.UUID{}, Planner: planner,
 			DefaultSite: cfg.defaultSite, ForwardZoneCodes: cfg.forwardZoneCodes, DefaultLookback: cfg.lookbackDays,
+			CasePickZoneCodes: cfg.casePickZoneCodes, PackLevels: ad.packLevels,
 		},
 		ApprovePlan:      &usecases.ApprovePlan{Writer: w, Metrics: planMetrics},
 		RejectPlan:       &usecases.RejectPlan{Writer: w, Metrics: planMetrics},
@@ -342,6 +362,7 @@ func postgresAdapters(pool *pgxpool.Pool) adapters {
 		profiles: postgres.NewProfileDirectory(pool), catalogue: postgres.NewSlotCatalogue(pool),
 		outbox: ob, outboxStore: ob, processed: postgres.NewProcessedEventRepo(pool),
 		executions:  postgres.NewMoveExecutionLedger(pool),
+		packLevels:  postgres.NewPackLevelView(pool),
 		uow:         postgres.NewUnitOfWork(pool),
 		idempotency: inboundhttp.RequireIdempotencyKey(pool, pgtx.With),
 		pool:        pool,
@@ -363,7 +384,7 @@ type worker struct {
 }
 
 // modeKafka is the only consumer mode (DEMAND_MODE, PRODUCT_MODE,
-// LAYOUT_MODE, RELOCATION_MODE): the names stay because docs and
+// LAYOUT_MODE, RELOCATION_MODE, PACK_LEVEL_MODE): the names stay because docs and
 // warehouse-infra set them, the legacy values are refused.
 const modeKafka = "kafka"
 
@@ -409,6 +430,13 @@ func consumerSpecs(ad adapters, cfg config) []consumerSpec {
 		{"RELOCATION_MODE", "RELOCATION_CONSUMER_GROUP", func(brokers []string, group string, logger *slog.Logger) *inboundkafka.Consumer {
 			uc := &usecases.RecordRelocation{Intake: intake, Plans: ad.plans, Executions: ad.executions, Metrics: relocationMetrics()}
 			return inboundkafka.NewStockConsumer(brokers, group, uc, logger)
+		}},
+		{"PACK_LEVEL_MODE", "PACK_LEVEL_CONSUMER_GROUP", func(brokers []string, group string, logger *slog.Logger) *inboundkafka.Consumer {
+			return inboundkafka.NewPackLevelConsumer(brokers, group, inboundkafka.PackLevelUseCases{
+				Declared: &usecases.ApplyPackLevelDeclared{Intake: intake, PackLevels: ad.packLevels},
+				Retired:  &usecases.ApplyPackLevelRetired{Intake: intake, PackLevels: ad.packLevels},
+				Measured: &usecases.ApplyPackLevelMeasured{Intake: intake, PackLevels: ad.packLevels},
+			}, logger)
 		}},
 	}
 }

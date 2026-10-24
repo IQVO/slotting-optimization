@@ -222,6 +222,8 @@ type env struct {
 	dbURL   string
 	brokers []string
 	addr    string
+	// casePickZones is CASE_PICK_ZONE_CODES ("" = no case-pick faces).
+	casePickZones string
 }
 
 func (e env) apply(t *testing.T) {
@@ -230,11 +232,12 @@ func (e env) apply(t *testing.T) {
 	t.Setenv("MIGRATIONS_DATABASE_URL", "")
 	t.Setenv("KAFKA_BROKERS", strings.Join(e.brokers, ","))
 	t.Setenv("EVENT_PUBLISHER", "kafka")
-	for _, c := range []string{"DEMAND", "PRODUCT", "LAYOUT", "RELOCATION"} {
+	for _, c := range []string{"DEMAND", "PRODUCT", "LAYOUT", "RELOCATION", "PACK_LEVEL"} {
 		t.Setenv(c+"_MODE", "kafka")
 		t.Setenv(c+"_CONSUMER_GROUP", "slotting-optimization-"+strings.ToLower(c)+"-e2e")
 	}
 	t.Setenv("DEMAND_SITE_ID", siteID)
+	t.Setenv("CASE_PICK_ZONE_CODES", e.casePickZones)
 	t.Setenv("HTTP_ADDR", e.addr)
 	t.Setenv("SHUTDOWN_DRAIN_DELAY", "0")
 	t.Setenv("OUTBOX_RELAY_INTERVAL", "200ms")
