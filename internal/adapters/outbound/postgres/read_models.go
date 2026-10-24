@@ -77,6 +77,34 @@ func (d *DemandLedger) Velocity(ctx context.Context, site slotplan.SiteID, from,
 	return out, nil
 }
 
+// LineUnitsGCD implements ports.DemandLedger: the distinct positive line
+// quantities are aggregated in SQL and reduced in the domain.
+func (d *DemandLedger) LineUnitsGCD(ctx context.Context, site slotplan.SiteID, from, to time.Time) (map[slotplan.SKU]int64, error) {
+	rows, err := queryFor(ctx, d.pool).Query(ctx, `
+		SELECT sku, array_agg(DISTINCT units)
+		FROM demand_lines
+		WHERE site_id = $1 AND state = 'ACTIVE' AND units > 0 AND due_at >= $2 AND due_at < $3
+		GROUP BY sku
+	`, string(site), from, to)
+	if err != nil {
+		return nil, fmt.Errorf("line units gcd: %w", err)
+	}
+	defer rows.Close()
+	out := map[slotplan.SKU]int64{}
+	for rows.Next() {
+		var sku string
+		var units []int64
+		if err := rows.Scan(&sku, &units); err != nil {
+			return nil, fmt.Errorf("scan line units: %w", err)
+		}
+		out[slotplan.SKU(sku)] = planning.GCDOf(units)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read line units: %w", err)
+	}
+	return out, nil
+}
+
 // ProfileDirectory is the pgxpool-backed product copy (ports.ProfileDirectory).
 type ProfileDirectory struct {
 	pool *pgxpool.Pool
