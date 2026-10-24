@@ -223,6 +223,7 @@ channels:
 components:
   messages:
     SlotPlanGenerated:
+      x-no-consumer-reason: "slotting run outcome fact; consumed on demand"
       name: SlotPlanGenerated
       title: Slot plan generated
       summary: A Draft slot plan was generated.
@@ -297,6 +298,7 @@ components:
                 - { sku: "SKU-3", from_slot: "WH1-FWD-A01-01-03-A", kind: "Vacate" }
 
     SlotPlanRejected:
+      x-no-consumer-reason: "slotting run outcome fact (rejection record); consumed on demand"
       name: SlotPlanRejected
       title: Slot plan rejected
       summary: A Draft slot plan was rejected.
