@@ -1,6 +1,6 @@
 # Used by `helm lint` / `ct lint` (chart-testing): the chart refuses to render
 # without the real runtime's mandatory values (ADR 0011): a database source,
-# the Kafka brokers and the four consumer groups. Dummy DSN, no password;
+# the Kafka brokers and the five consumer groups. Dummy DSN, no password;
 # nothing here is ever dialled.
 database:
   url: "postgres://u@example.invalid:5432/db"
@@ -11,3 +11,4 @@ config:
   productConsumerGroup: "slotting-optimization-product"
   layoutConsumerGroup: "slotting-optimization-layout"
   relocationConsumerGroup: "slotting-optimization-relocation"
+  packLevelConsumerGroup: "slotting-optimization-pack-level"

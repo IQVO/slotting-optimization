@@ -61,6 +61,10 @@ func readerConfig(brokers []string, topic, groupID string) kafkago.ReaderConfig 
 		Brokers: brokers,
 		Topic:   topic,
 		GroupID: groupID,
+		// 500 ms (the fleet rule): a fetch on an idle topic returns after
+		// half a second, so a consumer notices shutdown and tests need no
+		// long waits.
+		MaxWait: 500 * time.Millisecond,
 	}
 }
 

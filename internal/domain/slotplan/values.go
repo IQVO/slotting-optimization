@@ -26,6 +26,7 @@ var (
 	ErrInvalidReason       = errors.New("slotplan: unknown unassigned reason")
 	ErrInvalidState        = errors.New("slotplan: unknown state")
 	ErrInvalidMetric       = errors.New("slotplan: picks must be at least 1 and units at least 0")
+	ErrInvalidPickUnit     = errors.New("slotplan: pick unit must be EACH (no case capacity) or CASE (case capacity at least 1)")
 	ErrDuplicateSKU        = errors.New("slotplan: a sku appears twice")
 	ErrDuplicateSlot       = errors.New("slotplan: a slot holds more than one sku")
 	ErrInvalidMove         = errors.New("slotplan: move is malformed or contradicts the assignments")
@@ -203,13 +204,36 @@ func (r UnassignedReason) Valid() bool {
 	return r == ReasonNoCapacityFit
 }
 
-// Assignment puts one SKU into one forward slot.
+// PickUnit is the unit a SKU is picked in from its forward face: EACH (the
+// default, every plan before ADR 0012) or CASE (whole cases).
+type PickUnit string
+
+// Pick units.
+const (
+	PickEach PickUnit = "EACH"
+	PickCase PickUnit = "CASE"
+)
+
+// Valid reports whether u is a known pick unit.
+func (u PickUnit) Valid() bool {
+	if u == PickEach {
+		return true
+	}
+	return u == PickCase
+}
+
+// Assignment puts one SKU into one forward slot. PickUnit says whether the
+// slot is the SKU's EACH-pick or CASE-pick face; for CASE, CasesCapacity is
+// how many whole cases of the SKU the face holds (>= 1), for EACH it is 0.
+// The zero PickUnit is EACH and is stored as such.
 type Assignment struct {
-	SKU   SKU
-	Slot  SlotCode
-	Class ABCClass
-	Picks int64
-	Units int64
+	SKU           SKU
+	Slot          SlotCode
+	Class         ABCClass
+	Picks         int64
+	Units         int64
+	PickUnit      PickUnit
+	CasesCapacity int64
 }
 
 // Move is a physical change implied by the plan against the previous state.

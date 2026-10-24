@@ -44,3 +44,14 @@ func slotMsg(id, typ, code, data string) []byte {
 
 // legacyFlat is the retired flat envelope; a consumer must reject it.
 const legacyFlat = `{"event_id":"e-1","event_type":"SiteSkuDemandChanged","occurred_at":"2026-10-07T09:00:00Z","source_order_id":"o1","sku":"SKU-1"}`
+
+// packLevelMsg is a pack-level event as product-master publishes it
+// (apis/asyncapi.yaml of product-master, snake_case payloads).
+func packLevelMsg(id, name, sku, data string) []byte {
+	return ce(id, "/warehouse/product-master", "com.warehouse.wms.product-master.product."+name, sku,
+		"urn:warehouse:product-master:events:"+name+":v1", data)
+}
+
+const caseDeclaredData = `{"sku":"SKU-1","level":"CASE","gtin":"24006381333935","child_gtin":"04006381333931","qty_of_child":12,` +
+	`"units_per_pack":12,"dims":{"length_mm":400,"width_mm":300,"height_mm":200,"weight_g":6500},` +
+	`"is_orderable":true,"is_despatch_unit":true,"effective_from":"2026-10-06T20:00:00Z","version":3}`

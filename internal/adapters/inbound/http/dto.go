@@ -27,6 +27,10 @@ type assignmentBody struct {
 	AbcClass string `json:"abcClass"`
 	Picks    int64  `json:"picks"`
 	Units    int64  `json:"units"`
+	// PickUnit is EACH or CASE; CasesCapacity is how many whole cases the
+	// CASE-pick face holds (omitted for EACH). Both are additive (ADR 0012).
+	PickUnit      string `json:"pickUnit"`
+	CasesCapacity int64  `json:"casesCapacity,omitempty"`
 }
 
 type moveBody struct {
@@ -101,9 +105,11 @@ type slotPlanPageBody struct {
 }
 
 type forwardSlotBody struct {
-	SKU      string `json:"sku"`
-	Slot     string `json:"slot"`
-	AbcClass string `json:"abcClass"`
+	SKU           string `json:"sku"`
+	Slot          string `json:"slot"`
+	AbcClass      string `json:"abcClass"`
+	PickUnit      string `json:"pickUnit"`
+	CasesCapacity int64  `json:"casesCapacity,omitempty"`
 }
 
 type forwardSlotsBody struct {
@@ -146,7 +152,8 @@ func toSlotPlan(p *slotplan.SlotPlan) slotPlanBody {
 		Unassigned:  make([]unassignedBody, len(s.Unassigned)),
 	}
 	for i, a := range s.Assignments {
-		out.Assignments[i] = assignmentBody{SKU: string(a.SKU), Slot: string(a.Slot), AbcClass: string(a.Class), Picks: a.Picks, Units: a.Units}
+		out.Assignments[i] = assignmentBody{SKU: string(a.SKU), Slot: string(a.Slot), AbcClass: string(a.Class), Picks: a.Picks, Units: a.Units,
+			PickUnit: string(a.PickUnit), CasesCapacity: a.CasesCapacity}
 	}
 	for i, m := range s.Moves {
 		out.Moves[i] = moveBody{SKU: string(m.SKU), FromSlot: string(m.From), ToSlot: string(m.To), Kind: string(m.Kind)}
@@ -200,7 +207,8 @@ func toForwardSlots(m usecases.ForwardSlotMap) forwardSlotsBody {
 		Assignments: make([]forwardSlotBody, len(m.Assignments)),
 	}
 	for i, a := range m.Assignments {
-		out.Assignments[i] = forwardSlotBody{SKU: string(a.SKU), Slot: string(a.Slot), AbcClass: string(a.Class)}
+		out.Assignments[i] = forwardSlotBody{SKU: string(a.SKU), Slot: string(a.Slot), AbcClass: string(a.Class),
+			PickUnit: string(a.PickUnit), CasesCapacity: a.CasesCapacity}
 	}
 	return out
 }

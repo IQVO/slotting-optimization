@@ -99,7 +99,11 @@ spec:
             - name: FORWARD_ZONE_CODES
               value: {{ . | quote }}
             {{- end }}
-            # ADR 0003 / ADR 0010 / ADR 0011 local copies: the four consumers
+            {{- with .Values.config.casePickZoneCodes }}
+            - name: CASE_PICK_ZONE_CODES
+              value: {{ . | quote }}
+            {{- end }}
+            # ADR 0003 / ADR 0010 / ADR 0011 local copies: the five consumers
             # always run (the only mode is "kafka"). The consumer group ids
             # come from values, never a literal, and are mandatory (the chart
             # refuses an empty one): a stable id is what makes a rescheduled
@@ -122,6 +126,12 @@ spec:
               value: {{ .Values.config.relocationMode | quote }}
             - name: RELOCATION_CONSUMER_GROUP
               value: {{ .Values.config.relocationConsumerGroup | quote }}
+            # ADR 0012: product-master's ProductPackLevel* -> the local
+            # pack-level view (warehouse.product-master.events, own group).
+            - name: PACK_LEVEL_MODE
+              value: {{ .Values.config.packLevelMode | quote }}
+            - name: PACK_LEVEL_CONSUMER_GROUP
+              value: {{ .Values.config.packLevelConsumerGroup | quote }}
             {{- with .Values.config.shutdownDrainDelay }}
             - name: SHUTDOWN_DRAIN_DELAY
               value: {{ . | quote }}

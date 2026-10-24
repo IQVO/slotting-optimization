@@ -64,6 +64,10 @@ config:
   # its TaskCompleted consumer on (helm-values/inventory-storage.yaml).
   relocationMode: "kafka"
   relocationConsumerGroup: "slotting-optimization-relocation"
+  # ADR 0012: product-master's ProductPackLevel* -> the case-pick faces. Own
+  # group so the pack levels declared before this release are replayed.
+  packLevelMode: "kafka"
+  packLevelConsumerGroup: "slotting-optimization-pack-level"
 
 kafka:
   enabled: true

@@ -28,8 +28,9 @@ Slotting events are relayed from the transactional outbox onto
 warehouse.slotting-optimization.events ({{ .Values.kafka.brokers }}); Postgres and Kafka are
 the only runtime (ADR 0011).
 
-The four local-copy consumers are ON (the only mode is "kafka"):
+The five local-copy consumers are ON (the only mode is "kafka"):
   demand    group {{ .Values.config.demandConsumerGroup }}, topic warehouse.order-management.events
   product   group {{ .Values.config.productConsumerGroup }}, topic warehouse.product-master.events
   layout    group {{ .Values.config.layoutConsumerGroup }}, topic warehouse.facility.events
   relocation group {{ .Values.config.relocationConsumerGroup }}, topic warehouse.inventory.events
+  pack-level group {{ .Values.config.packLevelConsumerGroup }}, topic warehouse.product-master.events
