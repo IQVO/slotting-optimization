@@ -10,6 +10,7 @@ import (
 
 	"github.com/claudioed/slotting-optimization/internal/application/outbox"
 	"github.com/claudioed/slotting-optimization/internal/application/repository"
+	"github.com/claudioed/slotting-optimization/internal/domain/packlevel"
 	"github.com/claudioed/slotting-optimization/internal/domain/planning"
 	"github.com/claudioed/slotting-optimization/internal/domain/slotplan"
 )
@@ -42,6 +43,12 @@ type DemandLedger interface {
 	// picks = lines, units = sum of units. Ordered picks desc, units desc,
 	// SKU asc.
 	Velocity(ctx context.Context, site slotplan.SiteID, from, to time.Time) ([]planning.SkuVelocity, error)
+	// LineUnitsGCD returns, per SKU with ACTIVE lines of the site due in
+	// [from, to), the greatest common divisor of those lines' units (lines
+	// of 0 units are ignored; a SKU whose lines are all 0 is absent). A SKU
+	// is demanded in whole cases of n exactly when n divides its GCD
+	// (ADR 0012).
+	LineUnitsGCD(ctx context.Context, site slotplan.SiteID, from, to time.Time) (map[slotplan.SKU]int64, error)
 }
 
 // ProfileDirectory is the product copy.
@@ -65,6 +72,21 @@ type SlotCatalogue interface {
 	SaveSlot(ctx context.Context, s repository.Slot) error
 	// Decommission retires a slot for good (also when it was never seen).
 	Decommission(ctx context.Context, code slotplan.SlotCode) error
+}
+
+// PackLevelView is the event-fed local copy of product-master's pack levels
+// (ADR 0012), one row per (SKU, level). It is how the planner finds the CASE
+// cube and weight of a SKU without a live lookup. Inside a UnitOfWork it
+// joins the transaction carried in ctx.
+type PackLevelView interface {
+	// Get returns the stored level of the SKU; false when it was never seen.
+	Get(ctx context.Context, sku string, level packlevel.Level) (packlevel.PackLevel, bool, error)
+	// Save upserts the level (the caller decided it supersedes the stored one).
+	Save(ctx context.Context, l packlevel.PackLevel) error
+	// ActiveCases returns, for the given SKUs, the size of the CASE level in
+	// force at `at` that has effective dimensions (measured, else declared).
+	// A SKU with no such level is absent from the map.
+	ActiveCases(ctx context.Context, skus []slotplan.SKU, at time.Time) (map[slotplan.SKU]planning.CaseSize, error)
 }
 
 // IDGenerator mints plan ids.

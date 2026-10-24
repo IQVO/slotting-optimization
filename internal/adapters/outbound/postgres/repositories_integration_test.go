@@ -33,6 +33,12 @@ func TestDemandLedgerContract(t *testing.T) {
 	})
 }
 
+func TestPackLevelViewContract(t *testing.T) {
+	repocontract.PackLevelView(t, func(t *testing.T) ports.PackLevelView {
+		return postgres.NewPackLevelView(pgtest.NewPool(t))
+	})
+}
+
 func TestProfileDirectoryContract(t *testing.T) {
 	repocontract.ProfileDirectory(t, func(t *testing.T) ports.ProfileDirectory {
 		return postgres.NewProfileDirectory(pgtest.NewPool(t))

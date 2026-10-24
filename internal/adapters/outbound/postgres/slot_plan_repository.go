@@ -185,18 +185,23 @@ func (r *SlotPlanRepo) withChildren(ctx context.Context, q querier, snaps []slot
 }
 
 func loadAssignments(ctx context.Context, q querier, ids []string, snaps []slotplan.Snapshot, index map[slotplan.PlanID]int) error {
-	rows, err := q.Query(ctx, `SELECT plan_id, sku, slot, abc_class, picks, units FROM slot_plan_assignments WHERE plan_id = ANY($1) ORDER BY plan_id, sku`, ids)
+	rows, err := q.Query(ctx, `SELECT plan_id, sku, slot, abc_class, picks, units, pick_unit, cases_capacity FROM slot_plan_assignments WHERE plan_id = ANY($1) ORDER BY plan_id, sku`, ids)
 	if err != nil {
 		return fmt.Errorf("load assignments: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var plan, sku, slot, class string
+		var plan, sku, slot, class, pickUnit string
+		var casesCapacity *int64
 		var a slotplan.Assignment
-		if err := rows.Scan(&plan, &sku, &slot, &class, &a.Picks, &a.Units); err != nil {
+		if err := rows.Scan(&plan, &sku, &slot, &class, &a.Picks, &a.Units, &pickUnit, &casesCapacity); err != nil {
 			return fmt.Errorf("scan assignment: %w", err)
 		}
 		a.SKU, a.Slot, a.Class = slotplan.SKU(sku), slotplan.SlotCode(slot), slotplan.ABCClass(class)
+		a.PickUnit = slotplan.PickUnit(pickUnit)
+		if casesCapacity != nil {
+			a.CasesCapacity = *casesCapacity
+		}
 		i := index[slotplan.PlanID(plan)]
 		snaps[i].Assignments = append(snaps[i].Assignments, a)
 	}
@@ -283,8 +288,12 @@ func insertPlan(ctx context.Context, q querier, s slotplan.Snapshot) error {
 		return fmt.Errorf("insert slot plan: %w", err)
 	}
 	for _, a := range s.Assignments {
-		if _, err := q.Exec(ctx, `INSERT INTO slot_plan_assignments (plan_id, sku, slot, abc_class, picks, units) VALUES ($1, $2, $3, $4, $5, $6)`,
-			string(s.ID), string(a.SKU), string(a.Slot), string(a.Class), a.Picks, a.Units); err != nil {
+		var casesCapacity *int64
+		if a.PickUnit == slotplan.PickCase {
+			casesCapacity = &a.CasesCapacity
+		}
+		if _, err := q.Exec(ctx, `INSERT INTO slot_plan_assignments (plan_id, sku, slot, abc_class, picks, units, pick_unit, cases_capacity) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			string(s.ID), string(a.SKU), string(a.Slot), string(a.Class), a.Picks, a.Units, string(a.PickUnit), casesCapacity); err != nil {
 			return fmt.Errorf("insert assignment: %w", err)
 		}
 	}

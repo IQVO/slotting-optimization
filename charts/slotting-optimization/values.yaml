@@ -149,6 +149,11 @@ config:
   # FORWARD_ZONE_CODES: comma-separated zone codes of the forward pick slots.
   # Empty = not rendered; the binary defaults to FWD.
   forwardZoneCodes: ""
+  # CASE_PICK_ZONE_CODES (ADR 0012): comma-separated zone codes whose faces are
+  # CASE-pick faces (a SKU demanded in whole cases is slotted there with a
+  # capacity in cases from the CASE level's cube/weight). OPTIONAL: empty = not
+  # rendered, no case-pick faces, every plan is an EACH-pick plan as before.
+  casePickZoneCodes: ""
   # DEMAND_MODE (ADR 0003, ADR 0011): "kafka" is the only mode. The order-line
   # demand copy is fed from warehouse.order-management.events and the consumer
   # always runs; "permissive" and "off" are refused at render and by the
@@ -176,6 +181,15 @@ config:
   # RELOCATION_CONSUMER_GROUP: the relocation consumer's STABLE group id.
   # REQUIRED.
   relocationConsumerGroup: ""
+  # PACK_LEVEL_MODE (ADR 0012): "kafka" only (product-master's
+  # ProductPackLevelDeclared / Retired / Measured on warehouse.product-master.events
+  # feed the local pack-level view the case-pick faces are sized from).
+  packLevelMode: "kafka"
+  # PACK_LEVEL_CONSUMER_GROUP: the pack-level consumer's STABLE group id.
+  # REQUIRED. A group of its own (not PRODUCT_CONSUMER_GROUP): a new group reads
+  # the topic from the start, so pack levels declared before this release are
+  # replayed into the view.
+  packLevelConsumerGroup: ""
   # SHUTDOWN_DRAIN_DELAY: wait after /readyz flips before closing the
   # listener. Empty = not rendered; the binary defaults to 5s.
   shutdownDrainDelay: ""

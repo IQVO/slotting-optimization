@@ -11,12 +11,13 @@ chart_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_dir="$(cd "$chart_dir/../.." && pwd)"
 release=slotting-optimization
 # Dummy values, no password: the chart refuses to render without a database
-# source, Kafka brokers and the four consumer groups (ADR 0011). None is ever
+# source, Kafka brokers and the five consumer groups (ADR 0011). None is ever
 # dialled.
 groups=(demandConsumerGroup:slotting-optimization-demand
   productConsumerGroup:slotting-optimization-product
   layoutConsumerGroup:slotting-optimization-layout
-  relocationConsumerGroup:slotting-optimization-relocation)
+  relocationConsumerGroup:slotting-optimization-relocation
+  packLevelConsumerGroup:slotting-optimization-pack-level)
 base=(--set database.url=postgres://u@example.invalid:5432/db
   --set kafka.brokers=kafka.example.invalid:9092)
 for g in "${groups[@]}"; do base+=(--set "config.${g%%:*}=${g#*:}"); done
@@ -93,7 +94,7 @@ reports_vars=($(binary_env slotting-reports))
 (( ${#reports_vars[@]} >= 4 )) || fail "found only ${#reports_vars[@]} env literals in cmd/slotting-reports/main.go; the scan is looking in the wrong place"
 assert_env_rendered deployment.yaml "${api_vars[@]}" \
   DEMAND_MODE DEMAND_CONSUMER_GROUP PRODUCT_MODE PRODUCT_CONSUMER_GROUP LAYOUT_MODE LAYOUT_CONSUMER_GROUP \
-  RELOCATION_MODE RELOCATION_CONSUMER_GROUP ENVIRONMENT CORS_ALLOWED_ORIGINS
+  RELOCATION_MODE RELOCATION_CONSUMER_GROUP PACK_LEVEL_MODE PACK_LEVEL_CONSUMER_GROUP ENVIRONMENT CORS_ALLOWED_ORIGINS
 assert_env_rendered mcp-deployment.yaml "${mcp_vars[@]}" ENVIRONMENT
 # The analytics binaries (ADR 0006): ENVIRONMENT is read by the shared
 # telemetry adapter, and the projector reads ANALYTICS_CONSUMER_GROUP,
@@ -104,7 +105,7 @@ assert_env_rendered reports-deployment.yaml "${reports_vars[@]}" ENVIRONMENT LOG
 
 # Every key the ConfigMap renders is a variable cmd/api reads (no dead keys).
 full_configmap="$(helm template "$release" "$chart_dir" "${everything[@]}" --show-only templates/configmap.yaml)"
-api_known=" ${api_vars[*]} DEMAND_MODE DEMAND_CONSUMER_GROUP PRODUCT_MODE PRODUCT_CONSUMER_GROUP LAYOUT_MODE LAYOUT_CONSUMER_GROUP RELOCATION_MODE RELOCATION_CONSUMER_GROUP ENVIRONMENT CORS_ALLOWED_ORIGINS "
+api_known=" ${api_vars[*]} DEMAND_MODE DEMAND_CONSUMER_GROUP PRODUCT_MODE PRODUCT_CONSUMER_GROUP LAYOUT_MODE LAYOUT_CONSUMER_GROUP RELOCATION_MODE RELOCATION_CONSUMER_GROUP PACK_LEVEL_MODE PACK_LEVEL_CONSUMER_GROUP ENVIRONMENT CORS_ALLOWED_ORIGINS "
 while read -r key; do
   [[ "$api_known" == *" $key "* ]] || fail "ConfigMap key $key is read by no binary"
 done < <(awk '/^data:/ {d=1; next} d && /^  [A-Z]/ {sub(/:.*/, ""); sub(/^  /, ""); print}' <<<"$full_configmap")
@@ -117,7 +118,8 @@ env_value() { # env_value <rendered> <NAME>
 grep -q '^  KAFKA_BROKERS: "kafka.example.invalid:9092"' <<<"$configmap" || fail "the ConfigMap does not carry KAFKA_BROKERS"
 for kv in 'EVENT_PUBLISHER=kafka' 'DEMAND_MODE=kafka' 'PRODUCT_MODE=kafka' 'LAYOUT_MODE=kafka' 'RELOCATION_MODE=kafka' \
   'DEMAND_CONSUMER_GROUP=slotting-optimization-demand' 'PRODUCT_CONSUMER_GROUP=slotting-optimization-product' \
-  'LAYOUT_CONSUMER_GROUP=slotting-optimization-layout' 'RELOCATION_CONSUMER_GROUP=slotting-optimization-relocation'; do
+  'LAYOUT_CONSUMER_GROUP=slotting-optimization-layout' 'RELOCATION_CONSUMER_GROUP=slotting-optimization-relocation' \
+  'PACK_LEVEL_MODE=kafka' 'PACK_LEVEL_CONSUMER_GROUP=slotting-optimization-pack-level'; do
   [[ "$(env_value "$api_deployment" "${kv%%=*}")" == "${kv#*=}" ]] || fail "the api Deployment does not render $kv"
   grep -q "^  ${kv%%=*}: \"${kv#*=}\"" <<<"$configmap" || fail "the ConfigMap does not carry $kv"
 done
@@ -259,7 +261,7 @@ fi
 # helm-values/_platform.yaml, helm-values/slotting-optimization.yaml and
 # helm-values/kind-resources/slotting-optimization.yaml of warehouse-infra
 # (origin/develop), layered in the order ArgoCD uses: kafka.enabled=true,
-# eventPublisher=kafka, the four modes kafka with their groups, the existing
+# eventPublisher=kafka, the five modes kafka with their groups, the existing
 # database and analytics secrets, mcp on, empty extraEnv and the platform
 # brokers. Infra needs NO values change for ADR 0011.
 infra=(-f "$chart_dir/tests/warehouse-infra-platform-values.yaml" -f "$chart_dir/tests/warehouse-infra-values.yaml"
@@ -270,17 +272,18 @@ infra_mcp="$(helm template "$release" "$chart_dir" "${infra[@]}" --show-only tem
 infra_proj="$(helm template "$release" "$chart_dir" "${infra[@]}" --show-only templates/projector-deployment.yaml)"
 # Every mandatory variable of every binary is provided by the infra values.
 for var in $(grep -ho 'errors.New("[A-Z_]* is required' "$repo_dir"/cmd/api/main.go | sed -E 's/errors.New\("//; s/ is required//' | sort -u) \
-  DEMAND_CONSUMER_GROUP PRODUCT_CONSUMER_GROUP LAYOUT_CONSUMER_GROUP RELOCATION_CONSUMER_GROUP; do
+  DEMAND_CONSUMER_GROUP PRODUCT_CONSUMER_GROUP LAYOUT_CONSUMER_GROUP RELOCATION_CONSUMER_GROUP PACK_LEVEL_CONSUMER_GROUP; do
   [[ -n "$(env_value "$infra_api" "$var")" ]] || grep -A4 "name: $var\$" <<<"$infra_api" | grep -q 'secretKeyRef:' \
     || fail "infra values: the api Deployment gets no $var"
 done
 [[ "$(env_value "$infra_api" KAFKA_BROKERS)" == "kafka.warehouse-systems.svc.cluster.local:9092" ]] || fail "infra values: KAFKA_BROKERS"
 [[ "$(env_value "$infra_api" EVENT_PUBLISHER)" == "kafka" ]] || fail "infra values: EVENT_PUBLISHER"
 for kv in DEMAND_CONSUMER_GROUP=slotting-optimization-demand PRODUCT_CONSUMER_GROUP=slotting-optimization-product \
-  LAYOUT_CONSUMER_GROUP=slotting-optimization-layout RELOCATION_CONSUMER_GROUP=slotting-optimization-relocation; do
+  LAYOUT_CONSUMER_GROUP=slotting-optimization-layout RELOCATION_CONSUMER_GROUP=slotting-optimization-relocation \
+  PACK_LEVEL_CONSUMER_GROUP=slotting-optimization-pack-level; do
   [[ "$(env_value "$infra_api" "${kv%%=*}")" == "${kv#*=}" ]] || fail "infra values: ${kv%%=*}"
 done
-for mode in DEMAND_MODE PRODUCT_MODE LAYOUT_MODE RELOCATION_MODE; do
+for mode in DEMAND_MODE PRODUCT_MODE LAYOUT_MODE RELOCATION_MODE PACK_LEVEL_MODE; do
   [[ "$(env_value "$infra_api" "$mode")" == "kafka" ]] || fail "infra values: $mode"
 done
 grep -A4 'name: DATABASE_URL$' <<<"$infra_api" | grep -q 'slotting-optimization-db' || fail "infra values: DATABASE_URL must come from the slotting-optimization-db secret"

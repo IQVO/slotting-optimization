@@ -9,6 +9,7 @@ package planning
 import (
 	"cmp"
 	"errors"
+	"math"
 	"slices"
 
 	"github.com/claudioed/slotting-optimization/internal/domain/slotplan"
@@ -60,12 +61,23 @@ type UnitSize struct {
 	WeightG   int64
 }
 
+// CaseSize is the effective size of ONE CASE of a SKU: the cube and weight of
+// the case as one handling unit, and how many eaches it holds.
+type CaseSize struct {
+	VolumeMM3    int64
+	WeightG      int64
+	UnitsPerPack int64
+}
+
 // Profile is what the planner needs to know about a SKU. Unit is nil while
 // the SKU has no effective dimensions.
 type Profile struct {
 	HandlingTags     []string
 	TemperatureClass TemperatureClass
 	Unit             *UnitSize
+	// Case is the CASE level in force with its effective size; nil when the
+	// SKU has none (then it can only be EACH-picked).
+	Case *CaseSize
 }
 
 func (p Profile) hazmat() bool {
@@ -76,6 +88,22 @@ func (p Profile) hasUnit() bool {
 	return p.Unit != nil && p.Unit.VolumeMM3 > 0 && p.Unit.WeightG > 0
 }
 
+func (p Profile) hasCase() bool {
+	c := p.Case
+	return c != nil && c.VolumeMM3 > 0 && c.WeightG > 0 && c.UnitsPerPack > 0
+}
+
+// pickedInWholeCases reports whether the SKU is CASE-pick material: it has a
+// usable CASE level and every positive demand line is a whole number of
+// cases, i.e. unitsPerPack divides the greatest common divisor of the line
+// quantities (ADR 0012). A SKU with no positive line (gcd 0) is not.
+func (p Profile) pickedInWholeCases(lineUnitsGCD int64) bool {
+	if !p.hasCase() || lineUnitsGCD < 1 {
+		return false
+	}
+	return lineUnitsGCD%p.Case.UnitsPerPack == 0
+}
+
 // Slot is an active forward pick slot with the properties of its zone.
 type Slot struct {
 	Code             slotplan.SlotCode
@@ -84,7 +112,12 @@ type Slot struct {
 	Hazmat           bool
 	MaxWeightKg      float64
 	MaxVolumeM3      float64
+	// PickUnit is the unit the face is picked in: CASE for a case-pick face,
+	// EACH (or the zero value) for an each-pick face.
+	PickUnit slotplan.PickUnit
 }
+
+func (s Slot) caseFace() bool { return s.PickUnit == slotplan.PickCase }
 
 // Parameters are the policy knobs: a SKU is class A while the picks of the
 // SKUs ranked before it are below ClassAPercent of all picks, class B below
@@ -106,6 +139,10 @@ type Input struct {
 	Slots      []Slot
 	Previous   map[slotplan.SKU]slotplan.SlotCode
 	Params     Parameters
+	// LineUnitsGCD is, per SKU, the greatest common divisor of its positive
+	// demand-line quantities in the window (0 or absent: none). It decides
+	// the pick unit together with the SKU's CASE level.
+	LineUnitsGCD map[slotplan.SKU]int64
 }
 
 // Result is the proposal: assignments and unassigned SKUs in rank order,
@@ -167,10 +204,12 @@ func (pl *Planner) Plan(in Input) (Result, error) {
 	cands := candidates(in.Velocities)
 	classes := classify(cands, in.Params)
 	p := &placer{
-		profiles: in.Profiles,
-		previous: in.Previous,
-		ranked:   ranked,
-		taken:    make(map[slotplan.SlotCode]bool, len(ranked)),
+		profiles:  in.Profiles,
+		previous:  in.Previous,
+		gcd:       in.LineUnitsGCD,
+		ranked:    ranked,
+		caseFaces: slices.ContainsFunc(ranked, Slot.caseFace),
+		taken:     make(map[slotplan.SlotCode]bool, len(ranked)),
 	}
 	for i, c := range cands {
 		p.place(c, classes[i])
@@ -276,9 +315,13 @@ func classFor(before, total int64, p Parameters) slotplan.ABCClass {
 
 // placer holds the mutable state of one planning run.
 type placer struct {
-	profiles    map[slotplan.SKU]Profile
-	previous    map[slotplan.SKU]slotplan.SlotCode
-	ranked      []Slot
+	profiles map[slotplan.SKU]Profile
+	previous map[slotplan.SKU]slotplan.SlotCode
+	gcd      map[slotplan.SKU]int64
+	ranked   []Slot
+	// caseFaces: at least one ranked slot is a CASE-pick face. Without one
+	// every SKU is EACH-picked and the plan is what it was before ADR 0012.
+	caseFaces   bool
 	taken       map[slotplan.SlotCode]bool
 	assignments []slotplan.Assignment
 	unassigned  []slotplan.Unassigned
@@ -286,29 +329,78 @@ type placer struct {
 
 func (p *placer) place(c SkuVelocity, class slotplan.ABCClass) {
 	profile, known := p.profiles[c.SKU]
-	if !known || !profile.hasUnit() {
+	unit := slotplan.PickEach
+	if known && p.caseFaces && profile.pickedInWholeCases(p.gcd[c.SKU]) {
+		unit = slotplan.PickCase
+	}
+	size, ok := handlingUnit(profile, unit)
+	if !known || !ok {
 		p.skip(c.SKU, slotplan.ReasonNoPhysicalProfile)
 		return
 	}
-	compatible := filterSlots(p.ranked, func(s Slot) bool { return compatibleWith(profile, s) })
+	compatible := filterSlots(p.ranked, func(s Slot) bool {
+		return compatibleWith(profile, s) && s.caseFace() == (unit == slotplan.PickCase)
+	})
 	if len(compatible) == 0 {
 		p.skip(c.SKU, slotplan.ReasonNoEligibleSlot)
 		return
 	}
-	eligible := filterSlots(compatible, func(s Slot) bool { return holds(profile.Unit, s) })
+	eligible := filterSlots(compatible, func(s Slot) bool { return holds(size, s) })
 	if len(eligible) == 0 {
 		p.skip(c.SKU, slotplan.ReasonNoCapacityFit)
 		return
 	}
-	code, ok := p.choose(c.SKU, eligible)
+	slot, ok := p.choose(c.SKU, eligible)
 	if !ok {
 		p.skip(c.SKU, slotplan.ReasonNoEligibleSlot)
 		return
 	}
-	p.taken[code] = true
-	p.assignments = append(p.assignments, slotplan.Assignment{
-		SKU: c.SKU, Slot: code, Class: class, Picks: c.Picks, Units: c.Units,
-	})
+	p.taken[slot.Code] = true
+	a := slotplan.Assignment{
+		SKU: c.SKU, Slot: slot.Code, Class: class, Picks: c.Picks, Units: c.Units, PickUnit: unit,
+	}
+	if unit == slotplan.PickCase {
+		a.CasesCapacity = casesCapacity(size, slot)
+	}
+	p.assignments = append(p.assignments, a)
+}
+
+// handlingUnit is the size of what is picked: one each, or one whole case.
+// false when the SKU has no usable size for that unit.
+func handlingUnit(p Profile, unit slotplan.PickUnit) (*UnitSize, bool) {
+	if unit == slotplan.PickCase {
+		return &UnitSize{VolumeMM3: p.Case.VolumeMM3, WeightG: p.Case.WeightG}, true
+	}
+	return p.Unit, p.hasUnit()
+}
+
+// casesCapacity is how many whole units of size u the slot holds by volume
+// and by weight, whichever is the tighter. The slot must hold at least one
+// (holds), so the result is at least 1.
+func casesCapacity(u *UnitSize, s Slot) int64 {
+	byVolume := math.Floor(s.MaxVolumeM3 * 1e9 / float64(u.VolumeMM3))
+	byWeight := math.Floor(s.MaxWeightKg * 1000 / float64(u.WeightG))
+	return int64(math.Min(byVolume, byWeight))
+}
+
+// GCDOf is the greatest common divisor of the positive values; 0 when there
+// is none.
+func GCDOf(values []int64) int64 {
+	var g int64
+	for _, v := range values {
+		if v < 1 {
+			continue
+		}
+		g = gcd(g, v)
+	}
+	return g
+}
+
+func gcd(a, b int64) int64 {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
 
 func (p *placer) skip(sku slotplan.SKU, reason slotplan.UnassignedReason) {
@@ -317,19 +409,19 @@ func (p *placer) skip(sku slotplan.SKU, reason slotplan.UnassignedReason) {
 
 // choose returns the previous slot if it is eligible and free, else the
 // best free eligible slot.
-func (p *placer) choose(sku slotplan.SKU, eligible []Slot) (slotplan.SlotCode, bool) {
+func (p *placer) choose(sku slotplan.SKU, eligible []Slot) (Slot, bool) {
 	prev := p.previous[sku]
 	for _, s := range eligible {
 		if s.Code == prev && !p.taken[s.Code] {
-			return s.Code, true
+			return s, true
 		}
 	}
 	for _, s := range eligible {
 		if !p.taken[s.Code] {
-			return s.Code, true
+			return s, true
 		}
 	}
-	return "", false
+	return Slot{}, false
 }
 
 func filterSlots(slots []Slot, keep func(Slot) bool) []Slot {

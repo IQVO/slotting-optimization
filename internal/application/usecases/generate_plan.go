@@ -2,7 +2,9 @@ package usecases
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/claudioed/slotting-optimization/internal/application/ports"
@@ -23,6 +25,14 @@ type GeneratePlan struct {
 	Planner          *planning.Planner
 	DefaultSite      string
 	ForwardZoneCodes []string
+	// CasePickZoneCodes are the zone codes whose faces are CASE-pick faces
+	// (CASE_PICK_ZONE_CODES, ADR 0012). They are read in addition to
+	// ForwardZoneCodes. Empty = no case-pick faces: every SKU is EACH-picked
+	// and PackLevels is not consulted.
+	CasePickZoneCodes []string
+	// PackLevels is the local pack-level view (nil only when
+	// CasePickZoneCodes is empty).
+	PackLevels ports.PackLevelView
 	// DefaultLookback is the window used when a request names none
 	// (LOOKBACK_DAYS); 0 means DefaultLookbackDays.
 	DefaultLookback int
@@ -52,7 +62,7 @@ func (uc *GeneratePlan) Handle(ctx context.Context, in GenerateInput) (*slotplan
 		if err != nil {
 			return err
 		}
-		input, err := uc.gather(ctx, site, window)
+		input, err := uc.gather(ctx, site, window, now)
 		if err != nil {
 			return err
 		}
@@ -80,7 +90,7 @@ func (uc *GeneratePlan) Handle(ctx context.Context, in GenerateInput) (*slotplan
 }
 
 // gather reads the three local copies and the current Approved map.
-func (uc *GeneratePlan) gather(ctx context.Context, site slotplan.SiteID, w slotplan.Window) (planning.Input, error) {
+func (uc *GeneratePlan) gather(ctx context.Context, site slotplan.SiteID, w slotplan.Window, now time.Time) (planning.Input, error) {
 	velocities, err := uc.Demand.Velocity(ctx, site, w.From, w.To)
 	if err != nil {
 		return planning.Input{}, fmt.Errorf("read demand: %w", err)
@@ -93,7 +103,7 @@ func (uc *GeneratePlan) gather(ctx context.Context, site slotplan.SiteID, w slot
 	if err != nil {
 		return planning.Input{}, fmt.Errorf("read product profiles: %w", err)
 	}
-	slots, err := uc.Catalogue.ForwardSlots(ctx, site, uc.ForwardZoneCodes)
+	slots, err := uc.Catalogue.ForwardSlots(ctx, site, uc.zoneCodes())
 	if err != nil {
 		return planning.Input{}, fmt.Errorf("read forward slots: %w", err)
 	}
@@ -101,10 +111,75 @@ func (uc *GeneratePlan) gather(ctx context.Context, site slotplan.SiteID, w slot
 	if err != nil {
 		return planning.Input{}, err
 	}
-	return planning.Input{
-		Velocities: velocities, Profiles: profiles, Slots: slots,
+	in := planning.Input{
+		Velocities: velocities, Profiles: profiles, Slots: markCaseFaces(slots, uc.CasePickZoneCodes),
 		Previous: previous, Params: planning.DefaultParameters(),
-	}, nil
+	}
+	if len(uc.CasePickZoneCodes) == 0 {
+		return in, nil
+	}
+	if err := uc.addCasePick(ctx, &in, site, w, now, skus); err != nil {
+		return planning.Input{}, err
+	}
+	return in, nil
+}
+
+// zoneCodes is every zone whose faces take part in the plan: the forward
+// zones and the case-pick zones.
+func (uc *GeneratePlan) zoneCodes() []string {
+	if len(uc.CasePickZoneCodes) == 0 {
+		return uc.ForwardZoneCodes
+	}
+	codes := slices.Clone(uc.ForwardZoneCodes)
+	for _, c := range uc.CasePickZoneCodes {
+		if !slices.Contains(codes, c) {
+			codes = append(codes, c)
+		}
+	}
+	return codes
+}
+
+// markCaseFaces flags the slots of the case-pick zones as CASE-pick faces.
+func markCaseFaces(slots []planning.Slot, casePickZones []string) []planning.Slot {
+	if len(casePickZones) == 0 {
+		return slots
+	}
+	out := slices.Clone(slots)
+	for i, s := range out {
+		if slices.Contains(casePickZones, s.ZoneCode) {
+			out[i].PickUnit = slotplan.PickCase
+		}
+	}
+	return out
+}
+
+// addCasePick adds what the planner needs to pick a SKU in cases: the CASE
+// size in force from the local pack-level view and the greatest common
+// divisor of the SKU's demand lines. The case size lands only on SKUs that
+// already have a product profile (the handling tags and temperature class of
+// the profile still decide where a SKU may go).
+func (uc *GeneratePlan) addCasePick(ctx context.Context, in *planning.Input, site slotplan.SiteID, w slotplan.Window, now time.Time, skus []slotplan.SKU) error {
+	if uc.PackLevels == nil {
+		return errors.New("compute plan: CASE_PICK_ZONE_CODES is set but the pack-level view is not wired")
+	}
+	cases, err := uc.PackLevels.ActiveCases(ctx, skus, now)
+	if err != nil {
+		return fmt.Errorf("read case levels: %w", err)
+	}
+	for sku, c := range cases {
+		profile, ok := in.Profiles[sku]
+		if !ok {
+			continue
+		}
+		c := c
+		profile.Case = &c
+		in.Profiles[sku] = profile
+	}
+	in.LineUnitsGCD, err = uc.Demand.LineUnitsGCD(ctx, site, w.From, w.To)
+	if err != nil {
+		return fmt.Errorf("read demand line quantities: %w", err)
+	}
+	return nil
 }
 
 // previous is the SKU -> slot map of the site's Approved plan (empty if none).

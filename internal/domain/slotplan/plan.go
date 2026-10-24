@@ -123,7 +123,7 @@ func Restore(s Snapshot) (*SlotPlan, error) {
 		window:       Window{From: s.Window.From.UTC(), To: s.Window.To.UTC()},
 		policy:       s.Policy,
 		state:        s.State,
-		assignments:  sortedCopy(s.Assignments, func(a Assignment) SKU { return a.SKU }),
+		assignments:  sortedCopy(withPickUnit(s.Assignments), func(a Assignment) SKU { return a.SKU }),
 		moves:        sortedCopy(s.Moves, func(m Move) SKU { return m.SKU }),
 		unassigned:   sortedCopy(s.Unassigned, func(u Unassigned) SKU { return u.SKU }),
 		generatedAt:  s.GeneratedAt.UTC(),
@@ -344,7 +344,38 @@ func validateAssignment(a Assignment) error {
 	if a.Picks < 1 || a.Units < 0 {
 		return ErrInvalidMetric
 	}
+	return validatePickUnit(a)
+}
+
+// validatePickUnit: the zero unit means EACH; a CASE face holds at least one
+// case and an EACH face has no case capacity.
+func validatePickUnit(a Assignment) error {
+	if a.PickUnit != "" && !a.PickUnit.Valid() {
+		return ErrInvalidPickUnit
+	}
+	if a.PickUnit == PickCase {
+		if a.CasesCapacity < 1 {
+			return ErrInvalidPickUnit
+		}
+		return nil
+	}
+	if a.CasesCapacity != 0 {
+		return ErrInvalidPickUnit
+	}
 	return nil
+}
+
+// withPickUnit returns the assignments with the zero pick unit spelled EACH,
+// so a plan reads the same whether it was just generated or restored.
+func withPickUnit(as []Assignment) []Assignment {
+	out := make([]Assignment, len(as))
+	for i, a := range as {
+		if a.PickUnit == "" {
+			a.PickUnit = PickEach
+		}
+		out[i] = a
+	}
+	return out
 }
 
 func validateMoves(moves []Move, assigned map[SKU]SlotCode) error {

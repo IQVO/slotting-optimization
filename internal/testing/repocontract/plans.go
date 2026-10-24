@@ -70,6 +70,7 @@ func SlotPlanRepository(t *testing.T, newRepo func(t *testing.T) ports.SlotPlanR
 		"list is newest first with keyset paging":     listPaging,
 		"list filters by site and state":              listFilters,
 		"list after an unknown plan is an empty page": listUnknownCursor,
+		"pick unit and cases capacity round trip":     pickUnitRoundTrip,
 	}
 	for name, fn := range cases {
 		t.Run(name, func(t *testing.T) { fn(t, newRepo(t)) })
@@ -95,6 +96,42 @@ func roundTrip(t *testing.T, r ports.SlotPlanRepository) {
 	s := again.Snapshot()
 	if s.State != slotplan.StateApproved || s.Version != 2 || s.SupersedesPlanID != "plan-z" || !s.ApprovedAt.Equal(T0.Add(time.Minute)) {
 		t.Fatalf("approved plan = %+v", s)
+	}
+}
+
+// pickUnitRoundTrip: a CASE-pick assignment keeps its unit and capacity, an
+// EACH one reads back as EACH with no capacity (ADR 0012).
+func pickUnitRoundTrip(t *testing.T, r ports.SlotPlanRepository) {
+	ctx := context.Background()
+	w, err := slotplan.NewWindow(T0.Add(-24*time.Hour), T0)
+	must(t, err)
+	p, _, err := slotplan.Generate(slotplan.NewPlan{
+		ID: "plan-case", Site: "SITE-1", Window: w, Policy: slotplan.PolicyABCVelocityV1,
+		Assignments: []slotplan.Assignment{
+			{SKU: "SKU-CASE", Slot: "CASE-01", Class: slotplan.ClassA, Picks: 5, Units: 120, PickUnit: slotplan.PickCase, CasesCapacity: 4},
+			{SKU: "SKU-EACH", Slot: "FWD-01", Class: slotplan.ClassB, Picks: 2, Units: 3},
+		},
+		Moves: []slotplan.Move{
+			{SKU: "SKU-CASE", To: "CASE-01", Kind: slotplan.MoveAssign},
+			{SKU: "SKU-EACH", To: "FWD-01", Kind: slotplan.MoveAssign},
+		},
+	}, T0)
+	must(t, err)
+	must(t, r.Save(ctx, p, 0))
+	got, err := r.Get(ctx, "plan-case")
+	must(t, err)
+	as := got.Snapshot().Assignments
+	if len(as) != 2 {
+		t.Fatalf("assignments = %+v", as)
+	}
+	if c := as[0]; c.SKU != "SKU-CASE" || c.PickUnit != slotplan.PickCase || c.CasesCapacity != 4 {
+		t.Fatalf("case assignment = %+v", c)
+	}
+	if e := as[1]; e.SKU != "SKU-EACH" || e.PickUnit != slotplan.PickEach || e.CasesCapacity != 0 {
+		t.Fatalf("each assignment = %+v", e)
+	}
+	if !sameSnapshot(p.Snapshot(), got.Snapshot()) {
+		t.Fatalf("round trip lost data:\n want %+v\n have %+v", p.Snapshot(), got.Snapshot())
 	}
 }
 
