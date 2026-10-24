@@ -205,9 +205,22 @@ func TestGCDOf(t *testing.T) {
 	}{
 		{nil, 0}, {[]int64{0}, 0}, {[]int64{-4, 0}, 0}, {[]int64{12}, 12}, {[]int64{12, 24, 36}, 12},
 		{[]int64{12, 18}, 6}, {[]int64{7, 13}, 1}, {[]int64{0, 9, -3, 6}, 3},
+		{[]int64{1}, 1}, {[]int64{4, 1}, 1}, {[]int64{1, 4}, 1},
 	} {
 		if got := GCDOf(tc.in); got != tc.want {
 			t.Errorf("GCDOf(%v) = %d, want %d", tc.in, got, tc.want)
 		}
+	}
+}
+
+// A demand line of exactly one each is positive: it counts in the gcd, and for
+// a case of one each (the smallest usable level) it is a whole number of cases.
+func TestPickedInWholeCasesAcceptsAGcdOfOne(t *testing.T) {
+	p := Profile{Case: &CaseSize{VolumeMM3: 1_000, WeightG: 10, UnitsPerPack: 1}}
+	if !p.pickedInWholeCases(1) {
+		t.Fatal("gcd 1 over a case of 1 each is a whole number of cases")
+	}
+	if p.pickedInWholeCases(0) {
+		t.Fatal("no positive line is never CASE-pick material")
 	}
 }
