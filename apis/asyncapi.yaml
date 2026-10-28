@@ -1076,12 +1076,20 @@ components:
                   properties:
                     length_mm:
                       type: integer
+                      minimum: 1
+                      maximum: 20000
                     width_mm:
                       type: integer
+                      minimum: 1
+                      maximum: 20000
                     height_mm:
                       type: integer
+                      minimum: 1
+                      maximum: 20000
                     weight_g:
                       type: integer
+                      minimum: 1
+                      maximum: 2000000
                 measured_at:
                   type: string
                   format: date-time
