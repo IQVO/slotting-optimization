@@ -1,5 +1,7 @@
 # slotting-optimization
 
+[![CI](https://github.com/IQVO/slotting-optimization/actions/workflows/ci.yml/badge.svg?branch=develop)](https://github.com/IQVO/slotting-optimization/actions/workflows/ci.yml?query=branch%3Adevelop) [![coverage gate](https://img.shields.io/badge/coverage%20gate-90%25-brightgreen)](https://github.com/IQVO/slotting-optimization/blob/develop/Makefile) [![Go](https://img.shields.io/badge/go-1.27.3-00ADD8?logo=go&logoColor=white)](https://github.com/IQVO/slotting-optimization/blob/develop/go.mod) [![release](https://img.shields.io/github/v/release/IQVO/slotting-optimization?sort=semver)](https://github.com/IQVO/slotting-optimization/releases) [![docs](https://img.shields.io/badge/docs-iqvo.github.io-blue)](https://iqvo.github.io/slotting-optimization/) [![license](https://img.shields.io/badge/license-MIT-blue)](https://github.com/IQVO/slotting-optimization/blob/develop/LICENSE)
+
 The WMS-tier planner of forward pick slots in the
 [warehouse-systems](https://github.com/IQVO) fleet: it proposes which SKUs get
 a forward pick slot and which slot (policy `abc-velocity-v1`: rank by
