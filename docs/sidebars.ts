@@ -101,6 +101,11 @@ const sidebars: SidebarsConfig = {
           label: '0004 CloudEvents envelope and type catalogue',
           href: '/docs/adr/0004-cloudevents-envelope-and-type-catalogue',
         },
+        {
+          type: 'link',
+          label: '0013 A2A inbound adapter',
+          href: '/docs/adr/0013-a2a-inbound-adapter',
+        },
       ],
     },
   ],

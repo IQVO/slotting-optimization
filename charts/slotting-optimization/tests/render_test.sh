@@ -60,6 +60,9 @@ grep -q 'OUTBOX_MAX_ATTEMPTS: "0"' <<<"$unlimited" || fail "config.outboxMaxAtte
 if helm template "$release" "$chart_dir" "${everything[@]}" --show-only templates/mcp-deployment.yaml | grep -q 'configMapRef:'; then
   fail "mcp-deployment.yaml must not mount the api ConfigMap"
 fi
+if helm template "$release" "$chart_dir" "${everything[@]}" --show-only templates/a2a-deployment.yaml | grep -q 'configMapRef:'; then
+  fail "a2a-deployment.yaml must not mount the api ConfigMap"
+fi
 
 # Chart vs binary: every env var a binary reads must be rendered into its
 # Deployment when every optional value is set. The names come from the
@@ -85,17 +88,21 @@ api_vars=($(binary_env api))
 # shellcheck disable=SC2207
 mcp_vars=($(binary_env mcp))
 # shellcheck disable=SC2207
+a2a_vars=($(binary_env a2a))
+# shellcheck disable=SC2207
 projector_vars=($(binary_env slotting-projector))
 # shellcheck disable=SC2207
 reports_vars=($(binary_env slotting-reports))
 (( ${#api_vars[@]} >= 10 )) || fail "found only ${#api_vars[@]} env literals in cmd/api/main.go; the scan is looking in the wrong place"
 (( ${#mcp_vars[@]} >= 5 )) || fail "found only ${#mcp_vars[@]} env literals in cmd/mcp/main.go; the scan is looking in the wrong place"
+(( ${#a2a_vars[@]} >= 6 )) || fail "found only ${#a2a_vars[@]} env literals in cmd/a2a/main.go; the scan is looking in the wrong place"
 (( ${#projector_vars[@]} >= 4 )) || fail "found only ${#projector_vars[@]} env literals in cmd/slotting-projector/main.go; the scan is looking in the wrong place"
 (( ${#reports_vars[@]} >= 4 )) || fail "found only ${#reports_vars[@]} env literals in cmd/slotting-reports/main.go; the scan is looking in the wrong place"
 assert_env_rendered deployment.yaml "${api_vars[@]}" \
   DEMAND_MODE DEMAND_CONSUMER_GROUP PRODUCT_MODE PRODUCT_CONSUMER_GROUP LAYOUT_MODE LAYOUT_CONSUMER_GROUP \
   RELOCATION_MODE RELOCATION_CONSUMER_GROUP PACK_LEVEL_MODE PACK_LEVEL_CONSUMER_GROUP ENVIRONMENT CORS_ALLOWED_ORIGINS
 assert_env_rendered mcp-deployment.yaml "${mcp_vars[@]}" ENVIRONMENT
+assert_env_rendered a2a-deployment.yaml "${a2a_vars[@]}" ENVIRONMENT
 # The analytics binaries (ADR 0006): ENVIRONMENT is read by the shared
 # telemetry adapter, and the projector reads ANALYTICS_CONSUMER_GROUP,
 # ADMIN_ADDR and LOG_LEVEL through a variable (loadConfig's or()), so they
@@ -133,6 +140,25 @@ fi
 mcp_dep="$(helm template "$release" "$chart_dir" "${base[@]}" --set mcp.enabled=true --show-only templates/mcp-deployment.yaml)"
 grep -A4 'name: DATABASE_URL$' <<<"$mcp_dep" | grep -q 'secretKeyRef:' || fail "the mcp DATABASE_URL must come from a Secret"
 
+# --- ADR 0013: the A2A agent (cmd/a2a), read-only like the mcp component -----------
+a2a_dep="$(helm template "$release" "$chart_dir" "${base[@]}" --set a2a.enabled=true --show-only templates/a2a-deployment.yaml)"
+grep -A4 'name: DATABASE_URL$' <<<"$a2a_dep" | grep -q 'secretKeyRef:' || fail "the a2a DATABASE_URL must come from a Secret"
+[[ "$(env_value "$a2a_dep" A2A_ADDR)" == ":8093" ]] || fail "the a2a agent must listen on :8093 (8090 is mcp, 8091 the projector admin, 8092 the reports API)"
+grep -q 'command: \["/app/a2a"\]' <<<"$a2a_dep" || fail "the a2a Deployment must run /app/a2a"
+# Read-only: no Kafka, no relay, no consumer env (the surface can never write an outbox row).
+if grep -Eq 'name: (KAFKA_BROKERS|EVENT_PUBLISHER|OUTBOX_RELAY_INTERVAL|OUTBOX_MAX_ATTEMPTS|[A-Z_]+_MODE|[A-Z_]+_CONSUMER_GROUP)$' <<<"$a2a_dep"; then
+  fail "the a2a Deployment must not get Kafka/relay/consumer env (it is read-only and never dials Kafka)"
+fi
+# The Agent Card must advertise a dialable absolute URL: it defaults to the
+# release's in-cluster Service DNS (namespace-derived, so pattern-match) and
+# stays overridable.
+a2a_url="$(env_value "$a2a_dep" A2A_AGENT_URL || true)" # a missing var must reach the fail message below, not abort under set -e
+[[ "$a2a_url" =~ ^http://[a-z0-9.-]+-a2a\.[a-z0-9-]+\.svc\.cluster\.local:8093/$ ]] || fail "A2A_AGENT_URL default is not the in-cluster Service DNS: $a2a_url"
+a2a_override="$(helm template "$release" "$chart_dir" "${base[@]}" --set a2a.enabled=true --set a2a.agentUrl=http://gw.example/api/a2a/slotting-optimization/ --show-only templates/a2a-deployment.yaml)"
+[[ "$(env_value "$a2a_override" A2A_AGENT_URL || true)" == "http://gw.example/api/a2a/slotting-optimization/" ]] || fail "a2a.agentUrl does not override A2A_AGENT_URL"
+# A2A is off by default: no a2a resource renders unless asked for.
+if helm template "$release" "$chart_dir" "${base[@]}" | grep -q 'app.kubernetes.io/component: a2a'; then fail "an a2a resource rendered with default values"; fi
+
 # --- chart vs binary: every mandatory variable a binary names is rendered -----------
 # A new `errors.New("X is required ...")` in a boot config fails here until the
 # chart carries X for that binary (the api's consumer groups are named through a
@@ -152,6 +178,17 @@ for bin in api mcp slotting-projector slotting-reports; do
   for var in $vars; do
     grep -q "name: $var\$" <<<"$rendered" || fail "the $bin Deployment does not render $var, which cmd/$bin requires"
   done
+done
+
+# cmd/a2a: the same scan, but the variable regex must allow digits, or A2A_AGENT_URL
+# is read as A_AGENT_URL and the check fails for the wrong reason.
+a2a_required="$(grep -ho '[A-Z][A-Z0-9_]\{2,\} is required' "$repo_dir"/cmd/a2a/main.go | sed -E 's/ is required//' | sort -u || true)"
+[[ -n "$a2a_required" ]] || fail "found no mandatory variables in cmd/a2a; the scan is looking in the wrong place"
+for var in DATABASE_URL A2A_AGENT_URL; do
+  grep -qx "$var" <<<"$a2a_required" || fail "the cmd/a2a scan did not find $var; the regex is wrong"
+done
+for var in $a2a_required; do
+  grep -q "name: $var\$" <<<"$a2a_dep" || fail "the a2a Deployment does not render $var, which cmd/a2a requires"
 done
 
 # --- refusals: the mandatory values name themselves ---------------------------------
@@ -194,6 +231,9 @@ expect_refusal "a grace period under 20s" "terminationGracePeriodSeconds" "${bas
 expect_refusal "no grace period" "terminationGracePeriodSeconds" "${base[@]}" --set terminationGracePeriodSeconds=0
 helm template "$release" "$chart_dir" "${base[@]}" --set terminationGracePeriodSeconds=20 >/dev/null \
   || fail "a 20s grace period must still render"
+expect_refusal "a *_MODE through a2a.extraEnv" "_MODE" "${base[@]}" --set a2a.enabled=true --set 'a2a.extraEnv[0].name=LAYOUT_MODE' --set 'a2a.extraEnv[0].value=off'
+expect_refusal "the log publisher through a2a.extraEnv" "EVENT_PUBLISHER" "${base[@]}" --set a2a.enabled=true --set 'a2a.extraEnv[0].name=EVENT_PUBLISHER' --set 'a2a.extraEnv[0].value=log'
+expect_refusal "a2a without a database" "database.url or database.existingSecret" --set a2a.enabled=true --set kafka.brokers=k:9092
 expect_refusal "mcp without a database" "database.url or database.existingSecret" --set mcp.enabled=true --set kafka.brokers=k:9092
 expect_refusal "an out-of-range lookbackDays" "config.lookbackDays" "${base[@]}" --set config.lookbackDays=400
 expect_refusal "analytics without a DSN source" "analytics.url" "${base[@]}" --set analytics.enabled=true
@@ -243,11 +283,11 @@ if grep -Eq 'name: (DATABASE_URL|KAFKA_BROKERS)$' <<<"$frontend_dep"; then
   fail "the frontend Deployment must not get database/Kafka env (it serves static bytes)"
 fi
 
-# ALL optional components render TOGETHER (ct lint's values file): api + mcp +
+# ALL optional components render TOGETHER (ct lint's values file): api + mcp + a2a +
 # projector + reports + frontend, and no route in this chart targets the
 # frontend.
 together="$(helm template "$release" "$chart_dir" "${base[@]}" "${everything[@]}")"
-for component in api mcp analytics-projector analytics-reports frontend; do
+for component in api mcp a2a analytics-projector analytics-reports frontend; do
   grep -q "app.kubernetes.io/component: $component" <<<"$together" \
     || fail "every optional component must render together; $component is missing"
 done
@@ -269,6 +309,7 @@ infra=(-f "$chart_dir/tests/warehouse-infra-platform-values.yaml" -f "$chart_dir
 infra_all="$(helm template "$release" "$chart_dir" "${infra[@]}")" || fail "the warehouse-infra values no longer render"
 infra_api="$(helm template "$release" "$chart_dir" "${infra[@]}" --show-only templates/deployment.yaml)"
 infra_mcp="$(helm template "$release" "$chart_dir" "${infra[@]}" --show-only templates/mcp-deployment.yaml)"
+infra_a2a="$(helm template "$release" "$chart_dir" "${infra[@]}" --show-only templates/a2a-deployment.yaml)"
 infra_proj="$(helm template "$release" "$chart_dir" "${infra[@]}" --show-only templates/projector-deployment.yaml)"
 # Every mandatory variable of every binary is provided by the infra values.
 for var in $(grep -ho 'errors.New("[A-Z_]* is required' "$repo_dir"/cmd/api/main.go | sed -E 's/errors.New\("//; s/ is required//' | sort -u) \
@@ -288,10 +329,12 @@ for mode in DEMAND_MODE PRODUCT_MODE LAYOUT_MODE RELOCATION_MODE PACK_LEVEL_MODE
 done
 grep -A4 'name: DATABASE_URL$' <<<"$infra_api" | grep -q 'slotting-optimization-db' || fail "infra values: DATABASE_URL must come from the slotting-optimization-db secret"
 grep -A4 'name: DATABASE_URL$' <<<"$infra_mcp" | grep -q 'slotting-optimization-db' || fail "infra values: the mcp DATABASE_URL must come from the slotting-optimization-db secret"
+grep -A4 'name: DATABASE_URL$' <<<"$infra_a2a" | grep -q 'slotting-optimization-db' || fail "infra values: the a2a DATABASE_URL must come from the slotting-optimization-db secret"
+helm template "$release" "$chart_dir" "${infra[@]}" --show-only templates/a2a-route.yaml | grep -q "replacePrefixMatch: /$" || fail "infra values: the a2a route must rewrite to /"
 [[ "$(env_value "$infra_proj" KAFKA_BROKERS)" == "kafka.warehouse-systems.svc.cluster.local:9092" ]] || fail "infra values: the projector KAFKA_BROKERS"
 [[ "$(env_value "$infra_proj" ANALYTICS_CONSUMER_GROUP)" == "slotting-optimization-analytics" ]] || fail "infra values: ANALYTICS_CONSUMER_GROUP"
 grep -A4 'name: ANALYTICS_DATABASE_URL$' <<<"$infra_proj" | grep -q 'slotting-optimization-analytics-db' || fail "infra values: the projector DSN must come from slotting-optimization-analytics-db"
-for component in api mcp analytics-projector analytics-reports; do
+for component in api mcp a2a analytics-projector analytics-reports; do
   grep -q "app.kubernetes.io/component: $component" <<<"$infra_all" || fail "infra values: component $component not rendered"
 done
 if grep -qiE 'value: "?(permissive|log|off)"?$' <<<"$infra_all"; then fail "infra values: the render carries permissive/log/off"; fi
