@@ -81,14 +81,21 @@ Fully qualified name of the MCP server deployment/service.
 {{- end }}
 
 {{/*
-Image reference shared by every Deployment (api, mcp).
+Fully qualified name of the A2A agent Deployment/Service (<release>-a2a, ADR 0013).
+*/}}
+{{- define "slotting-optimization.a2aFullname" -}}
+{{- include "slotting-optimization.fullname" . }}-a2a
+{{- end }}
+
+{{/*
+Image reference shared by every Deployment (api, mcp, a2a).
 */}}
 {{- define "slotting-optimization.image" -}}
 {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
 {{- end }}
 
 {{/*
-MANDATORY (ADR 0011: Postgres is the only runtime). cmd/api and cmd/mcp exit
+MANDATORY (ADR 0011: Postgres is the only runtime). cmd/api, cmd/mcp and cmd/a2a exit
 at boot without DATABASE_URL; there is no in-memory mode. Fails the render
 naming the values instead of crash-looping.
 */}}
@@ -229,6 +236,7 @@ Deployment (always rendered) includes it, so a mis-set release fails
 {{- include "slotting-optimization.requireConsumerGroups" . -}}
 {{- include "slotting-optimization.requireNoInMemoryEnv" (dict "list" .Values.extraEnv "where" "extraEnv") -}}
 {{- include "slotting-optimization.requireNoInMemoryEnv" (dict "list" .Values.mcp.extraEnv "where" "mcp.extraEnv") -}}
+{{- include "slotting-optimization.requireNoInMemoryEnv" (dict "list" .Values.a2a.extraEnv "where" "a2a.extraEnv") -}}
 {{- include "slotting-optimization.requireGracePeriod" . -}}
 {{- end -}}
 

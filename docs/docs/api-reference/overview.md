@@ -12,6 +12,7 @@ sidebar_position: 1
 | REST | `apis/openapi.yaml` (OpenAPI 3.0.3, version 1.0.0) | The pages under *REST* are generated from the spec with `npm run gen-api-docs`; do not edit them by hand. Servers: `http://localhost:8080` (local) and `http://localhost:8000/api/slotting-optimization` (kind cluster through Kong: warehouse-infra turns the chart's `gatewayApi` route on). The two `/reports/*` operations carry their own server, `http://localhost:8092`: they are served by `cmd/slotting-reports`, not by `cmd/api`. |
 | Events | `apis/asyncapi.yaml` (AsyncAPI 2.6.0, version 1.0.0) | Summarised on the [event catalogue](/docs/api-reference/events); every field on [Domain events](/docs/ddd/domain-events). |
 | MCP | `cmd/mcp` (ADR 0005) | Read-only tools `get_slot_plan` (with the plan's `execution` progress, ADR 0010), `list_slot_plans`, `get_forward_slots`, `get_sku_velocity`; unauthenticated, Streamable HTTP at `/` and `/mcp` on `:8090`; in the kind cluster through Kong at `http://localhost:8000/api/mcp/slotting-optimization`. |
+| A2A | `cmd/a2a` (ADR 0013) | Read-only skills `forward_slot_map` and `slot_plan_review` over the same read use cases, as an Agent2Agent agent (JSON-RPC at `/` and `/a2a` on `:8093`, Agent Card at `/.well-known/agent-card.json`); unauthenticated; domain rejections are answered in-band as problems with the REST statuses and slugs; in the kind cluster through Kong at `http://localhost:8000/api/a2a/slotting-optimization` once warehouse-infra enables `a2a`. |
 
 ## Endpoints
 

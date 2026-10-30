@@ -26,6 +26,7 @@ CloudEvents subdomain `wms`; module `github.com/claudioed/slotting-optimization`
 | REST contract | [`apis/openapi.yaml`](apis/openapi.yaml) |
 | Event contract | [`apis/asyncapi.yaml`](apis/asyncapi.yaml) |
 | MCP server (read-only tools, `cmd/mcp`) | [`docs/adr/0005`](docs/adr/0005-mcp-server-adoption.md), `.claude/rules/mcp.md` |
+| A2A agent (read-only skills, `cmd/a2a`) | [`docs/adr/0013`](docs/adr/0013-a2a-inbound-adapter.md) |
 | Analytics read side (stream, `cmd/slotting-projector`, `cmd/slotting-reports`) | [`docs/adr/0006`](docs/adr/0006-analytics-read-side.md) |
 | Execution of approved plans as WES relocation work | [`docs/adr/0010`](docs/adr/0010-approved-slot-plans-are-executed-as-wes-relocation-work.md) |
 | Postgres and Kafka are the only runtime | [`docs/adr/0011`](docs/adr/0011-postgres-and-kafka-are-the-only-runtime.md) |
@@ -53,11 +54,11 @@ The documentation site is published at
 
 Contracts, ADRs, the domain packages and the service (use cases, Postgres
 persistence, the outbox, the four Kafka consumers and the REST API in
-`cmd/api`), the read-only MCP server (`cmd/mcp`), the analytics read side
-(`cmd/slotting-projector`, `cmd/slotting-reports`) and the web remote (`web/`)
-are in place, packaged as one image with four binaries (`/app/api`,
-`/app/mcp`, `/app/slotting-projector`, `/app/slotting-reports`) and a Helm
-chart. warehouse-infra (`origin/develop`, `helm-values/slotting-optimization.yaml`)
+`cmd/api`), the read-only MCP server (`cmd/mcp`), the read-only A2A agent
+(`cmd/a2a`), the analytics read side (`cmd/slotting-projector`,
+`cmd/slotting-reports`) and the web remote (`web/`) are in place, packaged as
+one image with five binaries (`/app/api`, `/app/mcp`, `/app/a2a`,
+`/app/slotting-projector`, `/app/slotting-reports`) and a Helm chart. warehouse-infra (`origin/develop`, `helm-values/slotting-optimization.yaml`)
 deploys the api, the MCP server (Kong `/api/mcp/slotting-optimization`) and
 the analytics pair; it does not deploy the web remote (no `frontend_remote` in
 its `terraform/apps.yaml` entry, no `frontend.enabled`).
@@ -68,6 +69,7 @@ its `terraform/apps.yaml` entry, no `frontend.enabled`).
 |---|---|---|
 | `cmd/api` | 8080 | REST API, outbox relay and local-copy consumers (the writer) |
 | `cmd/mcp` | 8090 | MCP server over Streamable HTTP, read-only, no Kafka (ADR 0005) |
+| `cmd/a2a` | 8093 | A2A agent (Agent2Agent JSON-RPC over HTTP), read-only, no Kafka (ADR 0013) |
 | `cmd/slotting-projector` | 8091 (admin: `/healthz`, `/readyz`) | consumes `warehouse.slotting-optimization.analytics` (group `ANALYTICS_CONSUMER_GROUP`) and writes the analytical database (`ANALYTICS_DATABASE_URL`); its only writer (ADR 0006) |
 | `cmd/slotting-reports` | 8092 | read-only `GET /reports/slot-plan-funnel` and `GET /reports/freshness` over the analytical database (ADR 0006) |
 
@@ -82,6 +84,21 @@ its `terraform/apps.yaml` entry, no `frontend.enabled`).
 
 Generating, approving and rejecting a plan stay on REST: the MCP surface has no
 write tool and the build fails if one appears.
+
+`cmd/a2a` is the same read surface as an Agent2Agent agent (ADR 0013): JSON-RPC at
+`/` and `/a2a`, the Agent Card at `/.well-known/agent-card.json`, health at
+`/healthz`, no auth. `A2A_AGENT_URL` (the absolute URL the card advertises) and
+`DATABASE_URL` are mandatory. A request is `{"skill": "<id>", "arguments": {...}}` in a
+data part; a domain rejection is answered in-band as an RFC 7807-style `problem`
+(same statuses and slugs as REST), never a JSON-RPC error.
+
+| Skill | Reads |
+|---|---|
+| `forward_slot_map` | the CURRENT forward slot map of a site (`siteId`, default site if omitted) |
+| `slot_plan_review` | one plan in full with its execution progress, by `planId`, or the newest plan matching `siteId` / `state` |
+
+Like MCP it has no write skill, wires no write use case and never dials Kafka;
+A2A carries delegation only, facts still leave as CloudEvents from `cmd/api`.
 
 ## Working locally
 
@@ -132,6 +149,7 @@ warehouse-infra's Nginx web gateway at `/mfes/slotting-optimization/`.
 docker build -t slotting-optimization:local .
 docker run --rm -p 8080:8080 slotting-optimization:local        # api: exits at boot unless DATABASE_URL, KAFKA_BROKERS and the four *_CONSUMER_GROUP are set (see docker-compose.yml)
 docker run --rm -p 8090:8090 --entrypoint /app/mcp slotting-optimization:local   # MCP server: needs DATABASE_URL
+docker run --rm -p 8093:8093 --entrypoint /app/a2a slotting-optimization:local   # A2A agent: needs DATABASE_URL and A2A_AGENT_URL
 docker run --rm -p 8091:8091 --entrypoint /app/slotting-projector slotting-optimization:local   # needs ANALYTICS_DATABASE_URL and KAFKA_BROKERS
 docker run --rm -p 8092:8092 --entrypoint /app/slotting-reports slotting-optimization:local     # needs ANALYTICS_DATABASE_URL
 helm lint charts/slotting-optimization -f charts/slotting-optimization/ci/default-values.yaml
@@ -144,8 +162,10 @@ mode, and the chart refuses to render without `database.url` or
 `database.existingSecret`, `kafka.brokers` and the four `config.*ConsumerGroup`
 values. It exposes a dedicated value for every environment variable `cmd/api`
 reads (`DEMAND_SITE_ID`, `LOOKBACK_DAYS`, `FORWARD_ZONE_CODES`, the `*_MODE` (only
-`kafka`) and `*_CONSUMER_GROUP` pairs, ...). Three components are off by
-default: the MCP Deployment (`mcp.enabled`), the analytics projector and
+`kafka`) and `*_CONSUMER_GROUP` pairs, ...). Four components are off by
+default: the MCP Deployment (`mcp.enabled`), the A2A Deployment (`a2a.enabled`;
+Kong `/api/a2a/slotting-optimization` rewritten to `/`; `A2A_AGENT_URL` defaults to
+the in-cluster Service DNS, overridable with `a2a.agentUrl`), the analytics projector and
 reports Deployments (`analytics.enabled`, which also needs `analytics.url` or
 `analytics.existingSecret`) and the web remote (`frontend.enabled`). The chart
 renders no Kong route for the reports Service (it has no `reports-route.yaml`).

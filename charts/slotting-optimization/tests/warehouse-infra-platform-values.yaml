@@ -14,7 +14,7 @@
 # the collector here, never in HCL.
 
 # The shared Kong Gateway (terraform/10-platform/gateway-api.tf) every route attaches to: the
-# API routes, the MCP routes and the analytics reports routes.
+# API routes, the MCP and A2A routes and the analytics reports routes.
 gatewayApi:
   parentRefs: &gateway
     - name: warehouse-gateway
@@ -22,6 +22,10 @@ gatewayApi:
       sectionName: http
 
 mcp:
+  route:
+    parentRefs: *gateway
+
+a2a:
   route:
     parentRefs: *gateway
 

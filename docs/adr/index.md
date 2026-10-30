@@ -26,6 +26,7 @@ section.
 | [0010](/docs/adr/0010-approved-slot-plans-are-executed-as-wes-relocation-work) | approved slot plans are executed as WES relocation work | Accepted (2026-10-14); `RELOCATION_MODE` default amended by ADR 0011 |
 | [0011](/docs/adr/0011-postgres-and-kafka-are-the-only-runtime) | Postgres and Kafka are the only runtime | Accepted (2026-10-19); supersedes the in-memory / `permissive` / log-sink statements of ADR 0003, 0005, 0009 and 0010 |
 | [0012](/docs/adr/0012-case-pick-faces) | Case-pick faces: `CASE_PICK_ZONE_CODES` zones, `pickUnit` CASE/EACH, `casesCapacity` from the case cube and weight, local pack-level copy | Accepted (2026-10-24); additive |
+| [0013](/docs/adr/0013-a2a-inbound-adapter) | A2A inbound adapter (read-only, unauthenticated, additive): `forward_slot_map` and `slot_plan_review` over the same read use cases, `cmd/a2a` on :8093 | Accepted (2026-10-29) |
 
 Where the code on `develop` has moved past an ADR's wording (for example
 ADR 0001's "consumer built in the service phase" status column, now built),
