@@ -113,6 +113,11 @@ mcp:
   route:
     enabled: true
     path: /api/mcp/slotting-optimization
+a2a:
+  enabled: true
+  route:
+    enabled: true
+    path: /api/a2a/slotting-optimization
 pathCatalogue:
   content: ''
   enabled: false

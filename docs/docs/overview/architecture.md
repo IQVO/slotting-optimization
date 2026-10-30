@@ -8,11 +8,11 @@ sidebar_position: 2
 # Architecture
 
 `slotting-optimization` is one Go module (`github.com/claudioed/slotting-optimization`)
-built as a hexagonal (ports and adapters) service. It ships **four binaries**
+built as a hexagonal (ports and adapters) service. It ships **five binaries**
 in one image (`/app/<name>`, the `Dockerfile` builds every `cmd/*`
 directory): `cmd/api` (the OLTP writer: REST, the four local-copy Kafka
 consumers and the transactional-outbox relay in one process), `cmd/mcp` (the
-read-only MCP server, ADR 0005) and the analytics read side of ADR 0006,
+read-only MCP server, ADR 0005), `cmd/a2a` (the read-only A2A agent, ADR 0013) and the analytics read side of ADR 0006,
 `cmd/slotting-projector` (writer) and `cmd/slotting-reports` (reader).
 
 ## Binaries

@@ -7,9 +7,10 @@ sidebar_position: 18
 
 # Entity-relationship diagram
 
-The OLTP schema (migrations `0001`-`0002`) created by the migrations
-`internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.sql`
-and `0002_slot_plan_move_executions.up.sql` (ADR 0010, additive), applied at
+The OLTP schema (migrations `0001`-`0003`) created by the migrations
+`internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.sql`,
+`0002_slot_plan_move_executions.up.sql` (ADR 0010, additive) and
+`0003_case_pick_faces.up.sql` (ADR 0012, additive), applied at
 boot (see [Runbook](/docs/operations/runbook#migrations)). Text
 keys compared or ordered in Go (plan ids, SKUs, slot codes) use the `"C"`
 collation so database order equals the in-memory adapters' byte order.
@@ -46,6 +47,8 @@ erDiagram
         text abc_class "A, B, C"
         bigint picks "at least 1"
         bigint units "at least 0"
+        text pick_unit "0003, EACH or CASE, default EACH"
+        bigint cases_capacity "0003, nullable; set exactly when pick_unit is CASE"
     }
     slot_plan_moves {
         text plan_id PK, FK
@@ -87,6 +90,24 @@ erDiagram
         bigint volume_mm3 "null together with weight_g"
         bigint weight_g
         bigint version
+        timestamptz updated_at
+    }
+    pack_levels {
+        text sku PK
+        text level PK "EACH, INNER, CASE, PALLET, 0003"
+        text gtin "the level's current GTIN"
+        bigint units_per_pack "at least 1"
+        bigint declared_length_mm "nullable; the four declared dims set together or not at all"
+        bigint declared_width_mm "nullable"
+        bigint declared_height_mm "nullable"
+        bigint declared_weight_g "nullable"
+        bigint measured_length_mm "nullable; measured dims of the current GTIN, cleared when it changes"
+        bigint measured_width_mm "nullable"
+        bigint measured_height_mm "nullable"
+        bigint measured_weight_g "nullable"
+        timestamptz effective_from
+        timestamptz effective_to "nullable; a retired level stays"
+        bigint version "producer aggregate version"
         timestamptz updated_at
     }
     zones {
@@ -141,7 +162,7 @@ erDiagram
 ```
 
 Source: `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.sql`,
-`0002_slot_plan_move_executions.up.sql`.
+`0002_slot_plan_move_executions.up.sql`, `0003_case_pick_faces.up.sql`.
 
 ## Which table backs what
 
@@ -151,6 +172,7 @@ Source: `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.
 | `slot_plan_assignments`, `slot_plan_moves`, `slot_plan_unassigned` | the plan's content, written once with the plan, `ON DELETE CASCADE` | `SlotPlanRepo.Save` on insert | plan reads, `GET /forward-slots` |
 | `demand_lines` | the demand copy | `ApplyDemandChanged` (upsert by order and line) | `DemandLedger.Velocity` |
 | `product_profiles` | the product copy | `ApplyProductClassified`, `ApplyPhysicalProfile` (upsert `WHERE version <` new) | `ProfileDirectory.Many` |
+| `pack_levels` | the pack-level copy (ADR 0012): one row per (SKU, level), guarded by the producer's aggregate `version`; effective dims are the measured ones if present, else the declared ones | `ApplyPackLevelDeclared`, `ApplyPackLevelRetired`, `ApplyPackLevelMeasured` | `PackLevelView.Get` / `ActiveCases` (case-pick faces) |
 | `zones`, `slots` | the layout copy | `ApplyZoneRegistered`, `ApplyLocationSlotRegistered` (upsert `WHERE slots.active`), `ApplyLocationSlotDecommissioned` | `SlotCatalogue.ForwardSlots` (join on `zone_id`) |
 | `slot_plan_move_executions` | the execution-progress read model (ADR 0010) | `RecordRelocation` (`INSERT ... ON CONFLICT (relocation_id) DO NOTHING`), in its unit of work | `GetPlan.View` (`GET /slot-plans/{planId}`, MCP `get_slot_plan`) through `slotplan.Progress` |
 | `outbox_events` | the transactional outbox | every write use case, in its unit of work | the relay (`FOR UPDATE SKIP LOCKED`) |
@@ -168,6 +190,8 @@ Source: `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.
 | `CHECK (window_from < window_to)` and the state / class / kind / reason checks | the domain enums mirrored in the database |
 | `idx_demand_lines_site_due_active` (partial, `state = 'ACTIVE'`), `idx_demand_lines_sku_due` | the velocity query |
 | `CHECK ((volume_mm3 IS NULL) = (weight_g IS NULL))` | a unit size is both dimensions or none |
+| `slot_plan_assignments_cases_capacity_only_case` | a case-pick assignment carries its cases capacity, an each-pick none |
+| the two `pack_levels` dim-group CHECKs (declared and measured) | a level's dimensions are all four or none |
 | `idx_zones_site_zone_code`, `idx_slots_zone` (partial, `active`) | the forward-slot join |
 | `outbox_events_event_id_topic_key` (unique `event_id, topic`) | one row per CloudEvent per topic |
 | `idx_outbox_events_unpublished` (partial, `published_at IS NULL`) | the relay scans only the unpublished tail |
@@ -176,7 +200,9 @@ Source: `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.
 | `idx_slot_plan_move_executions_plan` (`plan_id, move_seq`) | the progress read of one plan |
 
 `slots.zone_id` has no foreign key on purpose: zone and slot events may
-arrive in any order, and the join happens at plan time.
+arrive in any order, and the join happens at plan time. `pack_levels` has no
+foreign key either: it is a local copy of product-master's data, guarded by
+the producer's `version`, never by a constraint into another context's key.
 
 ## The analytical database (ADR 0006)
 
