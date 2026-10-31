@@ -85,6 +85,7 @@ type copies struct {
 	demand    *flakyDemand
 	profiles  *memory.ProfileDirectory
 	catalogue *memory.SlotCatalogue
+	packs     *memory.PackLevelView
 	processed *memory.ProcessedEventRepo
 	uow       *countingUoW
 }
@@ -92,9 +93,10 @@ type copies struct {
 func newCopies() *copies {
 	demand := &flakyDemand{DemandLedger: memory.NewDemandLedger()}
 	profiles, cat, processed := memory.NewProfileDirectory(), memory.NewSlotCatalogue(), memory.NewProcessedEventRepo()
+	packs := memory.NewPackLevelView()
 	return &copies{
-		demand: demand, profiles: profiles, catalogue: cat, processed: processed,
-		uow: &countingUoW{inner: memory.NewUnitOfWork(demand.DemandLedger, profiles, cat, processed)},
+		demand: demand, profiles: profiles, catalogue: cat, packs: packs, processed: processed,
+		uow: &countingUoW{inner: memory.NewUnitOfWork(demand.DemandLedger, profiles, cat, packs, processed)},
 	}
 }
 
@@ -111,6 +113,15 @@ func (c *copies) productConsumer() *kafkaconsumer.Consumer {
 	cls := &usecases.ApplyProductClassified{Intake: c.intake(), Profiles: c.profiles}
 	phys := &usecases.ApplyPhysicalProfile{Intake: c.intake(), Profiles: c.profiles}
 	return &kafkaconsumer.Consumer{Name: "product", Topic: kafkaconsumer.ProductTopic, Handlers: kafkaconsumer.ProductHandlers(cls, phys, testLogger()), Logger: testLogger(), Retry: fastRetry}
+}
+
+func (c *copies) packLevelConsumer() *kafkaconsumer.Consumer {
+	uc := kafkaconsumer.PackLevelUseCases{
+		Declared: &usecases.ApplyPackLevelDeclared{Intake: c.intake(), PackLevels: c.packs},
+		Retired:  &usecases.ApplyPackLevelRetired{Intake: c.intake(), PackLevels: c.packs},
+		Measured: &usecases.ApplyPackLevelMeasured{Intake: c.intake(), PackLevels: c.packs},
+	}
+	return &kafkaconsumer.Consumer{Name: "pack-level", Topic: kafkaconsumer.ProductTopic, Handlers: kafkaconsumer.PackLevelHandlers(uc, testLogger()), Logger: testLogger(), Retry: fastRetry}
 }
 
 func (c *copies) layoutConsumer() *kafkaconsumer.Consumer {

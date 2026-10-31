@@ -54,6 +54,10 @@ type assignmentView struct {
 	AbcClass string `json:"abc_class"`
 	Picks    int64  `json:"picks"`
 	Units    int64  `json:"units"`
+	// PickUnit is EACH or CASE; CasesCapacity is how many whole cases the
+	// CASE-pick face holds (omitted for EACH). Additive (ADR 0012).
+	PickUnit      string `json:"pick_unit"`
+	CasesCapacity int64  `json:"cases_capacity,omitempty"`
 }
 
 type moveView struct {
@@ -126,9 +130,11 @@ type slotPlanPageView struct {
 }
 
 type forwardSlotView struct {
-	SKU      string `json:"sku"`
-	Slot     string `json:"slot"`
-	AbcClass string `json:"abc_class"`
+	SKU           string `json:"sku"`
+	Slot          string `json:"slot"`
+	AbcClass      string `json:"abc_class"`
+	PickUnit      string `json:"pick_unit"`
+	CasesCapacity int64  `json:"cases_capacity,omitempty"`
 }
 
 type forwardSlotsView struct {
@@ -173,7 +179,8 @@ func toSlotPlan(p *slotplan.SlotPlan) slotPlanView {
 		Unassigned:  make([]unassignedView, len(s.Unassigned)),
 	}
 	for i, a := range s.Assignments {
-		out.Assignments[i] = assignmentView{SKU: string(a.SKU), Slot: string(a.Slot), AbcClass: string(a.Class), Picks: a.Picks, Units: a.Units}
+		out.Assignments[i] = assignmentView{SKU: string(a.SKU), Slot: string(a.Slot), AbcClass: string(a.Class), Picks: a.Picks, Units: a.Units,
+			PickUnit: string(a.PickUnit), CasesCapacity: a.CasesCapacity}
 	}
 	for i, m := range s.Moves {
 		out.Moves[i] = moveView{SKU: string(m.SKU), FromSlot: string(m.From), ToSlot: string(m.To), Kind: string(m.Kind)}
@@ -223,7 +230,8 @@ func toForwardSlots(m usecases.ForwardSlotMap) forwardSlotsView {
 		Assignments: make([]forwardSlotView, len(m.Assignments)),
 	}
 	for i, a := range m.Assignments {
-		out.Assignments[i] = forwardSlotView{SKU: string(a.SKU), Slot: string(a.Slot), AbcClass: string(a.Class)}
+		out.Assignments[i] = forwardSlotView{SKU: string(a.SKU), Slot: string(a.Slot), AbcClass: string(a.Class),
+			PickUnit: string(a.PickUnit), CasesCapacity: a.CasesCapacity}
 	}
 	return out
 }

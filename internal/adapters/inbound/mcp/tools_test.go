@@ -230,8 +230,8 @@ func assertCurrentMap(t *testing.T, h *harness, approved string) {
 			t.Fatalf("%s: assigned = %v", name, skus)
 		}
 		a := got["assignments"].([]any)[0].(map[string]any)
-		if a["slot"] == "" || a["abc_class"] == "" || len(a) != 3 {
-			t.Fatalf("%s: assignment = %v, want sku, slot and abc_class only", name, a)
+		if a["slot"] == "" || a["abc_class"] == "" || len(a) != 4 || a["pick_unit"] != "EACH" {
+			t.Fatalf("%s: assignment = %v, want sku, slot, abc_class and pick_unit EACH only", name, a)
 		}
 	}
 }

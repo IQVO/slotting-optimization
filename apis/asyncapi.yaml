@@ -151,9 +151,12 @@ channels:
       product-master's integration topic (key and subject = the SKU). This
       service consumes `ProductClassified`, `ProductDimensionsDeclared` and
       `ProductMeasured` under a stable consumer group read from env
-      `PRODUCT_CONSUMER_GROUP` when `PRODUCT_MODE=kafka`. A message is applied
-      only when its `version` is greater than the stored one. Every other type
-      is ignored.
+      `PRODUCT_CONSUMER_GROUP` when `PRODUCT_MODE=kafka`, and
+      `ProductPackLevelDeclared`, `ProductPackLevelRetired` and
+      `ProductPackLevelMeasured` into its local PackLevelView (ADR 0012) under
+      `PACK_LEVEL_CONSUMER_GROUP` when `PACK_LEVEL_MODE=kafka`. A message is
+      applied only when its `version` is greater than the stored one. Every
+      other type is ignored.
     publish:
       operationId: consumeProductMasterEvents
       summary: Consume product classification and physical profile events.
@@ -168,6 +171,9 @@ channels:
           - $ref: "#/components/messages/ProductClassified"
           - $ref: "#/components/messages/ProductDimensionsDeclared"
           - $ref: "#/components/messages/ProductMeasured"
+          - $ref: "#/components/messages/ProductPackLevelDeclared"
+          - $ref: "#/components/messages/ProductPackLevelRetired"
+          - $ref: "#/components/messages/ProductPackLevelMeasured"
 
   warehouse.facility.events:
     description: |
@@ -223,6 +229,7 @@ channels:
 components:
   messages:
     SlotPlanGenerated:
+      x-no-consumer-reason: "slotting run outcome fact; consumed on demand"
       name: SlotPlanGenerated
       title: Slot plan generated
       summary: A Draft slot plan was generated.
@@ -297,6 +304,7 @@ components:
                 - { sku: "SKU-3", from_slot: "WH1-FWD-A01-01-03-A", kind: "Vacate" }
 
     SlotPlanRejected:
+      x-no-consumer-reason: "slotting run outcome fact (rejection record); consumed on demand"
       name: SlotPlanRejected
       title: Slot plan rejected
       summary: A Draft slot plan was rejected.
@@ -701,6 +709,57 @@ components:
               rejected_at: "2026-10-08T12:15:00Z"
               reason: "Too many relocations before peak season."
 
+    ProductPackLevelDeclared:
+      name: ProductPackLevelDeclared
+      title: ProductPackLevelDeclared (consumed, product-master)
+      summary: A pack level of a SKU was declared or revised.
+      description: |
+        `type` = `com.warehouse.wms.product-master.product.ProductPackLevelDeclared`,
+        source `/warehouse/product-master`, dataschema
+        `urn:warehouse:product-master:events:ProductPackLevelDeclared:v1`. Subject and key =
+        the SKU. Applied to the local PackLevelView (ADR 0012,
+        `PACK_LEVEL_MODE=kafka`, group `PACK_LEVEL_CONSUMER_GROUP`) only when
+        `version` is greater than the stored one. Payload pinned by
+        product-master's `apis/asyncapi.yaml` on `develop`.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/ProductPackLevelDeclaredEvent"
+    ProductPackLevelRetired:
+      name: ProductPackLevelRetired
+      title: ProductPackLevelRetired (consumed, product-master)
+      summary: A pack level of a SKU was retired.
+      description: |
+        `type` = `com.warehouse.wms.product-master.product.ProductPackLevelRetired`,
+        source `/warehouse/product-master`, dataschema
+        `urn:warehouse:product-master:events:ProductPackLevelRetired:v1`. Subject and key =
+        the SKU. Applied to the local PackLevelView (ADR 0012,
+        `PACK_LEVEL_MODE=kafka`, group `PACK_LEVEL_CONSUMER_GROUP`) only when
+        `version` is greater than the stored one. Payload pinned by
+        product-master's `apis/asyncapi.yaml` on `develop`.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/ProductPackLevelRetiredEvent"
+    ProductPackLevelMeasured:
+      name: ProductPackLevelMeasured
+      title: ProductPackLevelMeasured (consumed, product-master)
+      summary: A pack level of a SKU was physically measured.
+      description: |
+        `type` = `com.warehouse.wms.product-master.product.ProductPackLevelMeasured`,
+        source `/warehouse/product-master`, dataschema
+        `urn:warehouse:product-master:events:ProductPackLevelMeasured:v1`. Subject and key =
+        the SKU. Applied to the local PackLevelView (ADR 0012,
+        `PACK_LEVEL_MODE=kafka`, group `PACK_LEVEL_CONSUMER_GROUP`) only when
+        `version` is greater than the stored one. Payload pinned by
+        product-master's `apis/asyncapi.yaml` on `develop`.
+      contentType: application/cloudevents+json
+      tags:
+        - name: consumed
+      payload:
+        $ref: "#/components/schemas/ProductPackLevelMeasuredEvent"
   schemas:
     CloudEventEnvelope:
       type: object
@@ -721,6 +780,8 @@ components:
       properties:
         sku: { type: string }
         slot: { type: string, description: The facility-layout location code of the forward slot. }
+        pick_unit: { type: string, enum: [CASE], description: "Additive (ADR 0012). Present only for a CASE-pick face; absent means EACH." }
+        cases_capacity: { type: integer, format: int64, minimum: 1, description: "Additive (ADR 0012). Whole cases the CASE-pick face holds; present only with pick_unit CASE." }
 
     SlotMove:
       type: object
@@ -918,3 +979,123 @@ components:
                   maxLength: 200
                   description: "`<plan_id>:<move_seq>` on slot-plan moves (matched first); a task id, a ticket or \"\" otherwise."
                 occurred_at: { type: string, format: date-time }
+    ProductPackLevelDeclaredEvent:
+      type: object
+      description: CloudEvents 1.0 envelope of product-master's ProductPackLevelDeclared, as consumed here.
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wms.product-master.product.ProductPackLevelDeclared"
+            dataschema:
+              const: "urn:warehouse:product-master:events:ProductPackLevelDeclared:v1"
+            data:
+              type: object
+              required: [sku, level, gtin, units_per_pack, is_orderable, is_despatch_unit, effective_from, version]
+              properties:
+                sku:
+                  type: string
+                level:
+                  type: string
+                gtin:
+                  type: string
+                child_gtin:
+                  type: string
+                qty_of_child:
+                  type: integer
+                  minimum: 2
+                  description: Absent for EACH.
+                units_per_pack:
+                  type: integer
+                  minimum: 1
+                  description: Direct factor to eaches; 1 for EACH.
+                is_orderable:
+                  type: boolean
+                is_despatch_unit:
+                  type: boolean
+                effective_from:
+                  type: string
+                  format: date-time
+                version:
+                  type: integer
+                  minimum: 1
+    ProductPackLevelRetiredEvent:
+      type: object
+      description: CloudEvents 1.0 envelope of product-master's ProductPackLevelRetired, as consumed here.
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wms.product-master.product.ProductPackLevelRetired"
+            dataschema:
+              const: "urn:warehouse:product-master:events:ProductPackLevelRetired:v1"
+            data:
+              type: object
+              required: [sku, level, gtin, effective_to, reason, version]
+              properties:
+                sku:
+                  type: string
+                level:
+                  type: string
+                gtin:
+                  type: string
+                effective_to:
+                  type: string
+                  format: date-time
+                reason:
+                  type: string
+                version:
+                  type: integer
+                  minimum: 1
+    ProductPackLevelMeasuredEvent:
+      type: object
+      description: CloudEvents 1.0 envelope of product-master's ProductPackLevelMeasured, as consumed here.
+      allOf:
+        - $ref: "#/components/schemas/CloudEventEnvelope"
+        - type: object
+          properties:
+            type:
+              const: "com.warehouse.wms.product-master.product.ProductPackLevelMeasured"
+            dataschema:
+              const: "urn:warehouse:product-master:events:ProductPackLevelMeasured:v1"
+            data:
+              type: object
+              required: [sku, level, gtin, dims, measured_at, version]
+              properties:
+                sku:
+                  type: string
+                level:
+                  type: string
+                gtin:
+                  type: string
+                dims:
+                  type: object
+                  required: [length_mm, width_mm, height_mm, weight_g]
+                  properties:
+                    length_mm:
+                      type: integer
+                      minimum: 1
+                      maximum: 20000
+                    width_mm:
+                      type: integer
+                      minimum: 1
+                      maximum: 20000
+                    height_mm:
+                      type: integer
+                      minimum: 1
+                      maximum: 20000
+                    weight_g:
+                      type: integer
+                      minimum: 1
+                      maximum: 2000000
+                measured_at:
+                  type: string
+                  format: date-time
+                device_id:
+                  type: string
+                  description: Omitted for a manual measurement.
+                version:
+                  type: integer
+                  minimum: 1

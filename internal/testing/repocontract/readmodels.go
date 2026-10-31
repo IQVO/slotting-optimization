@@ -30,6 +30,7 @@ func DemandLedger(t *testing.T, newLedger func(t *testing.T) ports.DemandLedger)
 		"velocity is per site":                                velocityPerSite,
 		"velocity is ordered picks, units, sku":               velocityOrder,
 		"an empty ledger has no velocity":                     velocityEmpty,
+		"line units gcd per sku over active lines":            lineUnitsGCD,
 	}
 	for name, fn := range cases {
 		t.Run(name, func(t *testing.T) { fn(t, newLedger(t)) })
@@ -118,6 +119,36 @@ func velocityOrder(t *testing.T, d ports.DemandLedger) {
 	want := []planning.SkuVelocity{sv("D", 2, 100), sv("A", 2, 20), sv("B", 2, 20), sv("C", 1, 1)}
 	if !equalSlice(got, want) {
 		t.Fatalf("picks desc, units desc, sku asc:\n got %+v\nwant %+v", got, want)
+	}
+}
+
+func lineUnitsGCD(t *testing.T, d ports.DemandLedger) {
+	due := T0.Add(-time.Hour)
+	from, to := T0.Add(-24*time.Hour), T0
+	apply(t, d,
+		line("o1", 1, "S", "CASED", 12, due, true), line("o1", 2, "S", "CASED", 36, due, true), line("o1", 3, "S", "CASED", 24, due, true),
+		line("o2", 1, "S", "MIXED", 12, due, true), line("o2", 2, "S", "MIXED", 18, due, true),
+		line("o3", 1, "S", "ONE", 7, due, true), line("o3", 2, "S", "ONE", 7, due, true),
+		line("o4", 1, "S", "GONE", 6, due, false),
+		line("o5", 1, "S", "OUTSIDE", 6, to, true),
+		line("o6", 1, "OTHER", "ELSEWHERE", 6, due, true),
+		line("o7", 1, "S", "ZERO", 0, due, true))
+	got, err := d.LineUnitsGCD(context.Background(), "S", from, to)
+	must(t, err)
+	want := map[slotplan.SKU]int64{"CASED": 12, "MIXED": 6, "ONE": 7}
+	if len(got) != len(want) {
+		t.Fatalf("gcd = %+v, want %+v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("gcd = %+v, want %+v", got, want)
+		}
+	}
+	apply(t, d, line("o1", 3, "S", "CASED", 0, due, false), line("o8", 1, "S", "CASED", 5, due, true))
+	got, err = d.LineUnitsGCD(context.Background(), "S", from, to)
+	must(t, err)
+	if got["CASED"] != 1 {
+		t.Fatalf("a new line of 5 in 12s and 36s brings the gcd to 1: %+v", got)
 	}
 }
 

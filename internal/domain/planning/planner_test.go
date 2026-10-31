@@ -162,9 +162,9 @@ func TestPlanAssignsByRankToBestSlots(t *testing.T) {
 		t.Fatal("a SKU without picks is not a candidate: neither assigned nor unassigned")
 	}
 	want := []slotplan.Assignment{
-		{SKU: "TOP", Slot: "FWD-01", Class: slotplan.ClassA, Picks: 60, Units: 120},
-		{SKU: "MID", Slot: "FWD-02", Class: slotplan.ClassA, Picks: 30, Units: 30},
-		{SKU: "LOW", Slot: "FWD-03", Class: slotplan.ClassC, Picks: 1, Units: 1},
+		{SKU: "TOP", Slot: "FWD-01", Class: slotplan.ClassA, Picks: 60, Units: 120, PickUnit: slotplan.PickEach},
+		{SKU: "MID", Slot: "FWD-02", Class: slotplan.ClassA, Picks: 30, Units: 30, PickUnit: slotplan.PickEach},
+		{SKU: "LOW", Slot: "FWD-03", Class: slotplan.ClassC, Picks: 1, Units: 1, PickUnit: slotplan.PickEach},
 	}
 	if !reflect.DeepEqual(r.Assignments, want) {
 		t.Fatalf("assignments = %+v\nwant %+v", r.Assignments, want)

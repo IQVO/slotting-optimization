@@ -30,6 +30,12 @@
               "abc_class": {
                 "type": "string"
               },
+              "cases_capacity": {
+                "type": "integer"
+              },
+              "pick_unit": {
+                "type": "string"
+              },
               "sku": {
                 "type": "string"
               },
@@ -40,7 +46,8 @@
             "required": [
               "sku",
               "slot",
-              "abc_class"
+              "abc_class",
+              "pick_unit"
             ],
             "type": "object"
           },
@@ -171,6 +178,12 @@
               "abc_class": {
                 "type": "string"
               },
+              "cases_capacity": {
+                "type": "integer"
+              },
+              "pick_unit": {
+                "type": "string"
+              },
               "picks": {
                 "type": "integer"
               },
@@ -189,7 +202,8 @@
               "slot",
               "abc_class",
               "picks",
-              "units"
+              "units",
+              "pick_unit"
             ],
             "type": "object"
           },

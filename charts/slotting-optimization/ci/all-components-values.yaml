@@ -9,6 +9,7 @@ config:
   defaultSiteId: "SITE-1"
   lookbackDays: "28"
   forwardZoneCodes: "FWD,FWD2"
+  casePickZoneCodes: "CASEPICK"
   demandMode: "kafka"
   demandConsumerGroup: "slotting-optimization-demand"
   productMode: "kafka"
@@ -17,6 +18,8 @@ config:
   layoutConsumerGroup: "slotting-optimization-layout"
   relocationMode: "kafka"
   relocationConsumerGroup: "slotting-optimization-relocation"
+  packLevelMode: "kafka"
+  packLevelConsumerGroup: "slotting-optimization-pack-level"
   shutdownDrainDelay: "5s"
   corsAllowedOrigins: "http://localhost:5173"
 kafka:
@@ -35,6 +38,8 @@ autoscaling:
     enabled: true
 mcp:
   enabled: true
+a2a:
+  enabled: true
 # The analytics read side (ADR 0006): projector + reports on, with the
 # analytical DSN the guard requires (the projector's KAFKA_BROKERS comes from
 # kafka.brokers above).
@@ -43,6 +48,6 @@ analytics:
   url: "postgres://u@example.invalid:5432/analytics"
   consumerGroup: "slotting-optimization-analytics"
 # The web remote (slotting_mfe): on, so ct lint renders every optional
-# component together (api + mcp + projector + reports + frontend).
+# component together (api + mcp + a2a + projector + reports + frontend).
 frontend:
   enabled: true

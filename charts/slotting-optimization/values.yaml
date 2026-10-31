@@ -149,6 +149,11 @@ config:
   # FORWARD_ZONE_CODES: comma-separated zone codes of the forward pick slots.
   # Empty = not rendered; the binary defaults to FWD.
   forwardZoneCodes: ""
+  # CASE_PICK_ZONE_CODES (ADR 0012): comma-separated zone codes whose faces are
+  # CASE-pick faces (a SKU demanded in whole cases is slotted there with a
+  # capacity in cases from the CASE level's cube/weight). OPTIONAL: empty = not
+  # rendered, no case-pick faces, every plan is an EACH-pick plan as before.
+  casePickZoneCodes: ""
   # DEMAND_MODE (ADR 0003, ADR 0011): "kafka" is the only mode. The order-line
   # demand copy is fed from warehouse.order-management.events and the consumer
   # always runs; "permissive" and "off" are refused at render and by the
@@ -176,6 +181,15 @@ config:
   # RELOCATION_CONSUMER_GROUP: the relocation consumer's STABLE group id.
   # REQUIRED.
   relocationConsumerGroup: ""
+  # PACK_LEVEL_MODE (ADR 0012): "kafka" only (product-master's
+  # ProductPackLevelDeclared / Retired / Measured on warehouse.product-master.events
+  # feed the local pack-level view the case-pick faces are sized from).
+  packLevelMode: "kafka"
+  # PACK_LEVEL_CONSUMER_GROUP: the pack-level consumer's STABLE group id.
+  # REQUIRED. A group of its own (not PRODUCT_CONSUMER_GROUP): a new group reads
+  # the topic from the start, so pack levels declared before this release are
+  # replayed into the view.
+  packLevelConsumerGroup: ""
   # SHUTDOWN_DRAIN_DELAY: wait after /readyz flips before closing the
   # listener. Empty = not rendered; the binary defaults to 5s.
   shutdownDrainDelay: ""
@@ -284,6 +298,53 @@ mcp:
   route:
     enabled: false
     path: "/api/mcp/slotting-optimization"
+    parentRefs:
+      - name: ""
+        namespace: ""
+        sectionName: "http"
+  extraEnv: []
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# --- A2A agent (docs/adr/0013) ---
+# The Agent2Agent agent (cmd/a2a, JSON-RPC over HTTP, READ-ONLY skills
+# forward_slot_map and slot_plan_review): the third driving adapter over the
+# SAME read use cases as REST and MCP. DISABLED by default. Enabling it
+# renders its own Deployment + Service (component=a2a) over the same OLTP
+# database, served at "/" and "/a2a" with the Agent Card at
+# /.well-known/agent-card.json and GET /healthz probes, command /app/a2a. Env
+# names in templates/a2a-deployment.yaml match cmd/a2a/main.go. Like the mcp
+# component it starts no outbox relay and dials no Kafka (it is read-only, so
+# it can never write an outbox row). A2A carries delegation only: facts between
+# contexts still travel as CloudEvents through the outbox the api relay
+# drains. No auth: A2A endpoints are unauthenticated fleet-wide.
+a2a:
+  enabled: false
+  replicaCount: 1
+  # A2A_ADDR the binary listens on; keep in sync with service.targetPort.
+  # (8090 is mcp, 8091 the projector admin port and 8092 the reports API.)
+  httpAddr: ":8093"
+  # Absolute URL advertised on the Agent Card. Empty defaults to this
+  # release's in-cluster Service DNS (http://<release>-a2a.<ns>.svc.cluster.local:8093/);
+  # warehouse-infra can override it with the Kong path when the agent must be
+  # reachable off-cluster.
+  agentUrl: ""
+  service:
+    type: ClusterIP
+    port: 8093
+    targetPort: 8093
+  # Kong exposure of the A2A agent (a2a-route.yaml): host path
+  # /api/a2a/<context> rewritten to / (JSON-RPC root; the well-known agent
+  # card stays reachable under the same prefix). Off by default;
+  # warehouse-infra turns it on with the real parentRefs and path.
+  route:
+    enabled: false
+    path: "/api/a2a/slotting-optimization"
     parentRefs:
       - name: ""
         namespace: ""

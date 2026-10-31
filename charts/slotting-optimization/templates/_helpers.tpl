@@ -81,14 +81,21 @@ Fully qualified name of the MCP server deployment/service.
 {{- end }}
 
 {{/*
-Image reference shared by every Deployment (api, mcp).
+Fully qualified name of the A2A agent Deployment/Service (<release>-a2a, ADR 0013).
+*/}}
+{{- define "slotting-optimization.a2aFullname" -}}
+{{- include "slotting-optimization.fullname" . }}-a2a
+{{- end }}
+
+{{/*
+Image reference shared by every Deployment (api, mcp, a2a).
 */}}
 {{- define "slotting-optimization.image" -}}
 {{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
 {{- end }}
 
 {{/*
-MANDATORY (ADR 0011: Postgres is the only runtime). cmd/api and cmd/mcp exit
+MANDATORY (ADR 0011: Postgres is the only runtime). cmd/api, cmd/mcp and cmd/a2a exit
 at boot without DATABASE_URL; there is no in-memory mode. Fails the render
 naming the values instead of crash-looping.
 */}}
@@ -157,12 +164,12 @@ kafka.enabled is kept only so values written before ADR 0011 still render
 
 {{/*
 DEMAND_MODE / PRODUCT_MODE / LAYOUT_MODE (ADR 0003) and RELOCATION_MODE
-(ADR 0010): the only mode is "kafka" (the names are kept because docs and
+(ADR 0010) and PACK_LEVEL_MODE (ADR 0012): the only mode is "kafka" (the names are kept because docs and
 infra set them). "permissive" and "off" no longer exist: the binary exits at
 boot on them (ADR 0011).
 */}}
 {{- define "slotting-optimization.requireConsumerModes" -}}
-{{- range $key := list "demandMode" "productMode" "layoutMode" "relocationMode" -}}
+{{- range $key := list "demandMode" "productMode" "layoutMode" "relocationMode" "packLevelMode" -}}
 {{- $mode := index $.Values.config $key -}}
 {{- if ne (toString $mode) "kafka" -}}
 {{- fail (printf "config.%s is %q — the only mode is \"kafka\": the local copies are always fed from real Kafka and permissive/off were removed (ADR 0011); the binary exits at boot otherwise." $key (toString $mode)) -}}
@@ -171,13 +178,14 @@ boot on them (ADR 0011).
 {{- end -}}
 
 {{/*
-All four consumers always run, each under a STABLE consumer group id that must
+All five consumers always run, each under a STABLE consumer group id that must
 come from values (cmd/api exits at boot without DEMAND_CONSUMER_GROUP,
-PRODUCT_CONSUMER_GROUP, LAYOUT_CONSUMER_GROUP and RELOCATION_CONSUMER_GROUP).
+PRODUCT_CONSUMER_GROUP, LAYOUT_CONSUMER_GROUP, RELOCATION_CONSUMER_GROUP and
+PACK_LEVEL_CONSUMER_GROUP).
 A stable id is what lets a rescheduled pod resume from its committed offsets.
 */}}
 {{- define "slotting-optimization.requireConsumerGroups" -}}
-{{- range $c := list (dict "key" "demandConsumerGroup" "env" "DEMAND_CONSUMER_GROUP") (dict "key" "productConsumerGroup" "env" "PRODUCT_CONSUMER_GROUP") (dict "key" "layoutConsumerGroup" "env" "LAYOUT_CONSUMER_GROUP") (dict "key" "relocationConsumerGroup" "env" "RELOCATION_CONSUMER_GROUP") -}}
+{{- range $c := list (dict "key" "demandConsumerGroup" "env" "DEMAND_CONSUMER_GROUP") (dict "key" "productConsumerGroup" "env" "PRODUCT_CONSUMER_GROUP") (dict "key" "layoutConsumerGroup" "env" "LAYOUT_CONSUMER_GROUP") (dict "key" "relocationConsumerGroup" "env" "RELOCATION_CONSUMER_GROUP") (dict "key" "packLevelConsumerGroup" "env" "PACK_LEVEL_CONSUMER_GROUP") -}}
 {{- if not (index $.Values.config $c.key) -}}
 {{- fail (printf "config.%s is required (%s): the consumer always runs on real Kafka and cmd/api exits at boot without a group. Use a STABLE id (ADR 0011)." $c.key $c.env) -}}
 {{- end -}}
@@ -199,7 +207,7 @@ check and the name of its value for the message.
 {{- fail (printf "%s sets EVENT_PUBLISHER=%s — the only publisher is \"kafka\" (ADR 0011)." $where $value) -}}
 {{- end -}}
 {{- if hasSuffix "_MODE" $name -}}
-{{- fail (printf "%s sets %s — *_MODE variables are set through config.demandMode / productMode / layoutMode / relocationMode and the only legal value is \"kafka\": slotting-optimization runs on real Postgres and real Kafka only, with no permissive or off mode (ADR 0011)." $where $name) -}}
+{{- fail (printf "%s sets %s — *_MODE variables are set through config.demandMode / productMode / layoutMode / relocationMode / packLevelMode and the only legal value is \"kafka\": slotting-optimization runs on real Postgres and real Kafka only, with no permissive or off mode (ADR 0011)." $where $name) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -228,6 +236,7 @@ Deployment (always rendered) includes it, so a mis-set release fails
 {{- include "slotting-optimization.requireConsumerGroups" . -}}
 {{- include "slotting-optimization.requireNoInMemoryEnv" (dict "list" .Values.extraEnv "where" "extraEnv") -}}
 {{- include "slotting-optimization.requireNoInMemoryEnv" (dict "list" .Values.mcp.extraEnv "where" "mcp.extraEnv") -}}
+{{- include "slotting-optimization.requireNoInMemoryEnv" (dict "list" .Values.a2a.extraEnv "where" "a2a.extraEnv") -}}
 {{- include "slotting-optimization.requireGracePeriod" . -}}
 {{- end -}}
 

@@ -7,8 +7,8 @@ sidebar_position: 1
 
 # Configuration
 
-`slotting-optimization` ships four binaries, `cmd/api`, `cmd/mcp`,
-`cmd/slotting-projector` and `cmd/slotting-reports`, and all four are
+`slotting-optimization` ships five binaries, `cmd/api`, `cmd/mcp`, `cmd/a2a`,
+`cmd/slotting-projector` and `cmd/slotting-reports`, and all five are
 configured only through environment variables (one table per binary below). There is no config
 file and no flag. Every variable below is read in `cmd/api/main.go` unless
 the *Source* column says otherwise, and the list is complete: it comes from
@@ -113,6 +113,22 @@ with the api values.
 | `MIGRATIONS_DATABASE_URL` | `DATABASE_URL` | no | As for `cmd/api`: the embedded migrations run before the pgx pool opens. | `cmd/mcp/main.go` (`buildDeps`) |
 | `DEMAND_SITE_ID`, `DEFAULT_SITE_ID` | unset | no | The site `get_forward_slots` and `get_sku_velocity` default to (`DEMAND_SITE_ID`, else `DEFAULT_SITE_ID`), matching `cmd/api`. | `cmd/mcp/main.go` (`defaultSite`) |
 | `LOG_LEVEL`, `SERVICE_VERSION`, `ENVIRONMENT`, `OTEL_EXPORTER_OTLP_ENDPOINT` | as for `cmd/api` | no | Logging and telemetry, parsed the same way. | `cmd/mcp/main.go`, `telemetry.go` |
+
+## `cmd/a2a`
+
+The read-only A2A agent (ADR 0013), the same read surface as `cmd/mcp` as an
+Agent2Agent agent. It runs no relay and no consumer and never dials Kafka.
+Chart: `a2a.enabled`, `a2a.httpAddr`, `a2a.agentUrl`; the rest is shared with
+the api values.
+
+| Variable | Default | Required | Meaning | Source |
+| --- | --- | --- | --- | --- |
+| `A2A_AGENT_URL` | none | **yes** | Absolute http(s) URL of the JSON-RPC endpoint, advertised on the Agent Card. Unset, relative or schemeless exits at boot naming the variable. The chart defaults it to `http://<release>-a2a.<ns>.svc.cluster.local:8093/` (`a2a.agentUrl` overrides). | `cmd/a2a/main.go` (`loadConfig`) |
+| `A2A_ADDR` | `:8093` | no | Listen address of the JSON-RPC endpoint (`/` and `/a2a`), the Agent Card (`/.well-known/agent-card.json`) and `GET /healthz`. | `cmd/a2a/main.go` (`run`) |
+| `DATABASE_URL` | none | **yes** | As for `cmd/mcp`: unset exits at boot. It reads the same Postgres as `cmd/api`. | `cmd/a2a/main.go` (`loadConfig`) |
+| `MIGRATIONS_DATABASE_URL` | `DATABASE_URL` | no | As for `cmd/api`: the embedded migrations run before the pgx pool opens. | `cmd/a2a/main.go` (`buildDeps`) |
+| `DEMAND_SITE_ID`, `DEFAULT_SITE_ID` | unset | no | The site `forward_slot_map` defaults to (`DEMAND_SITE_ID`, else `DEFAULT_SITE_ID`), matching `cmd/api`. | `cmd/a2a/main.go` (`defaultSite`) |
+| `LOG_LEVEL`, `SERVICE_VERSION`, `ENVIRONMENT`, `OTEL_EXPORTER_OTLP_ENDPOINT` | as for `cmd/api` | no | Logging and telemetry, parsed the same way. | `cmd/a2a/main.go`, `telemetry.go` |
 
 ## `cmd/slotting-projector`
 
