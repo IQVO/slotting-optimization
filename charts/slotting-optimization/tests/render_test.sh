@@ -72,7 +72,7 @@ fi
 # or by a shared internal package (ENVIRONMENT in telemetry,
 # CORS_ALLOWED_ORIGINS in the HTTP adapter).
 binary_env() {
-  grep -ohE '(Getenv|getenv|env)\("[A-Z][A-Z0-9_]*"' "$repo_dir/cmd/$1/main.go" | sed -E 's/.*\("//; s/"$//' | sort -u
+  grep -ohE '(Getenv|getenv|env)\("[A-Z][A-Z0-9_]*"' $(ls "$repo_dir"/cmd/"$1"/*.go | grep -v -E '_test\.go$|/telemetry\.go$') | sed -E 's/.*\("//; s/"$//' | sort -u
 }
 assert_env_rendered() {
   local template="$1"; shift
@@ -173,7 +173,7 @@ for bin in api mcp slotting-projector slotting-reports; do
     slotting-projector) rendered="$projector_dep" ;;
     *) rendered="$reports_dep" ;;
   esac
-  vars="$(grep -ho 'errors.New("[A-Z_]* is required' "$repo_dir"/cmd/"$bin"/main.go | sed -E 's/errors.New\("//; s/ is required//' | sort -u)"
+  vars="$(grep -ho 'errors.New("[A-Z_]* is required' $(ls "$repo_dir"/cmd/"$bin"/*.go | grep -v -E '_test\.go$|/telemetry\.go$') | sed -E 's/errors.New\("//; s/ is required//' | sort -u)"
   [[ -n "$vars" ]] || fail "found no mandatory variables in cmd/$bin; the scan is looking in the wrong place"
   for var in $vars; do
     grep -q "name: $var\$" <<<"$rendered" || fail "the $bin Deployment does not render $var, which cmd/$bin requires"
