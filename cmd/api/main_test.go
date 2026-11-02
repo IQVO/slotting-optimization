@@ -339,10 +339,10 @@ func TestCompositionRootServesThePlanFlow(t *testing.T) {
 	if plan.id == "" || !strings.Contains(plan.body, `"siteId":"SITE-1"`) {
 		t.Fatalf("plan = %s", plan.body)
 	}
-	call(t, srv, http.MethodPost, "/slot-plans/"+plan.id+"/approve", http.StatusOK)
+	call(t, srv, http.MethodPost, "/slot-plans/"+plan.id+"/approvals", http.StatusOK)
 	call(t, srv, http.MethodGet, "/forward-slots", http.StatusOK)
 	call(t, srv, http.MethodGet, "/sku-velocity", http.StatusOK)
-	call(t, srv, http.MethodPost, "/slot-plans/"+plan.id+"/approve", http.StatusConflict)
+	call(t, srv, http.MethodPost, "/slot-plans/"+plan.id+"/approvals", http.StatusConflict)
 	if got := call(t, srv, http.MethodGet, "/slot-plans/"+plan.id, http.StatusOK); !strings.Contains(got.body, `"execution":{"movesTotal":`) {
 		t.Fatalf("GET /slot-plans/{planId} must carry the execution progress: %s", got.body)
 	}

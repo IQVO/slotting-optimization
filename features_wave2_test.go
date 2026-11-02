@@ -86,11 +86,11 @@ func (x *wave2) registerRequests(sc *godog.ScenarioContext) {
 		return x.mustSend("/slot-plans", fmt.Sprintf(`{"lookbackDays":%d}`, days))
 	})
 	sc.Step(`^I reject plan number (\d+) without a reason$`, func(n int) error {
-		return x.send(http.MethodPost, "/slot-plans/"+planID(n)+"/reject", "")
+		return x.send(http.MethodPost, "/slot-plans/"+planID(n)+"/rejections", "")
 	})
 	sc.Step(`^I reject plan number (\d+) with a reason made of (\d+) times "([^"]*)"$`, func(n, times int, unit string) error {
 		b, _ := json.Marshal(map[string]string{"reason": strings.Repeat(unit, times)})
-		return x.send(http.MethodPost, "/slot-plans/"+planID(n)+"/reject", string(b))
+		return x.send(http.MethodPost, "/slot-plans/"+planID(n)+"/rejections", string(b))
 	})
 	sc.Step(`^I keep the generated plan$`, func() error { x.planRaw = append([]byte(nil), x.body...); return nil })
 	sc.Step(`^reading plan number (\d+) returns exactly the plan that was kept$`, x.readBackEqualsKept)

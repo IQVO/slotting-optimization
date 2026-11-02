@@ -136,6 +136,7 @@ type response struct {
 	status      int
 	contentType string
 	location    string
+	replayed    string
 	body        map[string]any
 	raw         string
 }
@@ -157,7 +158,7 @@ func (f *fixture) do(t *testing.T, method, path, body string) response {
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
-	out := response{status: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), location: resp.Header.Get("Location"), raw: string(raw)}
+	out := response{status: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), location: resp.Header.Get("Location"), replayed: resp.Header.Get("Idempotency-Replayed"), raw: string(raw)}
 	_ = json.Unmarshal(raw, &out.body)
 	return out
 }

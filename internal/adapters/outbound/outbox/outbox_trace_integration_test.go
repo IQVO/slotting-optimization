@@ -66,7 +66,7 @@ func TestOutboxTrace_TraceparentCrossesTheOutboxToKafka(t *testing.T) {
 		Plans: plans, Outbox: postgres.NewOutboxRepo(pool),
 		Encoder: &outboundkafka.Encoder{Topic: topic}, UoW: postgres.NewUnitOfWork(pool), Clock: clock.System{},
 	}
-	reqCtx, reqSpan := tracer.Start(ctx, "POST /slot-plans/{planId}/approve", trace.WithSpanKind(trace.SpanKindServer))
+	reqCtx, reqSpan := tracer.Start(ctx, "POST /slot-plans/{planId}/approvals", trace.WithSpanKind(trace.SpanKindServer))
 	_, err := (&usecases.ApprovePlan{Writer: w}).Handle(reqCtx, "plan-trace-1")
 	reqSpan.End()
 	if err != nil {

@@ -91,7 +91,7 @@ describe("PlanDetailScreen (approve flow)", () => {
     let approved = false;
     const api = mockApi({
       [`GET /slot-plans/${PLAN_ID}`]: () => json(approved ? approvedPlan() : draftPlan()),
-      [`POST /slot-plans/${PLAN_ID}/approve`]: () => {
+      [`POST /slot-plans/${PLAN_ID}/approvals`]: () => {
         approved = true;
         return json(approvedPlan());
       },
@@ -107,7 +107,7 @@ describe("PlanDetailScreen (approve flow)", () => {
     await user.click(screen.getByRole("button", { name: "Confirm approval" }));
     expect(await screen.findByText("Plan approved. It is now the site's forward-slot map.")).toBeInTheDocument();
 
-    const post = api.to(`POST /slot-plans/${PLAN_ID}/approve`);
+    const post = api.to(`POST /slot-plans/${PLAN_ID}/approvals`);
     expect(post).toHaveLength(1);
     expect(post[0].headers["Idempotency-Key"]).toMatch(UUID);
     expect(post[0].body).toBeUndefined();
@@ -129,7 +129,7 @@ describe("PlanDetailScreen (approve flow)", () => {
   it("renders the 409 problem when the plan is no longer a Draft, with reload guidance", async () => {
     mockApi({
       [`GET /slot-plans/${PLAN_ID}`]: json(draftPlan()),
-      [`POST /slot-plans/${PLAN_ID}/approve`]: problem(
+      [`POST /slot-plans/${PLAN_ID}/approvals`]: problem(
         409,
         "plan-not-draft",
         "Only a Draft plan can be approved or rejected",
@@ -150,7 +150,7 @@ describe("PlanDetailScreen (approve flow)", () => {
   it("renders the 409 superseded-race problem with its own guidance", async () => {
     mockApi({
       [`GET /slot-plans/${PLAN_ID}`]: json(draftPlan()),
-      [`POST /slot-plans/${PLAN_ID}/approve`]: problem(
+      [`POST /slot-plans/${PLAN_ID}/approvals`]: problem(
         409,
         "approved-plan-conflict",
         "Another plan of this site was approved at the same time",
@@ -172,7 +172,7 @@ describe("PlanDetailScreen (reject flow)", () => {
     let rejected = false;
     const api = mockApi({
       [`GET /slot-plans/${PLAN_ID}`]: () => json(rejected ? draftPlan({ state: "Rejected", rejectedAt: "2026-10-08T12:45:00Z", rejectReason: "Too many relocations before peak season." }) : draftPlan()),
-      [`POST /slot-plans/${PLAN_ID}/reject`]: () => {
+      [`POST /slot-plans/${PLAN_ID}/rejections`]: () => {
         rejected = true;
         return json(draftPlan({ state: "Rejected", rejectedAt: "2026-10-08T12:45:00Z", rejectReason: "Too many relocations before peak season." }));
       },
@@ -185,7 +185,7 @@ describe("PlanDetailScreen (reject flow)", () => {
     expect(await screen.findByText("Plan rejected.")).toBeInTheDocument();
     expect(await screen.findByText("Too many relocations before peak season.")).toBeInTheDocument();
 
-    const post = api.to(`POST /slot-plans/${PLAN_ID}/reject`);
+    const post = api.to(`POST /slot-plans/${PLAN_ID}/rejections`);
     expect(post).toHaveLength(1);
     expect(post[0].headers["Idempotency-Key"]).toMatch(UUID);
     expect(post[0].body).toEqual({ reason: "Too many relocations before peak season." });
@@ -194,13 +194,13 @@ describe("PlanDetailScreen (reject flow)", () => {
   it("submits no body when the reason is left empty", async () => {
     const api = mockApi({
       [`GET /slot-plans/${PLAN_ID}`]: json(draftPlan()),
-      [`POST /slot-plans/${PLAN_ID}/reject`]: json(draftPlan({ state: "Rejected", rejectedAt: "2026-10-08T12:45:00Z" })),
+      [`POST /slot-plans/${PLAN_ID}/rejections`]: json(draftPlan({ state: "Rejected", rejectedAt: "2026-10-08T12:45:00Z" })),
     });
     const user = userEvent.setup();
     mount();
     await user.click(await screen.findByRole("button", { name: "Reject plan…" }));
     await user.click(screen.getByRole("button", { name: "Confirm rejection" }));
-    const post = api.to(`POST /slot-plans/${PLAN_ID}/reject`);
+    const post = api.to(`POST /slot-plans/${PLAN_ID}/rejections`);
     expect(post[0].body).toBeUndefined();
     expect(post[0].headers["Content-Type"]).toBeUndefined();
   });

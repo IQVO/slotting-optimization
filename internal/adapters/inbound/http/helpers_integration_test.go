@@ -102,7 +102,7 @@ func (f *pgFixture) post(t *testing.T, path, key, body string) response {
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
-	out := response{status: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), location: resp.Header.Get("Location"), raw: string(raw)}
+	out := response{status: resp.StatusCode, contentType: resp.Header.Get("Content-Type"), location: resp.Header.Get("Location"), replayed: resp.Header.Get("Idempotency-Replayed"), raw: string(raw)}
 	_ = json.Unmarshal(raw, &out.body)
 	return out
 }

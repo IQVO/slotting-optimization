@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/claudioed/slotting-optimization/internal/adapters/inbound/http/page"
 	"github.com/claudioed/slotting-optimization/internal/application/repository"
 	"github.com/claudioed/slotting-optimization/internal/application/usecases"
 	"github.com/claudioed/slotting-optimization/internal/domain/slotplan"
@@ -29,7 +30,8 @@ var internalProblem = problem{http.StatusInternalServerError, "internal-error", 
 // Problems the idempotency middleware writes itself, before any use case runs.
 var (
 	idempotencyKeyRequired = problem{http.StatusBadRequest, "idempotency-key-required", "Idempotency-Key header is required"}
-	idempotencyKeyReused   = problem{http.StatusUnprocessableEntity, "idempotency-key-reused", "Idempotency-Key was already used with a different request"}
+	idempotencyKeyInvalid  = problem{http.StatusBadRequest, "idempotency-key-invalid", "Idempotency-Key header is invalid"}
+	idempotencyKeyReused   = problem{http.StatusConflict, "idempotency-key-reused", "Idempotency-Key was already used with a different request"}
 )
 
 // problemCatalogue maps every typed error to its problem, in match order.
@@ -43,6 +45,9 @@ var problemCatalogue = []struct {
 	{slotplan.ErrInvalidSiteID, problem{http.StatusBadRequest, "invalid-site-id", "Site id is invalid"}},
 	{usecases.ErrNoSite, problem{http.StatusBadRequest, "invalid-site-id", "Site id is invalid"}},
 	{usecases.ErrInvalidLookback, problem{http.StatusBadRequest, "invalid-lookback", "Lookback is invalid"}},
+	{errUnknownQueryParameter, problem{http.StatusBadRequest, "unknown-query-parameter", "Unknown query parameter"}},
+	{page.ErrInvalidLimit, problem{http.StatusBadRequest, "invalid-limit", "Limit is invalid"}},
+	{page.ErrInvalidCursor, problem{http.StatusBadRequest, "invalid-cursor", "Cursor is invalid"}},
 	{usecases.ErrInvalidLimit, problem{http.StatusBadRequest, "invalid-limit", "Limit is invalid"}},
 	{usecases.ErrInvalidCursor, problem{http.StatusBadRequest, "invalid-cursor", "Cursor is invalid"}},
 	{usecases.ErrInvalidState, problem{http.StatusBadRequest, "invalid-state", "State is invalid"}},
