@@ -21,8 +21,8 @@ sidebar_position: 1
 | Slot plans | `POST /slot-plans` | `GeneratePlan` | `201`, `Location: /slot-plans/<planId>`, the Draft plan |
 | Slot plans | `GET /slot-plans` | `ListPlans` | `200 {items, nextCursor?}`, newest first |
 | Slot plans | `GET /slot-plans/{planId}` | `GetPlan` | `200`, the plan with its `execution` progress (ADR 0010) |
-| Slot plans | `POST /slot-plans/{planId}/approve` | `ApprovePlan` | `200`, the Approved plan |
-| Slot plans | `POST /slot-plans/{planId}/reject` | `RejectPlan` | `200`, the Rejected plan |
+| Slot plans | `POST /slot-plans/{planId}/approvals` | `ApprovePlan` | `200`, the Approved plan |
+| Slot plans | `POST /slot-plans/{planId}/rejections` | `RejectPlan` | `200`, the Rejected plan |
 | Forward slots | `GET /forward-slots` | `ListForwardSlots` | `200 {siteId, planId?, approvedAt?, assignments}` |
 | Velocity | `GET /sku-velocity` | `ListSkuVelocity` | `200 {siteId, windowFrom, windowTo, items}` |
 | Health | `GET /healthz`, `GET /readyz` | | `200` / `503` ([Runbook](/docs/operations/runbook#one-deployment-one-port)) |
@@ -43,19 +43,25 @@ only: the chart renders no Kong route for it.
 ## Conventions
 
 - **Optional bodies.** `POST /slot-plans` takes `{siteId?, lookbackDays?}`
-  and `POST /slot-plans/{planId}/reject` takes `{reason?}`; an empty body is
+  and `POST /slot-plans/{planId}/rejections` takes `{reason?}`; an empty body is
   valid. Unknown fields, trailing data and bodies over 64 KiB are
   `400 malformed-request`. JSON names are camelCase on REST and snake_case
   on the events.
 - **Default site.** `siteId` may be omitted on generate, `/forward-slots` and
   `/sku-velocity` when `DEMAND_SITE_ID` or `DEFAULT_SITE_ID` is configured;
   otherwise it is `400 invalid-site-id`.
-- **`Idempotency-Key`** is required on `POST /slot-plans`: missing is
-  `400 idempotency-key-required`, the same key
-  and body replays the stored response (4xx included), the same key with
-  another body is `422 idempotency-key-reused`. A 5xx is never cached. Approve and
-  reject do not take it: repeating them is refused by the state machine
-  (`409 plan-not-draft`).
+- **`Idempotency-Key`** is required on every `POST` (`/slot-plans`,
+  `/slot-plans/{planId}/approvals`, `/slot-plans/{planId}/rejections`): missing
+  is `400 idempotency-key-required`, not 1 to 128 printable ASCII characters is
+  `400 idempotency-key-invalid`. The key is global; the request fingerprint is
+  method + path + SHA-256 of the body. The same key and fingerprint replays the
+  stored response (4xx included) with `Idempotency-Replayed: true`; the same key
+  with another method, path or body is `409 idempotency-key-reused`. A 5xx is
+  never cached.
+- **Collections** answer `{items, nextCursor}` (`limit` 1 to 500, default 100,
+  opaque `cursor`); an undeclared query parameter is
+  `400 unknown-query-parameter`. `GET /forward-slots` is the one exemption
+  (`x-pagination-exempt: view`: one composite resource, the site's current map).
 - **Versions.** Every plan carries `version` (1 at generation, +1 per
   decision). There is no `ETag` or `If-Match`; concurrent writers are told
   apart by `409 concurrent-modification` and `409 approved-plan-conflict`.

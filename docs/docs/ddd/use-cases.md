@@ -20,8 +20,8 @@ insert the raised events into the outbox. Consumer use cases share another
 | Use case | Trigger | Inputs | Checks | Raises |
 | --- | --- | --- | --- | --- |
 | `GeneratePlan` | `POST /slot-plans` (wrapped by the `Idempotency-Key` middleware on Postgres) | `siteId?` (default `DEMAND_SITE_ID`, then `DEFAULT_SITE_ID`), `lookbackDays?` (default `LOOKBACK_DAYS`, then 28) | site id is a valid token (`ErrNoSite` when none at all); lookback 1 to 365; window `[now - days, now)`; the computed plan passes every `SlotPlan` invariant (one slot per SKU, one SKU per slot, moves and unassigned consistent with the assignments) | `SlotPlanGenerated` |
-| `ApprovePlan` | `POST /slot-plans/{planId}/approve` | `planId` | the id starts with `plan-`; the plan exists; it is `Draft` (`ErrNotDraft` before anything is touched); the site's current Approved plan, if any, is superseded and saved **first** with its own version guard (a lost race is `ErrApprovedPlanConflict`); the partial unique index allows one Approved plan per site | `SlotPlanApproved` (with `supersedes_plan_id`, the full map and the moves) |
-| `RejectPlan` | `POST /slot-plans/{planId}/reject` | `planId`, `reason?` | the plan exists and is `Draft`; the trimmed reason has at most 500 characters | `SlotPlanRejected` |
+| `ApprovePlan` | `POST /slot-plans/{planId}/approvals` | `planId` | the id starts with `plan-`; the plan exists; it is `Draft` (`ErrNotDraft` before anything is touched); the site's current Approved plan, if any, is superseded and saved **first** with its own version guard (a lost race is `ErrApprovedPlanConflict`); the partial unique index allows one Approved plan per site | `SlotPlanApproved` (with `supersedes_plan_id`, the full map and the moves) |
+| `RejectPlan` | `POST /slot-plans/{planId}/rejections` | `planId`, `reason?` | the plan exists and is `Draft`; the trimmed reason has at most 500 characters | `SlotPlanRejected` |
 
 ### How `GeneratePlan` computes a plan
 

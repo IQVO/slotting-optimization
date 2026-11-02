@@ -238,13 +238,13 @@ ten paths:
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/slot-plans` | Generate a plan (policy `abc-velocity-v1`). **Requires an `Idempotency-Key` header**: the same key + body replays the original response; the same key with a different body is rejected (`idempotency-key-reused`) |
-| GET | `/slot-plans` | List plans (filter `site_id`, `state`) |
+| POST | `/slot-plans` | Generate a plan (policy `abc-velocity-v1`). **Requires an `Idempotency-Key` header**: the same key + body replays the original response; the same key with a different request is a `409 idempotency-key-reused`; a replay carries `Idempotency-Replayed: true`. Every POST requires the key |
+| GET | `/slot-plans` | List plans (filters `siteId`, `state`; `limit`, `cursor`; answers `{items, nextCursor}`) |
 | GET | `/slot-plans/{planId}` | One plan in full: assignments, moves, unassigned, execution progress |
-| POST | `/slot-plans/{planId}/approve` | Record the human approval (Draft → Approved) |
-| POST | `/slot-plans/{planId}/reject` | Record the rejection (Draft → Rejected) |
+| POST | `/slot-plans/{planId}/approvals` | Record the human approval (Draft → Approved) |
+| POST | `/slot-plans/{planId}/rejections` | Record the rejection (Draft → Rejected) |
 | GET | `/forward-slots` | The CURRENT forward slot map of a site (its Approved plan) |
-| GET | `/sku-velocity` | Order-line picks and units per SKU over a window |
+| GET | `/sku-velocity` | Order-line picks and units per SKU over a window (`limit`, `cursor`; answers `{siteId, windowFrom, windowTo, items, nextCursor}`) |
 | GET | `/healthz`, `/readyz` | liveness; readiness (drain gate + Postgres + Kafka) |
 | GET | `/metrics` | Prometheus scrape |
 | GET | `/reports/slot-plan-funnel`, `/reports/freshness` | analytics — served by `cmd/slotting-reports`, not `cmd/api` |
