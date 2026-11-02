@@ -162,7 +162,7 @@ func (x *wave2) registerConsumerGivens(sc *godog.ScenarioContext) {
 		x.demandUnusable)
 	sc.Step(`^the delivery raised no error$`, func() error {
 		if x.lastErr != nil {
-			return fmt.Errorf("consumer returned %v, want nil", x.lastErr)
+			return fmt.Errorf("consumer returned %w, want nil", x.lastErr)
 		}
 		return nil
 	})
@@ -244,7 +244,7 @@ func (x *wave2) registerResponseChecks(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^the response field "([^"]*)" is present$`, func(path string) error {
 		if _, ok, err := x.field(path); err != nil || !ok {
-			return fmt.Errorf("field %q absent in %s (%v)", path, x.body, err)
+			return fmt.Errorf("field %q absent in %s (%w)", path, x.body, err)
 		}
 		return nil
 	})

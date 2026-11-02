@@ -138,16 +138,34 @@ func TestGeneratePlanValidatesTheRequest(t *testing.T) {
 }
 
 func TestGeneratePlanPropagatesFailures(t *testing.T) {
-	setups := map[string]func(h *harness){
+	// Read-phase failures happen BEFORE the unit of work opens: nothing was
+	// written, so there is nothing to roll back and no unit runs at all.
+	readSetups := map[string]func(h *harness){
 		"demand":    func(h *harness) { h.demand.velErr = errBoom },
 		"profiles":  func(h *harness) { h.profile.manyErr = errBoom },
 		"catalogue": func(h *harness) { h.cat.slotsErr = errBoom },
 		"approved":  func(h *harness) { h.repo.curErr = errBoom },
-		"save":      func(h *harness) { h.repo.saveErr["plan-1"] = errBoom },
-		"encode":    func(h *harness) { h.enc.err = errBoom },
-		"outbox":    func(h *harness) { h.outbox.err = errBoom },
 	}
-	for name, setup := range setups {
+	for name, setup := range readSetups {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness()
+			setup(h)
+			if _, err := newGenerate(t, h).Handle(context.Background(), usecases.GenerateInput{}); !errors.Is(err, errBoom) {
+				t.Fatalf("err = %v", err)
+			}
+			if h.uow.runs != 0 {
+				t.Fatalf("a read failure must surface before the unit of work opens, runs = %d", h.uow.runs)
+			}
+		})
+	}
+	// Write-phase failures happen INSIDE the unit of work and must fail it so
+	// the save and the outbox insert roll back together.
+	writeSetups := map[string]func(h *harness){
+		"save":   func(h *harness) { h.repo.saveErr["plan-1"] = errBoom },
+		"encode": func(h *harness) { h.enc.err = errBoom },
+		"outbox": func(h *harness) { h.outbox.err = errBoom },
+	}
+	for name, setup := range writeSetups {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness()
 			setup(h)
@@ -159,6 +177,42 @@ func TestGeneratePlanPropagatesFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// orderUoW records whether the demand read had already happened by the time
+// the unit of work opens, then delegates to the real fake.
+type orderUoW struct {
+	*fakeUoW
+	demand           *fakeDemand
+	demandReadAtOpen bool
+}
+
+func (u *orderUoW) Do(ctx context.Context, fn func(ctx context.Context) error) error {
+	u.demandReadAtOpen = u.demand.site != ""
+	return u.fakeUoW.Do(ctx, fn)
+}
+
+// The inputs are read and the planner runs BEFORE the write transaction
+// opens: the unit of work holds nothing but the save and the outbox insert.
+func TestGeneratePlanReadsAndPlansBeforeOpeningTheUnitOfWork(t *testing.T) {
+	h := newHarness()
+	h.demand.velocities = []planning.SkuVelocity{{SKU: "SKU-1", Picks: 3, Units: 3}}
+	h.profile.rows["SKU-1"] = repository.ProductProfile{SKU: "SKU-1", Unit: unit(1_000_000, 1000)}
+	h.cat.slots = []planning.Slot{slot("A-01")}
+	ordered := &orderUoW{fakeUoW: h.uow, demand: h.demand}
+	h.writer.UoW = ordered
+
+	if _, err := newGenerate(t, h).Handle(context.Background(), usecases.GenerateInput{}); err != nil {
+		t.Fatal(err)
+	}
+	if !ordered.demandReadAtOpen {
+		t.Fatal("the inputs must be read before the unit of work opens")
+	}
+	if h.uow.runs != 1 {
+		t.Fatalf("units of work = %d, want exactly one (the persist)", h.uow.runs)
+	}
+	eq(t, "outbox", strings.Join(h.outbox.types(), ","), "SlotPlanGenerated")
+	eq(t, "saves", len(h.repo.saves), 1)
 }
 
 func TestGeneratePlanRejectsAnInvalidPlannerResult(t *testing.T) {
