@@ -365,7 +365,7 @@ func (w *world) theOutboxEventTypesAre(names string) error {
 func (w *world) list(key string) ([]map[string]any, error) {
 	v, ok, err := w.field(key)
 	if err != nil || !ok {
-		return nil, fmt.Errorf("no %q in %s (%v)", key, w.body, err)
+		return nil, fmt.Errorf("no %q in %s (%w)", key, w.body, err)
 	}
 	raw, _ := v.([]any)
 	out := make([]map[string]any, 0, len(raw))
@@ -406,7 +406,7 @@ func (w *world) thePlanAssigns(sku, slot, class string) error {
 func (w *world) thePlanCounts(sku string, picks, units int) error {
 	a, err := w.find("assignments", sku)
 	if err != nil || a == nil {
-		return fmt.Errorf("%s has no assignment in %s (%v)", sku, w.body, err)
+		return fmt.Errorf("%s has no assignment in %s (%w)", sku, w.body, err)
 	}
 	if a["picks"] != float64(picks) || a["units"] != float64(units) {
 		return fmt.Errorf("%s counts %v picks and %v units, want %d and %d", sku, a["picks"], a["units"], picks, units)
@@ -511,7 +511,7 @@ func (w *world) listedPlansAre(numbers string) error {
 func (w *world) iListTheNextPage() error {
 	cursor, ok, err := w.field("nextCursor")
 	if err != nil || !ok || cursor == nil {
-		return fmt.Errorf("no nextCursor in %s (%v)", w.body, err)
+		return fmt.Errorf("no nextCursor in %s (%w)", w.body, err)
 	}
 	return w.call(http.MethodGet, w.listQuery+"&cursor="+fmt.Sprint(cursor), "")
 }

@@ -2,6 +2,7 @@ package kafka_test
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -16,7 +17,7 @@ func TestRun_CommitsEveryMessageInOrderAfterHandlingIt(t *testing.T) {
 		[]byte(legacyFlat),
 		demandMsg("e3", "ord-2", 1, "SITE-1", "SKU-2", 3, "ACTIVE"),
 	)
-	if err := runUntilCommits(t, consumer, reader, 3); err != context.Canceled {
+	if err := runUntilCommits(t, consumer, reader, 3); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run = %v, want context.Canceled", err)
 	}
 	want := []string{"fetch:0", "commit:0", "fetch:1", "commit:1", "fetch:2", "commit:2"}
@@ -33,7 +34,7 @@ func TestRun_ATransientFailureRetriesTheSameMessageThenCommits(t *testing.T) {
 	c.demand.fail = 2
 	consumer := c.demandConsumer("")
 	reader := newFakeReader(demandMsg("e1", "ord-1", 1, "SITE-1", "SKU-1", 12, "ACTIVE"))
-	if err := runUntilCommits(t, consumer, reader, 1); err != context.Canceled {
+	if err := runUntilCommits(t, consumer, reader, 1); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run = %v", err)
 	}
 	if got, want := reader.log(), []string{"fetch:0", "commit:0"}; !reflect.DeepEqual(got, want) {
@@ -54,7 +55,7 @@ func TestRun_AMessageThatNeverSucceedsIsDeadLetteredAndTheLoopMovesOn(t *testing
 	dlq := &fakeDLQWriter{}
 	consumer.DLQ = dlq
 	reader := newFakeReader(demandMsg("e1", "ord-1", 1, "SITE-1", "SKU-1", 12, "ACTIVE"))
-	if err := runUntilCommits(t, consumer, reader, 1); err != context.Canceled {
+	if err := runUntilCommits(t, consumer, reader, 1); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run = %v", err)
 	}
 	published := dlq.published()

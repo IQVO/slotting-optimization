@@ -53,9 +53,9 @@ func codesOf(ss []planning.Slot) []slotplan.SlotCode {
 func catalogueJoin(t *testing.T, c ports.SlotCatalogue) {
 	ctx := context.Background()
 	must(t, c.SaveZone(ctx, zone("Z1", "WH1", "FWD", planning.Frozen, true)))
-	must(t, c.SaveSlot(ctx, slot("L-1", "Z1", repository.RoleStorage, 40, 0.5)))
+	must(t, c.SaveSlot(ctx, slot(locL1, "Z1", repository.RoleStorage, 40, 0.5)))
 	got := forward(t, c, "WH1", "FWD")
-	want := planning.Slot{Code: "L-1", ZoneCode: "FWD", TemperatureClass: planning.Frozen, Hazmat: true, MaxWeightKg: 40, MaxVolumeM3: 0.5}
+	want := planning.Slot{Code: locL1, ZoneCode: "FWD", TemperatureClass: planning.Frozen, Hazmat: true, MaxWeightKg: 40, MaxVolumeM3: 0.5}
 	if len(got) != 1 || got[0] != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
@@ -66,16 +66,16 @@ func catalogueFilters(t *testing.T, c ports.SlotCatalogue) {
 	must(t, c.SaveZone(ctx, zone("Z-FWD", "WH1", "FWD", planning.Ambient, false)))
 	must(t, c.SaveZone(ctx, zone("Z-RSV", "WH1", "RSV", planning.Ambient, false)))
 	must(t, c.SaveSlot(ctx, slot("L-3", "Z-FWD", repository.RoleStorage, 1, 1)))
-	must(t, c.SaveSlot(ctx, slot("L-1", "Z-FWD", repository.RoleStorage, 1, 1)))
+	must(t, c.SaveSlot(ctx, slot(locL1, "Z-FWD", repository.RoleStorage, 1, 1)))
 	must(t, c.SaveSlot(ctx, slot("L-2", "Z-FWD", "Receiving", 1, 1)))
 	must(t, c.SaveSlot(ctx, slot("L-4", "Z-RSV", repository.RoleStorage, 1, 1)))
 	must(t, c.SaveSlot(ctx, slot("L-5", "Z-FWD", repository.RoleStorage, 1, 1)))
 	must(t, c.Decommission(ctx, "L-5"))
 
-	if got := codesOf(forward(t, c, "WH1", "FWD")); !equalSlice(got, []slotplan.SlotCode{"L-1", "L-3"}) {
+	if got := codesOf(forward(t, c, "WH1", "FWD")); !equalSlice(got, []slotplan.SlotCode{locL1, "L-3"}) {
 		t.Fatalf("FWD storage slots, ordered by code = %v", got)
 	}
-	if got := codesOf(forward(t, c, "WH1", "FWD", "RSV")); !equalSlice(got, []slotplan.SlotCode{"L-1", "L-3", "L-4"}) {
+	if got := codesOf(forward(t, c, "WH1", "FWD", "RSV")); !equalSlice(got, []slotplan.SlotCode{locL1, "L-3", "L-4"}) {
 		t.Fatalf("both zone codes = %v", got)
 	}
 	if got := forward(t, c, "WH1"); len(got) != 0 {
@@ -87,7 +87,7 @@ func cataloguePerSite(t *testing.T, c ports.SlotCatalogue) {
 	ctx := context.Background()
 	must(t, c.SaveZone(ctx, zone("Z1", "WH1", "FWD", planning.Ambient, false)))
 	must(t, c.SaveZone(ctx, zone("Z2", "WH2", "FWD", planning.Ambient, false)))
-	must(t, c.SaveSlot(ctx, slot("L-1", "Z1", repository.RoleStorage, 1, 1)))
+	must(t, c.SaveSlot(ctx, slot(locL1, "Z1", repository.RoleStorage, 1, 1)))
 	must(t, c.SaveSlot(ctx, slot("L-2", "Z2", repository.RoleStorage, 1, 1)))
 	if got := codesOf(forward(t, c, "WH2", "FWD")); !equalSlice(got, []slotplan.SlotCode{"L-2"}) {
 		t.Fatalf("got %v", got)
@@ -96,12 +96,12 @@ func cataloguePerSite(t *testing.T, c ports.SlotCatalogue) {
 
 func catalogueSlotBeforeZone(t *testing.T, c ports.SlotCatalogue) {
 	ctx := context.Background()
-	must(t, c.SaveSlot(ctx, slot("L-1", "Z1", repository.RoleStorage, 1, 1)))
+	must(t, c.SaveSlot(ctx, slot(locL1, "Z1", repository.RoleStorage, 1, 1)))
 	if got := forward(t, c, "WH1", "FWD"); len(got) != 0 {
 		t.Fatalf("a slot whose zone is unknown is not plannable yet: %v", codesOf(got))
 	}
 	must(t, c.SaveZone(ctx, zone("Z1", "WH1", "FWD", planning.Ambient, false)))
-	if got := codesOf(forward(t, c, "WH1", "FWD")); !equalSlice(got, []slotplan.SlotCode{"L-1"}) {
+	if got := codesOf(forward(t, c, "WH1", "FWD")); !equalSlice(got, []slotplan.SlotCode{locL1}) {
 		t.Fatalf("convergent once the zone arrives: %v", got)
 	}
 }
@@ -109,9 +109,9 @@ func catalogueSlotBeforeZone(t *testing.T, c ports.SlotCatalogue) {
 func catalogueDecommission(t *testing.T, c ports.SlotCatalogue) {
 	ctx := context.Background()
 	must(t, c.SaveZone(ctx, zone("Z1", "WH1", "FWD", planning.Ambient, false)))
-	must(t, c.SaveSlot(ctx, slot("L-1", "Z1", repository.RoleStorage, 1, 1)))
-	must(t, c.Decommission(ctx, "L-1"))
-	must(t, c.SaveSlot(ctx, slot("L-1", "Z1", repository.RoleStorage, 9, 9)))
+	must(t, c.SaveSlot(ctx, slot(locL1, "Z1", repository.RoleStorage, 1, 1)))
+	must(t, c.Decommission(ctx, locL1))
+	must(t, c.SaveSlot(ctx, slot(locL1, "Z1", repository.RoleStorage, 9, 9)))
 	if got := forward(t, c, "WH1", "FWD"); len(got) != 0 {
 		t.Fatalf("a decommissioned slot must stay retired: %v", codesOf(got))
 	}
@@ -120,8 +120,8 @@ func catalogueDecommission(t *testing.T, c ports.SlotCatalogue) {
 func catalogueTombstone(t *testing.T, c ports.SlotCatalogue) {
 	ctx := context.Background()
 	must(t, c.SaveZone(ctx, zone("Z1", "WH1", "FWD", planning.Ambient, false)))
-	must(t, c.Decommission(ctx, "L-1"))
-	must(t, c.SaveSlot(ctx, slot("L-1", "Z1", repository.RoleStorage, 1, 1)))
+	must(t, c.Decommission(ctx, locL1))
+	must(t, c.SaveSlot(ctx, slot(locL1, "Z1", repository.RoleStorage, 1, 1)))
 	if got := forward(t, c, "WH1", "FWD"); len(got) != 0 {
 		t.Fatalf("got %v", codesOf(got))
 	}
@@ -131,8 +131,8 @@ func catalogueUpsert(t *testing.T, c ports.SlotCatalogue) {
 	ctx := context.Background()
 	must(t, c.SaveZone(ctx, zone("Z1", "WH1", "FWD", planning.Ambient, false)))
 	must(t, c.SaveZone(ctx, zone("Z2", "WH1", "FWD", planning.Chilled, false)))
-	must(t, c.SaveSlot(ctx, slot("L-1", "Z1", repository.RoleStorage, 1, 1)))
-	must(t, c.SaveSlot(ctx, slot("L-1", "Z2", repository.RoleStorage, 8, 0.8)))
+	must(t, c.SaveSlot(ctx, slot(locL1, "Z1", repository.RoleStorage, 1, 1)))
+	must(t, c.SaveSlot(ctx, slot(locL1, "Z2", repository.RoleStorage, 8, 0.8)))
 	got := forward(t, c, "WH1", "FWD")
 	if len(got) != 1 || got[0].MaxWeightKg != 8 || got[0].MaxVolumeM3 != 0.8 || got[0].TemperatureClass != planning.Chilled {
 		t.Fatalf("got %+v", got)

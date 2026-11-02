@@ -150,11 +150,11 @@ func replayCachedResponse(w http.ResponseWriter, r *http.Request, pool *pgxpool.
 	_, _ = w.Write(body)
 }
 
-var errMissingOutcome = errorString("idempotency row committed with no recorded outcome")
+var errMissingOutcome = idempotencyError("idempotency row committed with no recorded outcome")
 
-type errorString string
+type idempotencyError string
 
-func (e errorString) Error() string { return string(e) }
+func (e idempotencyError) Error() string { return string(e) }
 
 func copyStoredHeaders(dst http.Header, raw []byte) {
 	if len(raw) == 0 {
