@@ -10,7 +10,7 @@ this order — domain first, adapter last — never the reverse; writing the
 HTTP handler before the domain invariant it enforces produces handlers
 that validate nothing and use cases that get bypassed.
 
-This walks the path `POST /slot-plans/{planId}/approve` takes
+This walks the path `POST /slot-plans/{planId}/approvals` takes
 (`internal/domain/slotplan/plan.go` `Approve` →
 `internal/application/usecases/decide_plan.go` `ApprovePlan` →
 `internal/adapters/inbound/http/handlers.go` `handleApproveSlotPlan`) as the
@@ -85,7 +85,7 @@ needs the real `Idempotency-Key` store goes in
 
 Add the path to `apis/openapi.yaml` (request/response schemas and the RFC 7807
 problem response for each error case — copy the shape of the
-`/slot-plans/{planId}/approve` entry), then run
+`/slot-plans/{planId}/approvals` entry), then run
 `spectral lint apis/openapi.yaml --ruleset .spectral.yaml --fail-severity=warn`
 (the `api-lint` CI job). The contract is PINNED: change it only with the
 matching code in the same PR. Update `.claude/rules/rest-api.md` if the
