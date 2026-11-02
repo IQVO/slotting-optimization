@@ -85,3 +85,7 @@ Like the rest of the warehouse-systems fleet this repository is a personal
 study project (DDD, hexagonal architecture, AI-agent harness engineering). It
 is not production software.
 :::
+
+:::note[Disclaimer]
+This project is a domain-driven design study. It is not associated with, endorsed by or affiliated with any company, and it uses no company's code, data, logos or trademarks. All names, figures and examples are illustrative or synthetic.
+:::
