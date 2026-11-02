@@ -13,8 +13,8 @@ prefix `/api/slotting-optimization`.
 - `POST /slot-plans`                 -> `GenerateSlotPlan` (201 Draft; body `{siteId?, lookbackDays?}` optional; `Idempotency-Key`)
 - `GET  /slot-plans?limit=&cursor=&siteId=&state=` -> `ListSlotPlans` (newest first, cursor paging)
 - `GET  /slot-plans/{planId}`        -> `GetSlotPlan`
-- `POST /slot-plans/{planId}/approve` -> `ApprovePlan` (200; 409 `plan-not-draft`, 409 `approved-plan-conflict`)
-- `POST /slot-plans/{planId}/reject`  -> `RejectPlan` (200; body `{reason?}`; 409 `plan-not-draft`)
+- `POST /slot-plans/{planId}/approvals` -> `ApprovePlan` (200; 409 `plan-not-draft`, 409 `approved-plan-conflict`)
+- `POST /slot-plans/{planId}/rejections` -> `RejectPlan` (200; body `{reason?}`; 409 `plan-not-draft`)
 - `GET  /forward-slots?siteId=`      -> `ListForwardSlots` (the current approved assignment map; empty without `planId` when none)
 - `GET  /sku-velocity?limit=&windowDays=&siteId=` -> `ListSkuVelocity`
 - `GET  /healthz`, `GET /readyz` (503 while draining), `GET /metrics`
@@ -32,7 +32,7 @@ prefix `/api/slotting-optimization`.
 - Request bodies reject unknown fields (`DisallowUnknownFields`).
 - `POST /slot-plans` creates a resource: the fleet `Idempotency-Key` middleware
   applies (missing key = 400 `idempotency-key-required`; same key + different
-  body = 422 `idempotency-key-reused`). Approve and reject are state transitions
+  body = 409 `idempotency-key-reused`; replays carry `Idempotency-Replayed: true`). Approve and reject are state transitions
   on an existing resource and do not take a key: repeating one answers 409
   `plan-not-draft`.
 - Lists use opaque cursors (`nextCursor` absent on the last page).
