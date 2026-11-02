@@ -48,6 +48,7 @@ import (
 
 	inboundhttp "github.com/claudioed/slotting-optimization/internal/adapters/inbound/http"
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/telemetry"
+	"github.com/claudioed/slotting-optimization/internal/config"
 )
 
 // shutdownTimeout bounds the HTTP server's graceful drain.
@@ -56,15 +57,6 @@ const shutdownTimeout = 10 * time.Second
 // workerDrainTimeout bounds how long shutdown waits for the consumers and the
 // relay to return after their context is cancelled.
 const workerDrainTimeout = 10 * time.Second
-
-// DefaultShutdownDrainDelay is how long shutdown waits, after flipping
-// /readyz to not-ready, before closing the listener (SHUTDOWN_DRAIN_DELAY
-// overrides it; "0" disables it).
-const DefaultShutdownDrainDelay = 5 * time.Second
-
-// defaultForwardZoneCode is the zone code of the forward pick slots when
-// FORWARD_ZONE_CODES is unset.
-const defaultForwardZoneCode = "FWD"
 
 func main() {
 	if err := run(context.Background()); err != nil {
@@ -76,16 +68,18 @@ func main() {
 // run boots the service and serves until SIGINT/SIGTERM or until ctx is
 // cancelled (the integration test stops the real entry point that way).
 func run(ctx context.Context) error {
-	logger := newLogger(getenv("LOG_LEVEL", "info"))
+	// The boot logger stays at info until the configured level is known.
+	srv := config.ServerFromEnv(newLogger("info"))
+	logger := newLogger(srv.LogLevel)
 	slog.SetDefault(logger)
 
 	// Misconfiguration is refused before anything is opened or bound (ADR 0011).
-	rt, err := loadRuntime(os.Getenv)
+	rt, err := config.LoadRuntime(os.Getenv, consumerEnvs())
 	if err != nil {
 		return err
 	}
 
-	otelShutdown, err := setupTelemetry(logger)
+	otelShutdown, err := setupTelemetry(logger, srv)
 	if err != nil {
 		return err
 	}
@@ -107,24 +101,24 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("plan decision metrics: %w", err)
 	}
-	readiness := newReadiness(ad.pool.Ping, rt.brokers)
-	server, err := buildServer(ad, configFromEnv(logger), readiness, metrics, planDecisionMetrics)
+	readiness := newReadiness(ad.pool.Ping, rt.Brokers)
+	server, err := buildServer(ad, config.FromEnv(logger), readiness, metrics, planDecisionMetrics)
 	if err != nil {
 		return err
 	}
 	httpServer := &http.Server{
-		Addr:              getenv("HTTP_ADDR", ":8080"),
+		Addr:              srv.HTTPAddr,
 		Handler:           inboundhttp.NewRouter(server),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	consumers, closeConsumers := startConsumers(ad, rt, logger)
-	relay, closeRelay, err := startOutboxRelay(ad.outboxStore, rt.brokers, logger)
+	relay, closeRelay, err := startOutboxRelay(ad.outboxStore, rt.Brokers, logger)
 	if err != nil {
 		closeConsumers()
 		return err
 	}
-	return serveUntilSignal(ctx, logger, httpServer, readiness, consumers, closeConsumers, relay, closeRelay)
+	return serveUntilSignal(ctx, logger, httpServer, readiness, consumers, closeConsumers, relay, closeRelay, srv.ShutdownDrainDelay)
 }
 
 // serveUntilSignal runs httpServer until SIGINT/SIGTERM (or a listen error),
@@ -133,7 +127,7 @@ func run(ctx context.Context) error {
 // await the relay LAST so nothing committed above is stranded; the caller's
 // deferred pool.Close runs after all of it.
 func serveUntilSignal(ctx context.Context, logger *slog.Logger, httpServer *http.Server, readiness *inboundhttp.Readiness,
-	consumers []*worker, closeConsumers func(), relay *worker, closeRelay func(),
+	consumers []*worker, closeConsumers func(), relay *worker, closeRelay func(), drainDelay time.Duration,
 ) error {
 	errCh := make(chan error, 1)
 	go func() {
@@ -163,9 +157,9 @@ func serveUntilSignal(ctx context.Context, logger *slog.Logger, httpServer *http
 	}
 
 	readiness.SetNotReady()
-	if delay := shutdownDrainDelay(logger); delay > 0 {
-		logger.Info("shutdown: readiness flipped to not-ready; waiting for traffic to drain", "drain_delay", delay.String())
-		time.Sleep(delay)
+	if drainDelay > 0 {
+		logger.Info("shutdown: readiness flipped to not-ready; waiting for traffic to drain", "drain_delay", drainDelay.String())
+		time.Sleep(drainDelay)
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
@@ -209,27 +203,15 @@ func await(logger *slog.Logger, w *worker) {
 	}
 }
 
-// shutdownDrainDelay reads SHUTDOWN_DRAIN_DELAY ("0" disables; unset,
-// negative or unparsable = the default).
-func shutdownDrainDelay(logger *slog.Logger) time.Duration {
-	raw := os.Getenv("SHUTDOWN_DRAIN_DELAY")
-	if raw == "" {
-		return DefaultShutdownDrainDelay
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil || d < 0 {
-		logger.Warn("ignoring invalid SHUTDOWN_DRAIN_DELAY", "value", raw, "default", DefaultShutdownDrainDelay.String())
-		return DefaultShutdownDrainDelay
-	}
-	return d
-}
-
 // setupTelemetry installs the OTLP trace and metric providers (never blocks
 // on a missing Collector) and returns a bounded flush-on-exit closer.
-func setupTelemetry(logger *slog.Logger) (func(), error) {
+func setupTelemetry(logger *slog.Logger, srv config.Server) (func(), error) {
 	otelCtx, otelCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	otelShutdown, err := telemetry.Setup(otelCtx, inboundhttp.DefaultServiceName, getenv("SERVICE_VERSION", "dev"),
-		getenv("OTEL_EXPORTER_OTLP_ENDPOINT", telemetry.DefaultOTLPEndpoint))
+	endpoint := srv.OTLPEndpoint
+	if endpoint == "" {
+		endpoint = telemetry.DefaultOTLPEndpoint
+	}
+	otelShutdown, err := telemetry.Setup(otelCtx, inboundhttp.DefaultServiceName, srv.ServiceVersion, endpoint)
 	otelCancel()
 	if err != nil {
 		return nil, fmt.Errorf("telemetry setup: %w", err)

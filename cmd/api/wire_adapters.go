@@ -18,6 +18,7 @@ import (
 	"github.com/claudioed/slotting-optimization/internal/application/ports"
 	"github.com/claudioed/slotting-optimization/internal/application/usecases"
 	"github.com/claudioed/slotting-optimization/internal/bootretry"
+	"github.com/claudioed/slotting-optimization/internal/config"
 	"github.com/claudioed/slotting-optimization/internal/domain/planning"
 )
 
@@ -65,7 +66,7 @@ func (a adapters) intake() usecases.Intake {
 	return usecases.Intake{UoW: a.uow, Processed: a.processed}
 }
 
-func buildServer(ad adapters, cfg config, readiness *inboundhttp.Readiness, metrics http.Handler, planMetrics ports.PlanDecisionMetrics) (*inboundhttp.Server, error) {
+func buildServer(ad adapters, cfg config.Config, readiness *inboundhttp.Readiness, metrics http.Handler, planMetrics ports.PlanDecisionMetrics) (*inboundhttp.Server, error) {
 	planner, err := planning.NewPlanner(planning.LexicalRanking{})
 	if err != nil {
 		return nil, fmt.Errorf("planner: %w", err)
@@ -74,15 +75,15 @@ func buildServer(ad adapters, cfg config, readiness *inboundhttp.Readiness, metr
 	return &inboundhttp.Server{
 		GeneratePlan: &usecases.GeneratePlan{
 			Writer: w, Demand: ad.demand, Profiles: ad.profiles, Catalogue: ad.catalogue, IDs: ids.UUID{}, Planner: planner,
-			DefaultSite: cfg.defaultSite, ForwardZoneCodes: cfg.forwardZoneCodes, DefaultLookback: cfg.lookbackDays,
-			CasePickZoneCodes: cfg.casePickZoneCodes, PackLevels: ad.packLevels,
+			DefaultSite: cfg.DefaultSite, ForwardZoneCodes: cfg.ForwardZoneCodes, DefaultLookback: cfg.LookbackDays,
+			CasePickZoneCodes: cfg.CasePickZoneCodes, PackLevels: ad.packLevels,
 		},
 		ApprovePlan:      &usecases.ApprovePlan{Writer: w, Metrics: planMetrics},
 		RejectPlan:       &usecases.RejectPlan{Writer: w, Metrics: planMetrics},
 		GetPlan:          &usecases.GetPlan{Plans: ad.plans, Executions: ad.executions},
 		ListPlans:        &usecases.ListPlans{Plans: ad.plans},
-		ListForwardSlots: &usecases.ListForwardSlots{Plans: ad.plans, DefaultSite: cfg.defaultSite},
-		ListSkuVelocity:  &usecases.ListSkuVelocity{Demand: ad.demand, Clock: clock.System{}, DefaultSite: cfg.defaultSite},
+		ListForwardSlots: &usecases.ListForwardSlots{Plans: ad.plans, DefaultSite: cfg.DefaultSite},
+		ListSkuVelocity:  &usecases.ListSkuVelocity{Demand: ad.demand, Clock: clock.System{}, DefaultSite: cfg.DefaultSite},
 		Idempotency:      ad.idempotency,
 		Readiness:        readiness,
 		Metrics:          metrics,
@@ -94,13 +95,13 @@ func buildServer(ad adapters, cfg config, readiness *inboundhttp.Readiness, metr
 func buildAdapters(ctx context.Context, databaseURL string, logger *slog.Logger) (adapters, func(), error) {
 	noop := func() {}
 	if databaseURL == "" {
-		return adapters{}, noop, errMissingDatabaseURL
+		return adapters{}, noop, config.ErrMissingDatabaseURL
 	}
 
 	// The first outbound dial of an injected pod can be reset (Istio native
 	// sidecars), so migrations and the first ping retry with backoff; on
 	// exhaustion the LAST error is returned and the process refuses to boot.
-	migrationsURL := migrationsDatabaseURL(databaseURL)
+	migrationsURL := config.MigrationsDatabaseURL(databaseURL)
 	if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
 		return postgres.RunMigrations(migrationsURL)
 	}); err != nil {
@@ -130,11 +131,4 @@ func postgresAdapters(pool *pgxpool.Pool) adapters {
 		idempotency: inboundhttp.RequireIdempotencyKey(pool, pgtx.With),
 		pool:        pool,
 	}
-}
-
-// migrationsDatabaseURL returns MIGRATIONS_DATABASE_URL when set (a direct
-// DSN: golang-migrate's advisory lock does not survive PgBouncer transaction
-// pooling), else databaseURL.
-func migrationsDatabaseURL(databaseURL string) string {
-	return getenv("MIGRATIONS_DATABASE_URL", databaseURL)
 }

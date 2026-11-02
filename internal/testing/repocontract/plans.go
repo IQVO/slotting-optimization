@@ -19,6 +19,17 @@ import (
 // T0 is the reference instant of the contract fixtures.
 var T0 = time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
 
+// Shared fixture identifiers (goconst): one name each across the contract.
+const (
+	sku1    = "SKU-1"
+	sku2    = "SKU-2"
+	skuCase = "SKU-CASE"
+	skuEach = "SKU-EACH"
+	site1   = "SITE-1"
+	locL1   = "L-1"
+	hazmat  = "Hazmat"
+)
+
 // Draft builds a Draft plan of site generated at generatedAt with one
 // assignment (SKU-1 in slot "slot-<id>"), one Assign move and one
 // unassigned SKU.
@@ -33,7 +44,7 @@ func Draft(t *testing.T, id, site string, generatedAt time.Time) *slotplan.SlotP
 		ID: slotplan.PlanID(id), Site: slotplan.SiteID(site), Window: w, Policy: slotplan.PolicyABCVelocityV1,
 		Assignments: []slotplan.Assignment{{SKU: "SKU-1", Slot: slot, Class: slotplan.ClassA, Picks: 3, Units: 9}},
 		Moves:       []slotplan.Move{{SKU: "SKU-1", To: slot, Kind: slotplan.MoveAssign}},
-		Unassigned:  []slotplan.Unassigned{{SKU: "SKU-2", Reason: slotplan.ReasonNoPhysicalProfile}},
+		Unassigned:  []slotplan.Unassigned{{SKU: sku2, Reason: slotplan.ReasonNoPhysicalProfile}},
 	}, generatedAt)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +90,7 @@ func SlotPlanRepository(t *testing.T, newRepo func(t *testing.T) ports.SlotPlanR
 
 func roundTrip(t *testing.T, r ports.SlotPlanRepository) {
 	ctx := context.Background()
-	p := Draft(t, "plan-a", "SITE-1", T0)
+	p := Draft(t, "plan-a", site1, T0)
 	must(t, r.Save(ctx, p, 0))
 	got, err := r.Get(ctx, "plan-a")
 	must(t, err)
@@ -106,14 +117,14 @@ func pickUnitRoundTrip(t *testing.T, r ports.SlotPlanRepository) {
 	w, err := slotplan.NewWindow(T0.Add(-24*time.Hour), T0)
 	must(t, err)
 	p, _, err := slotplan.Generate(slotplan.NewPlan{
-		ID: "plan-case", Site: "SITE-1", Window: w, Policy: slotplan.PolicyABCVelocityV1,
+		ID: "plan-case", Site: site1, Window: w, Policy: slotplan.PolicyABCVelocityV1,
 		Assignments: []slotplan.Assignment{
-			{SKU: "SKU-CASE", Slot: "CASE-01", Class: slotplan.ClassA, Picks: 5, Units: 120, PickUnit: slotplan.PickCase, CasesCapacity: 4},
-			{SKU: "SKU-EACH", Slot: "FWD-01", Class: slotplan.ClassB, Picks: 2, Units: 3},
+			{SKU: skuCase, Slot: "CASE-01", Class: slotplan.ClassA, Picks: 5, Units: 120, PickUnit: slotplan.PickCase, CasesCapacity: 4},
+			{SKU: skuEach, Slot: "FWD-01", Class: slotplan.ClassB, Picks: 2, Units: 3},
 		},
 		Moves: []slotplan.Move{
-			{SKU: "SKU-CASE", To: "CASE-01", Kind: slotplan.MoveAssign},
-			{SKU: "SKU-EACH", To: "FWD-01", Kind: slotplan.MoveAssign},
+			{SKU: skuCase, To: "CASE-01", Kind: slotplan.MoveAssign},
+			{SKU: skuEach, To: "FWD-01", Kind: slotplan.MoveAssign},
 		},
 	}, T0)
 	must(t, err)
@@ -124,10 +135,10 @@ func pickUnitRoundTrip(t *testing.T, r ports.SlotPlanRepository) {
 	if len(as) != 2 {
 		t.Fatalf("assignments = %+v", as)
 	}
-	if c := as[0]; c.SKU != "SKU-CASE" || c.PickUnit != slotplan.PickCase || c.CasesCapacity != 4 {
+	if c := as[0]; c.SKU != skuCase || c.PickUnit != slotplan.PickCase || c.CasesCapacity != 4 {
 		t.Fatalf("case assignment = %+v", c)
 	}
-	if e := as[1]; e.SKU != "SKU-EACH" || e.PickUnit != slotplan.PickEach || e.CasesCapacity != 0 {
+	if e := as[1]; e.SKU != skuEach || e.PickUnit != slotplan.PickEach || e.CasesCapacity != 0 {
 		t.Fatalf("each assignment = %+v", e)
 	}
 	if !sameSnapshot(p.Snapshot(), got.Snapshot()) {
@@ -160,19 +171,19 @@ func equalSlice[T comparable](a, b []T) bool {
 func unknownPlan(t *testing.T, r ports.SlotPlanRepository) {
 	_, err := r.Get(context.Background(), "plan-nope")
 	wantErr(t, err, repository.ErrPlanNotFound)
-	_, err = r.Current(context.Background(), "SITE-1")
+	_, err = r.Current(context.Background(), site1)
 	wantErr(t, err, repository.ErrPlanNotFound)
 }
 
 func duplicateInsert(t *testing.T, r ports.SlotPlanRepository) {
 	ctx := context.Background()
-	must(t, r.Save(ctx, Draft(t, "plan-a", "SITE-1", T0), 0))
-	wantErr(t, r.Save(ctx, Draft(t, "plan-a", "SITE-1", T0), 0), repository.ErrConcurrentModification)
+	must(t, r.Save(ctx, Draft(t, "plan-a", site1, T0), 0))
+	wantErr(t, r.Save(ctx, Draft(t, "plan-a", site1, T0), 0), repository.ErrConcurrentModification)
 }
 
 func versionGuard(t *testing.T, r ports.SlotPlanRepository) {
 	ctx := context.Background()
-	must(t, r.Save(ctx, Draft(t, "plan-a", "SITE-1", T0), 0))
+	must(t, r.Save(ctx, Draft(t, "plan-a", site1, T0), 0))
 	first, err := r.Get(ctx, "plan-a")
 	must(t, err)
 	second, err := r.Get(ctx, "plan-a")
@@ -190,7 +201,7 @@ func versionGuard(t *testing.T, r ports.SlotPlanRepository) {
 	if s := stored.Snapshot(); s.RejectReason != "no" || s.Version != 2 {
 		t.Fatalf("the losing writer must change nothing: %+v", s)
 	}
-	ghost := Draft(t, "plan-ghost", "SITE-1", T0)
+	ghost := Draft(t, "plan-ghost", site1, T0)
 	wantErr(t, r.Save(ctx, ghost, 5), repository.ErrConcurrentModification)
 }
 
@@ -207,8 +218,8 @@ func approve(t *testing.T, r ports.SlotPlanRepository, id string) error {
 
 func oneApprovedPerSite(t *testing.T, r ports.SlotPlanRepository) {
 	ctx := context.Background()
-	must(t, r.Save(ctx, Draft(t, "plan-a", "SITE-1", T0), 0))
-	must(t, r.Save(ctx, Draft(t, "plan-b", "SITE-1", T0.Add(time.Minute)), 0))
+	must(t, r.Save(ctx, Draft(t, "plan-a", site1, T0), 0))
+	must(t, r.Save(ctx, Draft(t, "plan-b", site1, T0.Add(time.Minute)), 0))
 	must(t, r.Save(ctx, Draft(t, "plan-c", "SITE-2", T0), 0))
 
 	must(t, approve(t, r, "plan-a"))
@@ -224,8 +235,8 @@ func oneApprovedPerSite(t *testing.T, r ports.SlotPlanRepository) {
 
 func supersedeThenApprove(t *testing.T, r ports.SlotPlanRepository) {
 	ctx := context.Background()
-	must(t, r.Save(ctx, Draft(t, "plan-a", "SITE-1", T0), 0))
-	must(t, r.Save(ctx, Draft(t, "plan-b", "SITE-1", T0.Add(time.Minute)), 0))
+	must(t, r.Save(ctx, Draft(t, "plan-a", site1, T0), 0))
+	must(t, r.Save(ctx, Draft(t, "plan-b", site1, T0.Add(time.Minute)), 0))
 	must(t, approve(t, r, "plan-a"))
 
 	a, err := r.Get(ctx, "plan-a")
@@ -235,7 +246,7 @@ func supersedeThenApprove(t *testing.T, r ports.SlotPlanRepository) {
 	must(t, r.Save(ctx, a, loaded))
 	must(t, approve(t, r, "plan-b"))
 
-	cur, err := r.Current(ctx, "SITE-1")
+	cur, err := r.Current(ctx, site1)
 	must(t, err)
 	if cur.ID() != "plan-b" {
 		t.Fatalf("current = %s", cur.ID())
@@ -249,10 +260,10 @@ func supersedeThenApprove(t *testing.T, r ports.SlotPlanRepository) {
 
 func currentPerSite(t *testing.T, r ports.SlotPlanRepository) {
 	ctx := context.Background()
-	must(t, r.Save(ctx, Draft(t, "plan-a", "SITE-1", T0), 0))
+	must(t, r.Save(ctx, Draft(t, "plan-a", site1, T0), 0))
 	must(t, r.Save(ctx, Draft(t, "plan-c", "SITE-2", T0), 0))
 	must(t, approve(t, r, "plan-c"))
-	_, err := r.Current(ctx, "SITE-1")
+	_, err := r.Current(ctx, site1)
 	wantErr(t, err, repository.ErrPlanNotFound)
 	cur, err := r.Current(ctx, "SITE-2")
 	must(t, err)
@@ -271,11 +282,11 @@ func ids(ps []*slotplan.SlotPlan) []slotplan.PlanID {
 
 func listPaging(t *testing.T, r ports.SlotPlanRepository) {
 	ctx := context.Background()
-	must(t, r.Save(ctx, Draft(t, "plan-1", "SITE-1", T0), 0))
-	must(t, r.Save(ctx, Draft(t, "plan-2", "SITE-1", T0.Add(time.Hour)), 0))
-	must(t, r.Save(ctx, Draft(t, "plan-3", "SITE-1", T0.Add(2*time.Hour)), 0))
+	must(t, r.Save(ctx, Draft(t, "plan-1", site1, T0), 0))
+	must(t, r.Save(ctx, Draft(t, "plan-2", site1, T0.Add(time.Hour)), 0))
+	must(t, r.Save(ctx, Draft(t, "plan-3", site1, T0.Add(2*time.Hour)), 0))
 	// same instant as plan-3: the id breaks the tie, descending
-	must(t, r.Save(ctx, Draft(t, "plan-4", "SITE-1", T0.Add(2*time.Hour)), 0))
+	must(t, r.Save(ctx, Draft(t, "plan-4", site1, T0.Add(2*time.Hour)), 0))
 
 	page1, err := r.List(ctx, repository.PlanFilter{}, "", 2)
 	must(t, err)
@@ -296,11 +307,11 @@ func listPaging(t *testing.T, r ports.SlotPlanRepository) {
 
 func listFilters(t *testing.T, r ports.SlotPlanRepository) {
 	ctx := context.Background()
-	must(t, r.Save(ctx, Draft(t, "plan-1", "SITE-1", T0), 0))
+	must(t, r.Save(ctx, Draft(t, "plan-1", site1, T0), 0))
 	must(t, r.Save(ctx, Draft(t, "plan-2", "SITE-2", T0.Add(time.Hour)), 0))
 	must(t, approve(t, r, "plan-2"))
 
-	bySite, err := r.List(ctx, repository.PlanFilter{Site: "SITE-1"}, "", 10)
+	bySite, err := r.List(ctx, repository.PlanFilter{Site: site1}, "", 10)
 	must(t, err)
 	if got := ids(bySite); !equalSlice(got, []slotplan.PlanID{"plan-1"}) {
 		t.Fatalf("by site = %v", got)
@@ -310,7 +321,7 @@ func listFilters(t *testing.T, r ports.SlotPlanRepository) {
 	if got := ids(byState); !equalSlice(got, []slotplan.PlanID{"plan-2"}) {
 		t.Fatalf("by state = %v", got)
 	}
-	none, err := r.List(ctx, repository.PlanFilter{Site: "SITE-1", State: slotplan.StateApproved}, "", 10)
+	none, err := r.List(ctx, repository.PlanFilter{Site: site1, State: slotplan.StateApproved}, "", 10)
 	must(t, err)
 	if len(none) != 0 {
 		t.Fatalf("both filters = %v", ids(none))
@@ -319,7 +330,7 @@ func listFilters(t *testing.T, r ports.SlotPlanRepository) {
 
 func listUnknownCursor(t *testing.T, r ports.SlotPlanRepository) {
 	ctx := context.Background()
-	must(t, r.Save(ctx, Draft(t, "plan-1", "SITE-1", T0), 0))
+	must(t, r.Save(ctx, Draft(t, "plan-1", site1, T0), 0))
 	got, err := r.List(ctx, repository.PlanFilter{}, "plan-unknown", 10)
 	must(t, err)
 	if len(got) != 0 {

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
@@ -12,21 +11,8 @@ import (
 
 	outboundkafka "github.com/claudioed/slotting-optimization/internal/adapters/outbound/kafka"
 	outboxrelay "github.com/claudioed/slotting-optimization/internal/adapters/outbound/outbox"
+	"github.com/claudioed/slotting-optimization/internal/config"
 )
-
-// parsePublisherMode validates EVENT_PUBLISHER: unset or "kafka". The log
-// sink is gone (ADR 0011); the variable stays because the chart and
-// warehouse-infra set it.
-func parsePublisherMode(raw string) error {
-	switch raw {
-	case "", "kafka":
-		return nil
-	case "log":
-		return errors.New("EVENT_PUBLISHER=log is not supported: this context publishes to real Kafka")
-	default:
-		return fmt.Errorf("EVENT_PUBLISHER: unknown value %q (want kafka)", raw)
-	}
-}
 
 // parseRelayInterval reads OUTBOX_RELAY_INTERVAL (Go duration or plain
 // seconds), defaulting when unset, malformed or non-positive.
@@ -68,7 +54,7 @@ func outboxMaxAttempts(raw string, logger *slog.Logger) int {
 // Kafka is dialled lazily on the first send, never here.
 func startOutboxRelay(store outboxrelay.Store, brokers []string, logger *slog.Logger) (*worker, func(), error) {
 	if len(brokers) == 0 {
-		return nil, nil, errMissingBrokers
+		return nil, nil, config.ErrMissingBrokers
 	}
 	kafkaSink := outboundkafka.NewRelaySink(brokers)
 	closeSink := func() {

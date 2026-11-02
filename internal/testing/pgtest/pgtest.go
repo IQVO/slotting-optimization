@@ -32,22 +32,22 @@ const (
 var (
 	once      sync.Once
 	container *tcpostgres.PostgresContainer
-	startErr  error
+	errStart  error
 	seq       atomic.Int64
 )
 
 func start() {
 	ctx := context.Background()
-	container, startErr = tcpostgres.Run(ctx, "postgres:16-alpine",
+	container, errStart = tcpostgres.Run(ctx, "postgres:16-alpine",
 		tcpostgres.WithDatabase(adminDB),
 		tcpostgres.WithUsername(user),
 		tcpostgres.WithPassword(password),
 		testcontainers.WithWaitStrategy(wait.ForLog("database system is ready to accept connections").WithOccurrence(2).WithStartupTimeout(90*time.Second)),
 	)
-	if startErr != nil {
+	if errStart != nil {
 		return
 	}
-	startErr = buildTemplate(ctx)
+	errStart = buildTemplate(ctx)
 }
 
 // buildTemplate creates the template database and applies the migrations to
@@ -99,8 +99,8 @@ func adminExec(ctx context.Context, sql string) error {
 func URL(t *testing.T) string {
 	t.Helper()
 	once.Do(start)
-	if startErr != nil {
-		t.Fatalf("start postgres container: %v", startErr)
+	if errStart != nil {
+		t.Fatalf("start postgres container: %v", errStart)
 	}
 	ctx := context.Background()
 	name := fmt.Sprintf("t_%d", seq.Add(1))
