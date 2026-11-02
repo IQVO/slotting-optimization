@@ -13,9 +13,11 @@ import (
 )
 
 // GeneratePlan computes a Draft plan for a site from the local copies, with
-// the site's Approved plan as the "previous" map (stickiness), stores it and
-// enqueues SlotPlanGenerated, all in ONE unit of work. Nothing moves stock:
-// the plan is only a proposal until it is approved.
+// the site's Approved plan as the "previous" map (stickiness). Reading the
+// inputs and running the planner are pure computation and happen OUTSIDE the
+// write transaction; the unit of work then opens only to store the Draft and
+// enqueue SlotPlanGenerated in one commit. Nothing moves stock: the plan is
+// only a proposal until it is approved.
 type GeneratePlan struct {
 	Writer
 	Demand           ports.DemandLedger
@@ -45,7 +47,10 @@ type GenerateInput struct {
 	LookbackDays int
 }
 
-// Handle runs the use case and returns the stored Draft plan.
+// Handle runs the use case and returns the stored Draft plan. The reads, the
+// planner and the plan generation run before the transaction so the (only)
+// unit of work holds nothing but the write: save the Draft and enqueue its
+// outbox event, atomically.
 func (uc *GeneratePlan) Handle(ctx context.Context, in GenerateInput) (*slotplan.SlotPlan, error) {
 	site, err := resolveSite(in.SiteID, uc.DefaultSite)
 	if err != nil {
@@ -55,28 +60,28 @@ func (uc *GeneratePlan) Handle(ctx context.Context, in GenerateInput) (*slotplan
 	if err != nil {
 		return nil, err
 	}
+	now := uc.now()
+	window, err := slotplan.NewWindow(now.Add(-time.Duration(days)*24*time.Hour), now)
+	if err != nil {
+		return nil, err
+	}
+	input, err := uc.gather(ctx, site, window, now)
+	if err != nil {
+		return nil, err
+	}
+	res, err := uc.Planner.Plan(input)
+	if err != nil {
+		return nil, fmt.Errorf("compute plan: %w", err)
+	}
+	plan, events, err := slotplan.Generate(slotplan.NewPlan{
+		ID: uc.IDs.NewPlanID(), Site: site, Window: window, Policy: uc.Planner.Policy(),
+		Assignments: res.Assignments, Moves: res.Moves, Unassigned: res.Unassigned,
+	}, now)
+	if err != nil {
+		return nil, err
+	}
 	var out *slotplan.SlotPlan
 	err = uc.UoW.Do(ctx, func(ctx context.Context) error {
-		now := uc.now()
-		window, err := slotplan.NewWindow(now.Add(-time.Duration(days)*24*time.Hour), now)
-		if err != nil {
-			return err
-		}
-		input, err := uc.gather(ctx, site, window, now)
-		if err != nil {
-			return err
-		}
-		res, err := uc.Planner.Plan(input)
-		if err != nil {
-			return fmt.Errorf("compute plan: %w", err)
-		}
-		plan, events, err := slotplan.Generate(slotplan.NewPlan{
-			ID: uc.IDs.NewPlanID(), Site: site, Window: window, Policy: uc.Planner.Policy(),
-			Assignments: res.Assignments, Moves: res.Moves, Unassigned: res.Unassigned,
-		}, now)
-		if err != nil {
-			return err
-		}
 		if err := uc.persist(ctx, plan, 0, events); err != nil {
 			return err
 		}

@@ -37,13 +37,13 @@ func MoveExecutionLedger(t *testing.T, newStores func(t *testing.T) ExecutionSto
 
 func savePlan(t *testing.T, s ExecutionStores, id string) slotplan.PlanID {
 	t.Helper()
-	must(t, s.Plans.Save(context.Background(), Draft(t, id, "SITE-1", T0), 0))
+	must(t, s.Plans.Save(context.Background(), Draft(t, id, site1, T0), 0))
 	return slotplan.PlanID(id)
 }
 
-func execution(relocation string, seq int, qty int64, at time.Time) slotplan.MoveExecution {
+func execution(relocation string, qty int64, at time.Time) slotplan.MoveExecution {
 	return slotplan.MoveExecution{
-		Seq: seq, RelocationID: relocation, SKU: "SKU-1", FromBin: "RES-1", ToBin: "FWD-1", Quantity: qty, At: at,
+		Seq: 0, RelocationID: relocation, SKU: sku1, FromBin: "RES-1", ToBin: "FWD-1", Quantity: qty, At: at,
 	}
 }
 
@@ -65,11 +65,11 @@ func forPlan(t *testing.T, s ExecutionStores, plan slotplan.PlanID) []slotplan.M
 func executionRoundTrip(t *testing.T, s ExecutionStores) {
 	plan := savePlan(t, s, "plan-x")
 	at := T0.Add(90 * time.Minute).In(time.FixedZone("BRT", -3*3600))
-	if !record(t, s, plan, execution("rel-1", 0, 7, at)) {
+	if !record(t, s, plan, execution("rel-1", 7, at)) {
 		t.Fatal("the first record of a relocation must report recorded")
 	}
 	got := forPlan(t, s, plan)
-	want := execution("rel-1", 0, 7, T0.Add(90*time.Minute))
+	want := execution("rel-1", 7, T0.Add(90*time.Minute))
 	if len(got) != 1 || got[0].Seq != want.Seq || got[0].RelocationID != want.RelocationID || got[0].SKU != want.SKU ||
 		got[0].FromBin != want.FromBin || got[0].ToBin != want.ToBin || got[0].Quantity != want.Quantity || !got[0].At.Equal(want.At) {
 		t.Fatalf("ForPlan = %+v, want [%+v]", got, want)
@@ -81,8 +81,8 @@ func executionRoundTrip(t *testing.T, s ExecutionStores) {
 
 func executionOncePerRelocation(t *testing.T, s ExecutionStores) {
 	plan := savePlan(t, s, "plan-x")
-	record(t, s, plan, execution("rel-1", 0, 7, T0))
-	if record(t, s, plan, execution("rel-1", 0, 9, T0.Add(time.Hour))) {
+	record(t, s, plan, execution("rel-1", 7, T0))
+	if record(t, s, plan, execution("rel-1", 9, T0.Add(time.Hour))) {
 		t.Fatal("a second record of the same relocation id must report not recorded")
 	}
 	got := forPlan(t, s, plan)
@@ -93,8 +93,8 @@ func executionOncePerRelocation(t *testing.T, s ExecutionStores) {
 
 func executionsPerPlan(t *testing.T, s ExecutionStores) {
 	a, b := savePlan(t, s, "plan-a"), savePlan(t, s, "plan-b")
-	record(t, s, a, execution("rel-1", 0, 1, T0))
-	record(t, s, b, execution("rel-2", 0, 2, T0))
+	record(t, s, a, execution("rel-1", 1, T0))
+	record(t, s, b, execution("rel-2", 2, T0))
 	if got := forPlan(t, s, a); len(got) != 1 || got[0].RelocationID != "rel-1" {
 		t.Fatalf("plan-a = %+v", got)
 	}
@@ -112,8 +112,8 @@ func executionsEmpty(t *testing.T, s ExecutionStores) {
 
 func executionsOfOneMove(t *testing.T, s ExecutionStores) {
 	plan := savePlan(t, s, "plan-x")
-	record(t, s, plan, execution("rel-1", 0, 3, T0))
-	record(t, s, plan, execution("rel-2", 0, 4, T0.Add(time.Minute)))
+	record(t, s, plan, execution("rel-1", 3, T0))
+	record(t, s, plan, execution("rel-2", 4, T0.Add(time.Minute)))
 	got := forPlan(t, s, plan)
 	if len(got) != 2 || got[0].Quantity+got[1].Quantity != 7 {
 		t.Fatalf("ForPlan = %+v: both relocations of the move are kept", got)
