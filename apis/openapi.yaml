@@ -100,8 +100,8 @@ paths:
                 generatedAt: "2026-10-08T12:00:00Z"
                 version: 1
                 assignments:
-                  - { sku: SKU-1, slot: WH1-FWD-A01-01-01-A, abcClass: A, picks: 80, units: 160 }
-                  - { sku: SKU-2, slot: WH1-FWD-A01-01-02-A, abcClass: B, picks: 20, units: 40 }
+                  - { sku: SKU-1, slot: WH1-FWD-A01-01-01-A, abcClass: A, picks: 80, units: 160, pickUnit: EACH }
+                  - { sku: SKU-2, slot: WH1-FWD-A01-01-02-A, abcClass: B, picks: 20, units: 40, pickUnit: EACH }
                 moves:
                   - { sku: SKU-1, toSlot: WH1-FWD-A01-01-01-A, kind: Assign }
                   - { sku: SKU-2, fromSlot: WH1-FWD-A02-03-01-A, toSlot: WH1-FWD-A01-01-02-A, kind: Relocate }
@@ -291,8 +291,8 @@ paths:
                 planId: plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07
                 approvedAt: "2026-10-08T12:30:00Z"
                 assignments:
-                  - { sku: SKU-1, slot: WH1-FWD-A01-01-01-A, abcClass: A }
-                  - { sku: SKU-2, slot: WH1-FWD-A01-01-02-A, abcClass: B }
+                  - { sku: SKU-1, slot: WH1-FWD-A01-01-01-A, abcClass: A, pickUnit: EACH }
+                  - { sku: SKU-2, slot: WH1-FWD-A01-01-02-A, abcClass: B, pickUnit: EACH }
         "400":
           $ref: "#/components/responses/BadRequest"
         "500":
@@ -462,7 +462,7 @@ paths:
                     approval_latency: { count: 0, p50_seconds: null, p95_seconds: null }
                     supersessions: 0
         "400":
-          description: "`from` / `to` are not RFC 3339, empty or inverted, span more than 366 days, or `granularity` is not `day`."
+          description: "`from` / `to` are not RFC 3339, empty or inverted or span more than 366 days (`invalid-report-range`), or `granularity` is not `day` (`invalid-report-granularity`)."
           content:
             application/problem+json:
               schema:
@@ -535,16 +535,18 @@ components:
     IdempotencyKey:
       name: Idempotency-Key
       in: header
-      required: false
+      required: true
       description: |
         Caller-generated unique key (a UUID per logical submit) that makes a
-        retried request safe. Required whenever the service runs with Postgres,
-        that is in every deployment, and answered with 400
-        `idempotency-key-required` when absent; a replay with the same key and
-        the same body returns the original response, while the same key with a
-        different body is 409 `idempotency-key-reused`. The in-memory development
-        mode (no `DATABASE_URL`) does not enforce it, which is why the header is
-        not marked `required` here.
+        retried request safe: 1 to 128 printable ASCII characters. Every POST
+        needs it, in every deployment (the service always runs on Postgres; there
+        is no in-memory mode). An absent key is a 400 `idempotency-key-required`,
+        an invalid one (longer than 128 characters or
+        with a control or non-ASCII character) is a 400 `idempotency-key-invalid`.
+        A replay with the same key and the same method, path and body returns the
+        stored response (status, headers and body, including a stored 4xx) with
+        `Idempotency-Replayed: true`; the same key with a different request is
+        409 `idempotency-key-reused`. A 5xx outcome is never stored.
       schema:
         type: string
         minLength: 1
@@ -578,7 +580,7 @@ components:
 
   responses:
     BadRequest:
-      description: Malformed JSON body, an unknown field, a NUL character (U+0000) in the body or the query (Postgres text cannot hold it), or an invalid path or query parameter.
+      description: Malformed JSON body (also a body over 64 KiB, which is cut off and fails to parse), an unknown or trailing JSON field, a NUL character (U+0000) in the body or the query (Postgres text cannot hold it), an invalid path or query parameter, an unknown query parameter on a list or lookup endpoint, or a missing or invalid Idempotency-Key on a POST.
       content:
         application/problem+json:
           schema:
@@ -648,6 +650,22 @@ components:
                 status: 400
                 detail: "state must be one of Draft, Approved, Rejected, Superseded"
                 instance: /slot-plans
+            unknownQueryParameter:
+              summary: Query parameter the operation does not define
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/unknown-query-parameter
+                title: Unknown query parameter
+                status: 400
+                detail: 'unknown query parameter: "foo" is not a parameter of this operation'
+                instance: /slot-plans
+            idempotencyKeyInvalid:
+              summary: Idempotency-Key longer than 128 characters or not printable ASCII
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/idempotency-key-invalid
+                title: Idempotency-Key header is invalid
+                status: 400
+                detail: the Idempotency-Key must be 1 to 128 printable ASCII characters
+                instance: /slot-plans
             idempotencyKeyRequired:
               summary: Missing Idempotency-Key
               value:
@@ -669,7 +687,7 @@ components:
             detail: the Idempotency-Key was used with a different request
             instance: /slot-plans
     PlanNotFound:
-      description: No plan has this id.
+      description: No plan has this id (also a path containing a NUL, answered with the `resource-not-found` problem).
       content:
         application/problem+json:
           schema:
@@ -741,7 +759,7 @@ components:
             title: The report could not be served
             status: 500
             detail: the analytical database query failed
-            instance: /slot-plans
+            instance: /reports/slot-plan-funnel
 
   schemas:
     PlanState:
@@ -791,14 +809,14 @@ components:
 
     Assignment:
       type: object
-      required: [sku, slot, abcClass, picks, units]
+      required: [sku, slot, abcClass, picks, units, pickUnit]
       properties:
         sku: { type: string, example: SKU-1 }
         slot: { type: string, description: The facility-layout location code of the forward slot, example: WH1-FWD-A01-01-01-A }
         abcClass: { $ref: "#/components/schemas/AbcClass" }
         picks: { type: integer, format: int64, minimum: 1, description: ACTIVE demand lines in the window }
         units: { type: integer, format: int64, minimum: 0, description: Units on those lines }
-        pickUnit: { type: string, enum: [EACH, CASE], description: "The unit the SKU is picked in from this face. CASE only for a SKU with an active CASE pack level and a case-pick zone face; absent or EACH otherwise." }
+        pickUnit: { type: string, enum: [EACH, CASE], description: "The unit the SKU is picked in from this face. CASE only for a SKU with an active CASE pack level and a case-pick zone face; EACH otherwise. Always present." }
         casesCapacity: { type: integer, format: int64, minimum: 1, description: "Whole cases the CASE-pick face holds; omitted for EACH." }
     Move:
       type: object
@@ -901,12 +919,12 @@ components:
           description: Opaque cursor for the next page; absent on the last page.
     ForwardSlot:
       type: object
-      required: [sku, slot, abcClass]
+      required: [sku, slot, abcClass, pickUnit]
       properties:
         sku: { type: string }
         slot: { type: string }
         abcClass: { $ref: "#/components/schemas/AbcClass" }
-        pickUnit: { type: string, enum: [EACH, CASE], description: "The unit the SKU is picked in from this face. CASE only for a SKU with an active CASE pack level and a case-pick zone face; absent or EACH otherwise." }
+        pickUnit: { type: string, enum: [EACH, CASE], description: "The unit the SKU is picked in from this face. CASE only for a SKU with an active CASE pack level and a case-pick zone face; EACH otherwise. Always present." }
         casesCapacity: { type: integer, format: int64, minimum: 1, description: "Whole cases the CASE-pick face holds; omitted for EACH." }
     ForwardSlots:
       type: object
