@@ -72,7 +72,14 @@ fi
 # or by a shared internal package (ENVIRONMENT in telemetry,
 # CORS_ALLOWED_ORIGINS in the HTTP adapter).
 binary_env() {
-  grep -ohE '(Getenv|getenv|env)\("[A-Z][A-Z0-9_]*"' $(ls "$repo_dir"/cmd/"$1"/*.go | grep -v -E '_test\.go$|/telemetry\.go$') | sed -E 's/.*\("//; s/"$//' | sort -u
+  files=$(ls "$repo_dir"/cmd/"$1"/*.go | grep -v -E '_test\.go$|/telemetry\.go$')
+  # When the binary delegates env parsing to internal/config (2026-11 config
+  # extraction), that package's literals are still env the binary reads, so
+  # they join the scan.
+  if echo "$files" | xargs grep -lq 'internal/config' 2>/dev/null; then
+    files="$files $(ls "$repo_dir"/internal/config/*.go | grep -v -E '_test\.go$')"
+  fi
+  grep -ohE '(Getenv|getenv|env)\("[A-Z][A-Z0-9_]*"' $files | sed -E 's/.*\("//; s/"$//' | sort -u
 }
 assert_env_rendered() {
   local template="$1"; shift
