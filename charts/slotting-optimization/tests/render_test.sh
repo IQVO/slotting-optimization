@@ -5,7 +5,7 @@
 # permissive/off/log mode is ever rendered and the env the binaries read is the
 # env the chart renders).
 # Run: bash charts/slotting-optimization/tests/render_test.sh   (needs helm)
-set -euo pipefail
+set -euxo pipefail
 
 chart_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_dir="$(cd "$chart_dir/../.." && pwd)"
@@ -71,8 +71,18 @@ fi
 # extras are read through a variable (the *_MODE / *_CONSUMER_GROUP specs)
 # or by a shared internal package (ENVIRONMENT in telemetry,
 # CORS_ALLOWED_ORIGINS in the HTTP adapter).
+# Files whose env contract belongs to a binary: its own cmd sources, plus
+# internal/config when the binary delegates env parsing there (2026-11 config
+# extraction -- those literals are still env the binary reads).
+scan_files() {
+  files=$(ls "$repo_dir"/cmd/"$1"/*.go | grep -v -E '_test\.go$|/telemetry\.go$')
+  if echo "$files" | xargs grep -lq 'internal/config' 2>/dev/null; then
+    files="$files $(ls "$repo_dir"/internal/config/*.go | grep -v -E '_test\.go$')"
+  fi
+  echo "$files"
+}
 binary_env() {
-  grep -ohE '(Getenv|getenv|env)\("[A-Z][A-Z0-9_]*"' $(ls "$repo_dir"/cmd/"$1"/*.go | grep -v -E '_test\.go$|/telemetry\.go$') | sed -E 's/.*\("//; s/"$//' | sort -u
+  grep -ohE '(Getenv|getenv|env)\("[A-Z][A-Z0-9_]*"' $(scan_files "$1") | sed -E 's/.*\("//; s/"$//' | sort -u || true
 }
 assert_env_rendered() {
   local template="$1"; shift
@@ -98,9 +108,10 @@ reports_vars=($(binary_env slotting-reports))
 (( ${#a2a_vars[@]} >= 6 )) || fail "found only ${#a2a_vars[@]} env literals in cmd/a2a/main.go; the scan is looking in the wrong place"
 (( ${#projector_vars[@]} >= 4 )) || fail "found only ${#projector_vars[@]} env literals in cmd/slotting-projector/main.go; the scan is looking in the wrong place"
 (( ${#reports_vars[@]} >= 4 )) || fail "found only ${#reports_vars[@]} env literals in cmd/slotting-reports/main.go; the scan is looking in the wrong place"
-assert_env_rendered deployment.yaml "${api_vars[@]}" \
-  DEMAND_MODE DEMAND_CONSUMER_GROUP PRODUCT_MODE PRODUCT_CONSUMER_GROUP LAYOUT_MODE LAYOUT_CONSUMER_GROUP \
-  RELOCATION_MODE RELOCATION_CONSUMER_GROUP PACK_LEVEL_MODE PACK_LEVEL_CONSUMER_GROUP ENVIRONMENT CORS_ALLOWED_ORIGINS
+# The api reads config two ways: explicit env entries in its Deployment and
+# keys delivered through the envFrom ConfigMap (2026-11 config extraction:
+# the internal/config variables live only there), so either channel
+# satisfies the contract. Runs after full_configmap is rendered (below).
 assert_env_rendered mcp-deployment.yaml "${mcp_vars[@]}" ENVIRONMENT
 assert_env_rendered a2a-deployment.yaml "${a2a_vars[@]}" ENVIRONMENT
 # The analytics binaries (ADR 0006): ENVIRONMENT is read by the shared
@@ -116,6 +127,15 @@ api_known=" ${api_vars[*]} DEMAND_MODE DEMAND_CONSUMER_GROUP PRODUCT_MODE PRODUC
 while read -r key; do
   [[ "$api_known" == *" $key "* ]] || fail "ConfigMap key $key is read by no binary"
 done < <(awk '/^data:/ {d=1; next} d && /^  [A-Z]/ {sub(/:.*/, ""); sub(/^  /, ""); print}' <<<"$full_configmap")
+
+# api env contract: every scanned variable is rendered either as an explicit
+# env entry on the api Deployment or as a ConfigMap key (envFrom).
+for var in "${api_vars[@]}" DEMAND_MODE DEMAND_CONSUMER_GROUP PRODUCT_MODE PRODUCT_CONSUMER_GROUP \
+  LAYOUT_MODE LAYOUT_CONSUMER_GROUP RELOCATION_MODE RELOCATION_CONSUMER_GROUP \
+  PACK_LEVEL_MODE PACK_LEVEL_CONSUMER_GROUP ENVIRONMENT CORS_ALLOWED_ORIGINS; do
+  grep -q "name: $var\$" <<<"$api_deployment" || grep -q "^  $var:" <<<"$full_configmap" \
+    || fail "the api reads $var but neither its Deployment nor its ConfigMap renders it"
+done
 
 # --- ADR 0011: the mandatory configuration is rendered from values -----------------
 env_value() { # env_value <rendered> <NAME>
@@ -173,7 +193,7 @@ for bin in api mcp slotting-projector slotting-reports; do
     slotting-projector) rendered="$projector_dep" ;;
     *) rendered="$reports_dep" ;;
   esac
-  vars="$(grep -ho 'errors.New("[A-Z_]* is required' $(ls "$repo_dir"/cmd/"$bin"/*.go | grep -v -E '_test\.go$|/telemetry\.go$') | sed -E 's/errors.New\("//; s/ is required//' | sort -u)"
+  vars="$(grep -ho 'errors.New("[A-Z_]* is required' $(scan_files "$bin") | sed -E 's/errors.New\("//; s/ is required//' | sort -u || true)"
   [[ -n "$vars" ]] || fail "found no mandatory variables in cmd/$bin; the scan is looking in the wrong place"
   for var in $vars; do
     grep -q "name: $var\$" <<<"$rendered" || fail "the $bin Deployment does not render $var, which cmd/$bin requires"
