@@ -197,6 +197,15 @@ func (c *capture) Write(b []byte) (int, error) {
 // runFreshRequest handles a genuinely new key: capture the response, persist
 // the outcome in the same transaction, commit, and only then write to the
 // real client.
+//
+// The handler runs behind a SAVEPOINT. A mapped domain conflict -- a racing
+// approval losing on uq_slot_plans_one_approved_per_site, say -- fails a
+// statement on the server and leaves the transaction ABORTED even though the
+// handler answers a truthful 4xx. Releasing the savepoint exposes that: the
+// release fails, ROLLBACK TO SAVEPOINT discards the half-done work and heals
+// the transaction, and the 4xx outcome is recorded and committed like any
+// other. A 2xx answer behind a failed release is a lie (its writes are
+// gone), so it rolls everything back and fails the request instead.
 func runFreshRequest(ctx context.Context, w http.ResponseWriter, r *http.Request, tx pgx.Tx, bind TxBinder, key string, next http.Handler) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -204,6 +213,11 @@ func runFreshRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 			panic(p)
 		}
 	}()
+	if _, err := tx.Exec(ctx, "SAVEPOINT handler_run"); err != nil {
+		_ = tx.Rollback(ctx)
+		writeError(w, r, err)
+		return
+	}
 	rec := &capture{header: http.Header{}}
 	next.ServeHTTP(rec, r.WithContext(bind(ctx, tx)))
 	if rec.code == 0 {
@@ -215,6 +229,24 @@ func runFreshRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 		_ = tx.Rollback(ctx)
 		flush(w, rec)
 		return
+	}
+	if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT handler_run"); err != nil {
+		// A statement inside the handler failed on the server: the
+		// transaction is aborted. Rolling back to the savepoint discards the
+		// handler's partial writes -- the correct all-or-nothing semantics
+		// for an error answer -- and returns the transaction to health.
+		if _, rerr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT handler_run"); rerr != nil {
+			_ = tx.Rollback(ctx)
+			writeError(w, r, err)
+			return
+		}
+		if rec.code < http.StatusBadRequest {
+			// A success answer whose writes cannot be committed must neither
+			// be returned nor cached: fail the request so the key retries.
+			_ = tx.Rollback(ctx)
+			writeError(w, r, err)
+			return
+		}
 	}
 	headers, err := json.Marshal(rec.header)
 	if err != nil {
