@@ -10,7 +10,7 @@ info:
     window, class them A/B/C, and assign eligible forward slots with stickiness
     (a SKU that still fits its current slot keeps it).
 
-    A plan is created as a `Draft`. Only `approve` makes it the site's forward
+    A plan is created as a `Draft`. Only an approval (`POST /slot-plans/{planId}/approvals`) makes it the site's forward
     slot map (at most one `Approved` plan per site; approving a new one
     supersedes the previous one in the same transaction). Approval publishes
     `SlotPlanApproved` with the full assignment map and the moves. This service
@@ -80,6 +80,8 @@ paths:
         "201":
           description: The Draft plan was generated.
           headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
             Location:
               description: Path of the new plan.
               schema:
@@ -108,7 +110,7 @@ paths:
                   - { sku: SKU-4, reason: NoPhysicalProfile }
         "400":
           $ref: "#/components/responses/BadRequest"
-        "422":
+        "409":
           $ref: "#/components/responses/IdempotencyKeyReused"
         "500":
           $ref: "#/components/responses/InternalError"
@@ -187,12 +189,12 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
-  /slot-plans/{planId}/approve:
+  /slot-plans/{planId}/approvals:
     parameters:
       - $ref: "#/components/parameters/PlanId"
     post:
       operationId: approveSlotPlan
-      summary: Approve a Draft plan
+      summary: Approve a Draft plan (create an approval)
       description: |
         Moves a `Draft` plan to `Approved` and publishes `SlotPlanApproved` with
         the full assignment map and the moves. The site's previously Approved
@@ -200,9 +202,14 @@ paths:
         plan that is not a `Draft` is a 409 `plan-not-draft`; losing a race to
         another approval of the same site is a 409 `approved-plan-conflict`.
       tags: [Slot plans]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       responses:
         "200":
           description: The plan is now Approved.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
           content:
             application/json:
               schema:
@@ -216,17 +223,19 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
-  /slot-plans/{planId}/reject:
+  /slot-plans/{planId}/rejections:
     parameters:
       - $ref: "#/components/parameters/PlanId"
     post:
       operationId: rejectSlotPlan
-      summary: Reject a Draft plan
+      summary: Reject a Draft plan (create a rejection)
       description: |
         Moves a `Draft` plan to `Rejected` and publishes `SlotPlanRejected`. The
         optional `reason` is at most 500 characters. Rejecting a plan that is not
         a `Draft` is a 409 `plan-not-draft`.
       tags: [Slot plans]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: false
         content:
@@ -238,6 +247,9 @@ paths:
       responses:
         "200":
           description: The plan is now Rejected.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
           content:
             application/json:
               schema:
@@ -254,6 +266,7 @@ paths:
   /forward-slots:
     get:
       operationId: listForwardSlots
+      x-pagination-exempt: view  # one composite resource: the single current approved forward-slot map of a site, read whole and atomically (plan id, approval time and assignments belong together)
       summary: The current approved forward-slot map
       description: |
         The assignment map of the site's currently Approved plan, in SKU order.
@@ -292,19 +305,13 @@ paths:
       description: |
         The demand the planner works from: per SKU, the number of ACTIVE demand
         lines (`picks`) and their units over the last `windowDays` days, ordered
-        by picks, then units (descending) and SKU (ascending). Read from the
-        local demand copy (ADR 0003).
+        by picks, then units (descending) and SKU (ascending), a page at a time
+        (`limit` and the opaque `cursor` of the previous `nextCursor`; filters
+        are repeated on every page). Read from the local demand copy (ADR 0003).
       tags: [Velocity]
       parameters:
-        - name: limit
-          in: query
-          description: Number of SKUs to return, 1 to 500 (default 100).
-          schema:
-            type: integer
-            format: int32
-            minimum: 1
-            maximum: 500
-            default: 100
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
         - name: windowDays
           in: query
           description: Lookback window in days, 1 to 365 (default 28).
@@ -535,7 +542,7 @@ components:
         that is in every deployment, and answered with 400
         `idempotency-key-required` when absent; a replay with the same key and
         the same body returns the original response, while the same key with a
-        different body is 422 `idempotency-key-reused`. The in-memory development
+        different body is 409 `idempotency-key-reused`. The in-memory development
         mode (no `DATABASE_URL`) does not enforce it, which is why the header is
         not marked `required` here.
       schema:
@@ -561,6 +568,13 @@ components:
         type: string
         format: date-time
       example: "2026-10-07T00:00:00Z"
+
+  headers:
+    IdempotencyReplayed:
+      description: "`true` when the response is the stored answer of an earlier request with the same Idempotency-Key; absent on the first execution."
+      schema:
+        type: string
+        enum: ["true"]
 
   responses:
     BadRequest:
@@ -609,7 +623,7 @@ components:
                 title: Reject reason is too long
                 status: 400
                 detail: reason must be at most 500 characters
-                instance: /slot-plans/plan-1/reject
+                instance: /slot-plans/plan-1/rejections
             invalidCursor:
               summary: Invalid cursor
               value:
@@ -643,7 +657,7 @@ components:
                 detail: send an Idempotency-Key header with a unique value per logical request
                 instance: /slot-plans
     IdempotencyKeyReused:
-      description: The Idempotency-Key was already used with a different request body.
+      description: The Idempotency-Key was already used with a different request (method, path or body).
       content:
         application/problem+json:
           schema:
@@ -651,8 +665,8 @@ components:
           example:
             type: https://errors.slotting-optimization.warehouse-systems.dev/idempotency-key-reused
             title: Idempotency-Key was already used with a different request
-            status: 422
-            detail: the Idempotency-Key was used with a different request body
+            status: 409
+            detail: the Idempotency-Key was used with a different request
             instance: /slot-plans
     PlanNotFound:
       description: No plan has this id.
@@ -667,7 +681,7 @@ components:
             detail: slot plan not found
             instance: /slot-plans/plan-unknown
     PlanConflict:
-      description: The plan is not a Draft, or another request changed the plan or the site's approval first.
+      description: The plan is not a Draft, another request changed the plan or the site's approval first, or the Idempotency-Key was already used with a different request (`idempotency-key-reused`).
       content:
         application/problem+json:
           schema:
@@ -680,7 +694,15 @@ components:
                 title: Only a Draft plan can be approved or rejected
                 status: 409
                 detail: slot plan is not a Draft
-                instance: /slot-plans/plan-1/approve
+                instance: /slot-plans/plan-1/approvals
+            idempotencyKeyReused:
+              summary: The Idempotency-Key was used with a different request
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/idempotency-key-reused
+                title: Idempotency-Key was already used with a different request
+                status: 409
+                detail: the Idempotency-Key was used with a different request
+                instance: /slot-plans/plan-1/approvals
             approvedPlanConflict:
               summary: Another plan of the site was approved first
               value:
@@ -688,7 +710,7 @@ components:
                 title: Another plan of this site was approved at the same time
                 status: 409
                 detail: the site already has a newer Approved plan; re-fetch and retry
-                instance: /slot-plans/plan-1/approve
+                instance: /slot-plans/plan-1/approvals
             concurrentModification:
               summary: Concurrent write
               value:
@@ -696,7 +718,7 @@ components:
                 title: The resource was modified by another request; re-fetch the latest version and retry
                 status: 409
                 detail: concurrent modification
-                instance: /slot-plans/plan-1/approve
+                instance: /slot-plans/plan-1/approvals
     InternalError:
       description: Unexpected server error.
       content:
@@ -913,6 +935,9 @@ components:
         items:
           type: array
           items: { $ref: "#/components/schemas/SkuVelocity" }
+        nextCursor:
+          type: string
+          description: Opaque cursor for the next page; absent on the last page.
     ApprovalLatencyTiming:
       type: object
       description: The generated-to-approved durations of one day's approved plans (linear-interpolated percentiles).
