@@ -5,7 +5,7 @@
 # permissive/off/log mode is ever rendered and the env the binaries read is the
 # env the chart renders).
 # Run: bash charts/slotting-optimization/tests/render_test.sh   (needs helm)
-set -euo pipefail
+set -euxo pipefail
 
 chart_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo_dir="$(cd "$chart_dir/../.." && pwd)"
