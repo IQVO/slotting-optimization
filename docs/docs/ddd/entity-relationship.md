@@ -177,7 +177,7 @@ Source: `internal/adapters/outbound/postgres/migrations/0001_slotting_schema.up.
 | `slot_plan_move_executions` | the execution-progress read model (ADR 0010) | `RecordRelocation` (`INSERT ... ON CONFLICT (relocation_id) DO NOTHING`), in its unit of work | `GetPlan.View` (`GET /slot-plans/{planId}`, MCP `get_slot_plan`) through `slotplan.Progress` |
 | `outbox_events` | the transactional outbox | every write use case, in its unit of work | the relay (`FOR UPDATE SKIP LOCKED`) |
 | `processed_events` | consumer idempotency | every consumer use case, in its unit of work | the same claim |
-| `idempotency_keys` | REST idempotency of `POST /slot-plans` | the middleware, in the same transaction as the use case | the middleware on a repeated key |
+| `idempotency_keys` | REST idempotency of every POST | the middleware, in the same transaction as the use case | the middleware on a repeated key |
 
 ## Indexes and constraints that carry rules
 

@@ -26,8 +26,8 @@ Topic `warehouse.slotting-optimization.events`, `source`
 | Type | Raised by | `data` |
 | --- | --- | --- |
 | `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated` | `POST /slot-plans` | `plan_id`, `site_id`, `window_from`, `window_to`, `policy`, `assignment_count`, `move_count`, `unassigned_count` |
-| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved` | `POST /slot-plans/{planId}/approve` | `plan_id`, `site_id`, `approved_at`, `supersedes_plan_id?`, `assignments[{sku, slot}]`, `moves[{sku, from_slot?, to_slot?, kind}]` |
-| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanRejected` | `POST /slot-plans/{planId}/reject` | `plan_id`, `site_id`, `rejected_at`, `reason?` |
+| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved` | `POST /slot-plans/{planId}/approvals` | `plan_id`, `site_id`, `approved_at`, `supersedes_plan_id?`, `assignments[{sku, slot}]`, `moves[{sku, from_slot?, to_slot?, kind}]` |
+| `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanRejected` | `POST /slot-plans/{planId}/rejections` | `plan_id`, `site_id`, `rejected_at`, `reason?` |
 
 Superseding the previous Approved plan raises no event of its own: it is
 carried by `supersedes_plan_id` on the new `SlotPlanApproved`.

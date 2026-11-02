@@ -154,25 +154,25 @@ func TestApproveSlotPlan(t *testing.T) {
 	f := newFixture(t)
 	f.seed(t)
 	id := f.generate(t)
-	r := f.mustDo(t, http.MethodPost, "/slot-plans/"+id+"/approve", "", http.StatusOK)
+	r := f.mustDo(t, http.MethodPost, "/slot-plans/"+id+"/approvals", "", http.StatusOK)
 	if r.body["state"] != "Approved" || r.body["version"] != float64(2) || r.body["approvedAt"] != "2026-10-08T12:00:00Z" || r.body["supersedesPlanId"] != nil {
 		t.Fatalf("body = %s", r.raw)
 	}
 	if f.outbox.Unpublished() != 2 {
 		t.Fatalf("SlotPlanGenerated + SlotPlanApproved: %d", f.outbox.Unpublished())
 	}
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/approve", ""), http.StatusConflict, "plan-not-draft")
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/plan-unknown/approve", ""), http.StatusNotFound, "plan-not-found")
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/nope/approve", ""), http.StatusBadRequest, "invalid-plan-id")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/approvals", ""), http.StatusConflict, "plan-not-draft")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/plan-unknown/approvals", ""), http.StatusNotFound, "plan-not-found")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/nope/approvals", ""), http.StatusBadRequest, "invalid-plan-id")
 }
 
 func TestApproveSupersedesTheSitesPreviousPlan(t *testing.T) {
 	f := newFixture(t)
 	f.seed(t)
 	first := f.generate(t)
-	f.mustDo(t, http.MethodPost, "/slot-plans/"+first+"/approve", "", http.StatusOK)
+	f.mustDo(t, http.MethodPost, "/slot-plans/"+first+"/approvals", "", http.StatusOK)
 	second := f.generate(t)
-	r := f.mustDo(t, http.MethodPost, "/slot-plans/"+second+"/approve", "", http.StatusOK)
+	r := f.mustDo(t, http.MethodPost, "/slot-plans/"+second+"/approvals", "", http.StatusOK)
 	if r.body["supersedesPlanId"] != first {
 		t.Fatalf("body = %s", r.raw)
 	}
@@ -191,30 +191,30 @@ func TestApproveConflicts(t *testing.T) {
 	f.seed(t)
 	id := f.generate(t)
 	f.repo.saveErr = repository.ErrApprovedPlanConflict
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/approve", ""), http.StatusConflict, "approved-plan-conflict")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/approvals", ""), http.StatusConflict, "approved-plan-conflict")
 	f.repo.saveErr = repository.ErrConcurrentModification
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/approve", ""), http.StatusConflict, "concurrent-modification")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/approvals", ""), http.StatusConflict, "concurrent-modification")
 	f.repo.saveErr = errDB
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/approve", ""), http.StatusInternalServerError, "internal-error")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/approvals", ""), http.StatusInternalServerError, "internal-error")
 }
 
 func TestRejectSlotPlan(t *testing.T) {
 	f := newFixture(t)
 	f.seed(t)
 	id := f.generate(t)
-	r := f.mustDo(t, http.MethodPost, "/slot-plans/"+id+"/reject", `{"reason":"Too many relocations."}`, http.StatusOK)
+	r := f.mustDo(t, http.MethodPost, "/slot-plans/"+id+"/rejections", `{"reason":"Too many relocations."}`, http.StatusOK)
 	if r.body["state"] != "Rejected" || r.body["rejectReason"] != "Too many relocations." || r.body["rejectedAt"] != "2026-10-08T12:00:00Z" {
 		t.Fatalf("body = %s", r.raw)
 	}
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/reject", ""), http.StatusConflict, "plan-not-draft")
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/approve", ""), http.StatusConflict, "plan-not-draft")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/rejections", ""), http.StatusConflict, "plan-not-draft")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/approvals", ""), http.StatusConflict, "plan-not-draft")
 }
 
 func TestRejectWithoutABody(t *testing.T) {
 	f := newFixture(t)
 	f.seed(t)
 	id := f.generate(t)
-	r := f.mustDo(t, http.MethodPost, "/slot-plans/"+id+"/reject", "", http.StatusOK)
+	r := f.mustDo(t, http.MethodPost, "/slot-plans/"+id+"/rejections", "", http.StatusOK)
 	if r.body["state"] != "Rejected" || r.body["rejectReason"] != nil {
 		t.Fatalf("body = %s", r.raw)
 	}
@@ -224,10 +224,10 @@ func TestRejectErrors(t *testing.T) {
 	f := newFixture(t)
 	f.seed(t)
 	id := f.generate(t)
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/reject", `{"why":"x"}`), http.StatusBadRequest, "malformed-request")
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/reject", `{"reason":"`+strings.Repeat("x", 501)+`"}`), http.StatusBadRequest, "reject-reason-too-long")
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/nope/reject", ""), http.StatusBadRequest, "invalid-plan-id")
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/plan-unknown/reject", ""), http.StatusNotFound, "plan-not-found")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/rejections", `{"why":"x"}`), http.StatusBadRequest, "malformed-request")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/rejections", `{"reason":"`+strings.Repeat("x", 501)+`"}`), http.StatusBadRequest, "reject-reason-too-long")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/nope/rejections", ""), http.StatusBadRequest, "invalid-plan-id")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/plan-unknown/rejections", ""), http.StatusNotFound, "plan-not-found")
 	f.repo.saveErr = errDB
-	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/reject", ""), http.StatusInternalServerError, "internal-error")
+	expectProblem(t, f.do(t, http.MethodPost, "/slot-plans/"+id+"/rejections", ""), http.StatusInternalServerError, "internal-error")
 }

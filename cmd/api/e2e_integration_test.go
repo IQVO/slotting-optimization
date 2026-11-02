@@ -552,14 +552,14 @@ func phaseWorkflow(t *testing.T, s *service, w *world) {
 	if replay := s.call(http.MethodPost, "/slot-plans", `{}`, "gen-1", http.StatusCreated); replay != first {
 		t.Fatalf("idempotent replay = %s, want the first response %s", replay, first)
 	}
-	assertProblem(t, s.call(http.MethodPost, "/slot-plans", `{"lookbackDays":7}`, "gen-1", http.StatusUnprocessableEntity), "idempotency-key-reused")
+	assertProblem(t, s.call(http.MethodPost, "/slot-plans", `{"lookbackDays":7}`, "gen-1", http.StatusConflict), "idempotency-key-reused")
 	assertProblem(t, s.call(http.MethodPost, "/slot-plans", `{}`, "", http.StatusBadRequest), "idempotency-key-required")
 	mustDecode(t, first, &w.plan)
 	if w.plan.State != "Draft" || w.plan.SiteID != siteID || len(w.plan.Assignments) != 2 {
 		t.Fatalf("generated plan = %s, want a Draft of %s with 2 assignments", first, siteID)
 	}
-	s.call(http.MethodPost, "/slot-plans/"+w.plan.PlanID+"/approve", "", "", http.StatusOK)
-	assertProblem(t, s.call(http.MethodPost, "/slot-plans/"+w.plan.PlanID+"/approve", "", "", http.StatusConflict), "plan-not-draft")
+	s.call(http.MethodPost, "/slot-plans/"+w.plan.PlanID+"/approvals", "", "ap-1", http.StatusOK)
+	assertProblem(t, s.call(http.MethodPost, "/slot-plans/"+w.plan.PlanID+"/approvals", "", "ap-2", http.StatusConflict), "plan-not-draft")
 	fwd := s.call(http.MethodGet, "/forward-slots", "", "", http.StatusOK)
 	if !strings.Contains(fwd, w.plan.PlanID) {
 		t.Fatalf("GET /forward-slots = %s, want the approved plan %s", fwd, w.plan.PlanID)
@@ -583,7 +583,7 @@ func phaseNUL(t *testing.T, s *service, w *world) {
 	}
 	var second planView
 	mustDecode(t, s.call(http.MethodPost, "/slot-plans", `{}`, "nul-1", http.StatusCreated), &second)
-	s.call(http.MethodPost, "/slot-plans/"+second.PlanID+"/reject", `{"reason":"not needed"}`, "", http.StatusOK)
+	s.call(http.MethodPost, "/slot-plans/"+second.PlanID+"/rejections", `{"reason":"not needed"}`, "rj-1", http.StatusOK)
 	w.rejected = second.PlanID
 	w.expected = append(w.expected, expectedEvent{"SlotPlanGenerated", second.PlanID}, expectedEvent{"SlotPlanRejected", second.PlanID})
 }

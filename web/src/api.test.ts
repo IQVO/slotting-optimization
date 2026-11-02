@@ -22,8 +22,8 @@ describe("Idempotency-Key", () => {
 
   it("both decision POSTs carry a UUID Idempotency-Key", async () => {
     const api = mockApi({
-      [`POST /slot-plans/${PLAN_ID}/approve`]: json(draftPlan({ state: "Approved" })),
-      [`POST /slot-plans/${PLAN_ID}/reject`]: json(draftPlan({ state: "Rejected" })),
+      [`POST /slot-plans/${PLAN_ID}/approvals`]: json(draftPlan({ state: "Approved" })),
+      [`POST /slot-plans/${PLAN_ID}/rejections`]: json(draftPlan({ state: "Rejected" })),
     });
     await approveSlotPlan(PLAN_ID);
     await rejectSlotPlan(PLAN_ID);
@@ -38,8 +38,8 @@ describe("Idempotency-Key", () => {
 
   it("a body-less approve sends no content type; a reject reason goes in the body", async () => {
     const api = mockApi({
-      [`POST /slot-plans/${PLAN_ID}/approve`]: json(draftPlan({ state: "Approved" })),
-      [`POST /slot-plans/${PLAN_ID}/reject`]: json(draftPlan({ state: "Rejected" })),
+      [`POST /slot-plans/${PLAN_ID}/approvals`]: json(draftPlan({ state: "Approved" })),
+      [`POST /slot-plans/${PLAN_ID}/rejections`]: json(draftPlan({ state: "Rejected" })),
     });
     await approveSlotPlan(PLAN_ID);
     await rejectSlotPlan(PLAN_ID, "Too many relocations before peak season.");
@@ -51,14 +51,14 @@ describe("Idempotency-Key", () => {
   });
 
   it("a reject without a reason sends no body at all", async () => {
-    const api = mockApi({ [`POST /slot-plans/${PLAN_ID}/reject`]: json(draftPlan({ state: "Rejected" })) });
+    const api = mockApi({ [`POST /slot-plans/${PLAN_ID}/rejections`]: json(draftPlan({ state: "Rejected" })) });
     await rejectSlotPlan(PLAN_ID);
     expect(api.calls[0].body).toBeUndefined();
     expect(api.calls[0].headers["Content-Type"]).toBeUndefined();
   });
 
   it("two identical approve submits still use two different keys (one key per POST)", async () => {
-    const api = mockApi({ [`POST /slot-plans/${PLAN_ID}/approve`]: json(draftPlan({ state: "Approved" })) });
+    const api = mockApi({ [`POST /slot-plans/${PLAN_ID}/approvals`]: json(draftPlan({ state: "Approved" })) });
     await approveSlotPlan(PLAN_ID);
     await approveSlotPlan(PLAN_ID);
     const [a, b] = api.calls.map((c) => c.headers["Idempotency-Key"]);
@@ -134,7 +134,7 @@ describe("queries", () => {
 describe("errors", () => {
   it("turns a problem+json body into an ApiError with title, detail, status and slug", async () => {
     mockApi({
-      [`POST /slot-plans/${PLAN_ID}/approve`]: problem(
+      [`POST /slot-plans/${PLAN_ID}/approvals`]: problem(
         409,
         "plan-not-draft",
         "Only a Draft plan can be approved or rejected",

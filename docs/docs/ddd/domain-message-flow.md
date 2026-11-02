@@ -55,7 +55,7 @@ sequenceDiagram
     SO->>SO: Planner computes assignments, moves, unassigned
     SO-->>P: 201 Draft plan
     SO->>K: SlotPlanGenerated (event, via outbox relay)
-    P->>SO: POST /slot-plans/{planId}/approve (command ApproveSlotPlan)
+    P->>SO: POST /slot-plans/{planId}/approvals (command ApproveSlotPlan)
     SO->>SO: supersede the previous Approved plan, approve this one
     SO-->>P: 200 Approved plan
     SO->>K: SlotPlanApproved (event, full map, moves, supersedes_plan_id)
@@ -78,7 +78,7 @@ sequenceDiagram
     participant K as warehouse.slotting-optimization.events
     P->>SO: GET /slot-plans/{planId} (query)
     SO-->>P: the Draft with its unassigned SKUs and reasons
-    P->>SO: POST /slot-plans/{planId}/reject with reason (command RejectSlotPlan)
+    P->>SO: POST /slot-plans/{planId}/rejections with reason (command RejectSlotPlan)
     SO-->>P: 200 Rejected plan
     SO->>K: SlotPlanRejected (event)
 ```

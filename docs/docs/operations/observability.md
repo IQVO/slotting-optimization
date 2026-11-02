@@ -90,7 +90,7 @@ the database and the broker for those (queries below), the reports binary's
 
 | Span | Kind | Attributes | Source |
 | --- | --- | --- | --- |
-| one per HTTP request, named after the chi route pattern (`/slot-plans`, `/slot-plans/{planId}/approve`, `/forward-slots`, `/sku-velocity`, `/healthz`, ...) | server | `http.route`, `http.status_code` and the otelchi request attributes | `otelchi.Middleware(DefaultServiceName, otelchi.WithChiRoutes(r))` in `server.go` |
+| one per HTTP request, named after the chi route pattern (`/slot-plans`, `/slot-plans/{planId}/approvals`, `/forward-slots`, `/sku-velocity`, `/healthz`, ...) | server | `http.route`, `http.status_code` and the otelchi request attributes | `otelchi.Middleware(DefaultServiceName, otelchi.WithChiRoutes(r))` in `server.go` |
 
 There are no child spans: Postgres calls, the planner, the consumers and the
 relay are not instrumented. A consumed message or a relay pass never has a

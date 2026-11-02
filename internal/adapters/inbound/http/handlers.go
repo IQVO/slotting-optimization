@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/claudioed/slotting-optimization/internal/adapters/inbound/http/page"
 	"github.com/claudioed/slotting-optimization/internal/application/usecases"
 	"github.com/claudioed/slotting-optimization/internal/domain/slotplan"
 )
@@ -72,7 +73,7 @@ func (s *Server) handleGenerateSlotPlan(w http.ResponseWriter, r *http.Request) 
 
 // handleListSlotPlans backs GET /slot-plans.
 func (s *Server) handleListSlotPlans(w http.ResponseWriter, r *http.Request) {
-	limit, err := intParam(r, "limit", usecases.ErrInvalidLimit)
+	limit, err := pageParams(r, "siteId", "state")
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -103,7 +104,7 @@ func (s *Server) handleGetSlotPlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toSlotPlanView(v))
 }
 
-// handleApproveSlotPlan backs POST /slot-plans/{planId}/approve.
+// handleApproveSlotPlan backs POST /slot-plans/{planId}/approvals.
 func (s *Server) handleApproveSlotPlan(w http.ResponseWriter, r *http.Request) {
 	id, err := planIDParam(r)
 	if err != nil {
@@ -118,7 +119,7 @@ func (s *Server) handleApproveSlotPlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toSlotPlan(p))
 }
 
-// handleRejectSlotPlan backs POST /slot-plans/{planId}/reject.
+// handleRejectSlotPlan backs POST /slot-plans/{planId}/rejections.
 func (s *Server) handleRejectSlotPlan(w http.ResponseWriter, r *http.Request) {
 	id, err := planIDParam(r)
 	if err != nil {
@@ -140,6 +141,10 @@ func (s *Server) handleRejectSlotPlan(w http.ResponseWriter, r *http.Request) {
 
 // handleListForwardSlots backs GET /forward-slots.
 func (s *Server) handleListForwardSlots(w http.ResponseWriter, r *http.Request) {
+	if name := page.Unknown(r, "siteId"); name != "" {
+		writeError(w, r, errUnknownQuery(name))
+		return
+	}
 	m, err := s.ListForwardSlots.Handle(r.Context(), r.URL.Query().Get("siteId"))
 	if err != nil {
 		writeError(w, r, err)
@@ -150,7 +155,12 @@ func (s *Server) handleListForwardSlots(w http.ResponseWriter, r *http.Request) 
 
 // handleListSkuVelocity backs GET /sku-velocity.
 func (s *Server) handleListSkuVelocity(w http.ResponseWriter, r *http.Request) {
-	limit, err := intParam(r, "limit", usecases.ErrInvalidLimit)
+	limit, err := pageParams(r, "siteId", "windowDays")
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	after, err := velocityAfterParam(r)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -161,7 +171,7 @@ func (s *Server) handleListSkuVelocity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res, err := s.ListSkuVelocity.Handle(r.Context(), usecases.SkuVelocityQuery{
-		SiteID: r.URL.Query().Get("siteId"), Limit: limit, WindowDays: window,
+		SiteID: r.URL.Query().Get("siteId"), Limit: limit, WindowDays: window, After: after,
 	})
 	if err != nil {
 		writeError(w, r, err)

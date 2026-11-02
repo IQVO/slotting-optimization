@@ -86,11 +86,11 @@ func (x *wave2) registerRequests(sc *godog.ScenarioContext) {
 		return x.mustSend("/slot-plans", fmt.Sprintf(`{"lookbackDays":%d}`, days))
 	})
 	sc.Step(`^I reject plan number (\d+) without a reason$`, func(n int) error {
-		return x.send(http.MethodPost, "/slot-plans/"+planID(n)+"/reject", "")
+		return x.send(http.MethodPost, "/slot-plans/"+planID(n)+"/rejections", "")
 	})
 	sc.Step(`^I reject plan number (\d+) with a reason made of (\d+) times "([^"]*)"$`, func(n, times int, unit string) error {
 		b, _ := json.Marshal(map[string]string{"reason": strings.Repeat(unit, times)})
-		return x.send(http.MethodPost, "/slot-plans/"+planID(n)+"/reject", string(b))
+		return x.send(http.MethodPost, "/slot-plans/"+planID(n)+"/rejections", string(b))
 	})
 	sc.Step(`^I keep the generated plan$`, func() error { x.planRaw = append([]byte(nil), x.body...); return nil })
 	sc.Step(`^reading plan number (\d+) returns exactly the plan that was kept$`, x.readBackEqualsKept)
@@ -162,7 +162,7 @@ func (x *wave2) registerConsumerGivens(sc *godog.ScenarioContext) {
 		x.demandUnusable)
 	sc.Step(`^the delivery raised no error$`, func() error {
 		if x.lastErr != nil {
-			return fmt.Errorf("consumer returned %v, want nil", x.lastErr)
+			return fmt.Errorf("consumer returned %w, want nil", x.lastErr)
 		}
 		return nil
 	})
@@ -244,7 +244,7 @@ func (x *wave2) registerResponseChecks(sc *godog.ScenarioContext) {
 	})
 	sc.Step(`^the response field "([^"]*)" is present$`, func(path string) error {
 		if _, ok, err := x.field(path); err != nil || !ok {
-			return fmt.Errorf("field %q absent in %s (%v)", path, x.body, err)
+			return fmt.Errorf("field %q absent in %s (%w)", path, x.body, err)
 		}
 		return nil
 	})

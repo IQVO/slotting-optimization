@@ -312,7 +312,7 @@ There is **no sweeper** on `develop`. Three tables only grow:
 | Table | Grows with | Safe cleanup |
 | --- | --- | --- |
 | `outbox_events` | every plan decision | rows with `published_at IS NOT NULL` are never read again: `DELETE FROM outbox_events WHERE published_at < now() - interval '7 days';` |
-| `idempotency_keys` | every `POST /slot-plans` | `idx_idempotency_keys_created_at` exists for this: `DELETE FROM idempotency_keys WHERE created_at < now() - interval '1 day';` (a client retrying with an older key then gets a fresh plan) |
+| `idempotency_keys` | every POST | `idx_idempotency_keys_created_at` exists for this: `DELETE FROM idempotency_keys WHERE created_at < now() - interval '1 day';` (a client retrying with an older key then gets a fresh plan) |
 | `processed_events` | every consumed event | only delete claims older than the topic's retention; a younger claim protects against a redelivery |
 
 `slot_plans` keeps every plan by design (the audit trail of decisions). In

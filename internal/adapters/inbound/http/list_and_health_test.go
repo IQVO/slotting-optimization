@@ -44,7 +44,7 @@ func TestListSlotPlans_FiltersAndEmpty(t *testing.T) {
 	f.seed(t)
 	id := f.generate(t)
 	f.generate(t)
-	f.mustDo(t, http.MethodPost, "/slot-plans/"+id+"/approve", "", http.StatusOK)
+	f.mustDo(t, http.MethodPost, "/slot-plans/"+id+"/approvals", "", http.StatusOK)
 
 	approved := f.mustDo(t, http.MethodGet, "/slot-plans?state=Approved&siteId=SITE-1", "", http.StatusOK)
 	if items := list(t, approved.body["items"]); len(items) != 1 || items[0].(map[string]any)["planId"] != id || items[0].(map[string]any)["approvedAt"] == nil {
@@ -77,7 +77,7 @@ func TestForwardSlots(t *testing.T) {
 		t.Fatalf("a site without an approved plan = %s", empty.raw)
 	}
 	id := f.generate(t)
-	f.mustDo(t, http.MethodPost, "/slot-plans/"+id+"/approve", "", http.StatusOK)
+	f.mustDo(t, http.MethodPost, "/slot-plans/"+id+"/approvals", "", http.StatusOK)
 	r := f.mustDo(t, http.MethodGet, "/forward-slots?siteId=SITE-1", "", http.StatusOK)
 	as := list(t, r.body["assignments"])
 	if r.body["planId"] != id || r.body["approvedAt"] != "2026-10-08T12:00:00Z" || len(as) != 2 {

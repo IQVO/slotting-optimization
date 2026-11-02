@@ -54,7 +54,7 @@ relay sets the stored headers as Kafka message headers.
 ## Consequences
 
 - A consumer that extracts the headers parents its span on the producing
-  request's span: one trace from `POST /slot-plans/{planId}/approve` to the
+  request's span: one trace from `POST /slot-plans/{planId}/approvals` to the
   consumer's handling of `SlotPlanApproved`.
 - Each outbox row grows by one ~55-byte header (more with `tracestate` or
   baggage).

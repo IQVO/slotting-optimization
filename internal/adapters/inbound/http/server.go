@@ -34,8 +34,8 @@ type Server struct {
 	ListForwardSlots *usecases.ListForwardSlots
 	ListSkuVelocity  *usecases.ListSkuVelocity
 
-	// Idempotency wraps POST /slot-plans (the fleet Idempotency-Key
-	// middleware, built by cmd/ over the Postgres pool); the shipped binary
+	// Idempotency wraps every POST (the fleet Idempotency-Key middleware,
+	// built by cmd/ over the Postgres pool); the shipped binary
 	// always sets it, nil (handler unit tests) leaves the route unwrapped.
 	Idempotency func(http.Handler) http.Handler
 	// Readiness backs GET /readyz: the drain gate plus the Postgres and Kafka
@@ -72,16 +72,17 @@ func NewRouter(s *Server) http.Handler {
 		r.Method(http.MethodGet, "/metrics", s.Metrics)
 	}
 
-	generate := http.HandlerFunc(s.handleGenerateSlotPlan)
+	// Every POST sits behind the Idempotency-Key middleware (route-scoped);
+	// nil (handler unit tests) leaves the routes unwrapped.
+	keyed := r.With()
 	if s.Idempotency != nil {
-		r.With(s.Idempotency).Post("/slot-plans", generate)
-	} else {
-		r.Post("/slot-plans", generate)
+		keyed = r.With(s.Idempotency)
 	}
+	keyed.Post("/slot-plans", s.handleGenerateSlotPlan)
 	r.Get("/slot-plans", s.handleListSlotPlans)
 	r.Get("/slot-plans/{planId}", s.handleGetSlotPlan)
-	r.Post("/slot-plans/{planId}/approve", s.handleApproveSlotPlan)
-	r.Post("/slot-plans/{planId}/reject", s.handleRejectSlotPlan)
+	keyed.Post("/slot-plans/{planId}/approvals", s.handleApproveSlotPlan)
+	keyed.Post("/slot-plans/{planId}/rejections", s.handleRejectSlotPlan)
 	r.Get("/forward-slots", s.handleListForwardSlots)
 	r.Get("/sku-velocity", s.handleListSkuVelocity)
 	return r

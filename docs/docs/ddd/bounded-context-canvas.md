@@ -153,7 +153,7 @@ Source: `internal/adapters/inbound/kafka/{demand,product,layout,stock}_consumer.
 | product-master | `ProductClassified`, `ProductDimensionsDeclared`, `ProductMeasured` | events | `warehouse.product-master.events` |
 | facility-layout | `ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned` | events | `warehouse.facility.events` |
 | inventory-storage | `StockRelocated` | event | `warehouse.inventory.events` (execution progress, ADR 0010) |
-| planner (human, or the web remote `slotting_mfe`) | Generate slot plan, Approve, Reject | commands | `POST /slot-plans`, `POST /slot-plans/{planId}/approve`, `POST /slot-plans/{planId}/reject` |
+| planner (human, or the web remote `slotting_mfe`) | Generate slot plan, Approve, Reject | commands | `POST /slot-plans`, `POST /slot-plans/{planId}/approvals`, `POST /slot-plans/{planId}/rejections` |
 | planner (human, or the web remote `slotting_mfe`) | Get plan, List plans, Forward slots, SKU velocity | queries | `GET /slot-plans/{planId}`, `GET /slot-plans`, `GET /forward-slots`, `GET /sku-velocity` |
 | warehouse-ops-agent (its ADR 0024, slot-plan watch) and any MCP client | Get plan, List plans (the agent); Forward slots, SKU velocity (other clients) | queries | MCP `get_slot_plan`, `list_slot_plans`, `get_forward_slots`, `get_sku_velocity` (`cmd/mcp`, read-only) |
 | warehouse-console reports screen | Slot-plan funnel, freshness | queries | `GET /reports/slot-plan-funnel`, `GET /reports/freshness` on `cmd/slotting-reports` (no Kong route to it, see [Integration](/docs/ecosystem/integration)) |

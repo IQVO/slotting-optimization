@@ -30,9 +30,9 @@ sequenceDiagram
     alt key already committed
         I->>DB: SELECT stored outcome
         alt same body hash
-            I-->>C: stored status, headers and body (replay)
-        else different body
-            I-->>C: 422 idempotency-key-reused
+            I-->>C: stored status, headers and body (replay, Idempotency-Replayed: true)
+        else different method, path or body
+            I-->>C: 409 idempotency-key-reused
         end
     end
     I->>G: Handle(siteId, lookbackDays) inside the bound transaction
@@ -62,7 +62,7 @@ sequenceDiagram
     participant A as ApprovePlan
     participant U as UnitOfWork
     participant DB as Postgres
-    C->>A: POST /slot-plans/planId/approve
+    C->>A: POST /slot-plans/planId/approvals
     A->>A: NewPlanID (400 invalid-plan-id)
     A->>U: Do
     U->>DB: BEGIN

@@ -90,7 +90,7 @@ func TestCasePickFacesOnRealPostgresAndKafka(t *testing.T) {
 		t.Fatalf("casesCapacity must be absent for an EACH assignment: %s", body)
 	}
 
-	s.call(http.MethodPost, "/slot-plans/"+plan.PlanID+"/approve", "", "", http.StatusOK)
+	s.call(http.MethodPost, "/slot-plans/"+plan.PlanID+"/approvals", "", "ap-cp", http.StatusOK)
 	fwd := s.call(http.MethodGet, "/forward-slots", "", "", http.StatusOK)
 	if !strings.Contains(fwd, `"pickUnit":"CASE"`) || !strings.Contains(fwd, `"casesCapacity":5`) {
 		t.Fatalf("GET /forward-slots = %s", fwd)

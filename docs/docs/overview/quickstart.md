@@ -153,17 +153,18 @@ curl -s -i -X POST localhost:8080/slot-plans \
 ```
 
 Repeating the same key and body replays the stored `201`; the same key with a
-different body is `422 idempotency-key-reused`.
+different body (or on another route) is `409 idempotency-key-reused`; a replay
+carries `Idempotency-Replayed: true`. Approvals and rejections take a key too.
 
 ```bash
 curl -s localhost:8080/sku-velocity?siteId=WH1
 # {"siteId":"WH1",...,"items":[{"sku":"SKU-A","picks":3,"units":6},{"sku":"SKU-B","picks":1,"units":5},{"sku":"SKU-C","picks":1,"units":1}]}
 
-curl -s -X POST localhost:8080/slot-plans/plan-ee0b77f6-.../approve      # Approved, version 2
+curl -s -X POST localhost:8080/slot-plans/plan-ee0b77f6-.../approvals      # Approved, version 2
 curl -s localhost:8080/forward-slots?siteId=WH1
 # {"siteId":"WH1","planId":"plan-ee0b77f6-...","approvedAt":"...","assignments":[{"sku":"SKU-A","slot":"FWD-01-01","abcClass":"A"},...]}
 
-curl -s -X POST localhost:8080/slot-plans/<another-draft>/reject \
+curl -s -X POST localhost:8080/slot-plans/<another-draft>/rejections \
   -H 'Content-Type: application/json' -d '{"reason":"wait for the new FWD aisle"}'
 curl -s 'localhost:8080/slot-plans?siteId=WH1&limit=1'                   # newest first, with nextCursor
 ```

@@ -35,13 +35,13 @@ const sidebar: SidebarsConfig = {
         {
           type: "doc",
           id: "api-reference/rest/approve-slot-plan",
-          label: "Approve a Draft plan",
+          label: "Approve a Draft plan (create an approval)",
           className: "api-method post",
         },
         {
           type: "doc",
           id: "api-reference/rest/reject-slot-plan",
-          label: "Reject a Draft plan",
+          label: "Reject a Draft plan (create a rejection)",
           className: "api-method post",
         },
       ],

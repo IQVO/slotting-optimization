@@ -193,6 +193,9 @@ type SkuVelocityQuery struct {
 	SiteID     string
 	Limit      int
 	WindowDays int
+	// After, when set, is the last row of the previous page: the page starts
+	// strictly after it in (picks DESC, units DESC, sku ASC) order.
+	After *planning.SkuVelocity
 }
 
 // SkuVelocityResult is the velocity of a site over a window.
@@ -201,6 +204,9 @@ type SkuVelocityResult struct {
 	From  time.Time
 	To    time.Time
 	Items []planning.SkuVelocity
+	// More reports that rows follow the last item; the next page starts
+	// after Items[len(Items)-1].
+	More bool
 }
 
 // ListSkuVelocity reads the demand copy: per SKU the ACTIVE lines and units
@@ -234,8 +240,34 @@ func (uc *ListSkuVelocity) Handle(ctx context.Context, q SkuVelocityQuery) (SkuV
 	if err != nil {
 		return SkuVelocityResult{}, fmt.Errorf("read demand: %w", err)
 	}
-	if len(items) > limit {
+	if q.After != nil {
+		items = velocityAfter(items, *q.After)
+	}
+	more := len(items) > limit
+	if more {
 		items = items[:limit]
 	}
-	return SkuVelocityResult{Site: site, From: from, To: to, Items: items}, nil
+	return SkuVelocityResult{Site: site, From: from, To: to, Items: items, More: more}, nil
+}
+
+// velocityAfter drops every row up to and including after in the ledger's
+// (picks DESC, units DESC, sku ASC) order. Keyset, not offset: a row inserted
+// or removed between pages never shifts the page boundary.
+func velocityAfter(items []planning.SkuVelocity, after planning.SkuVelocity) []planning.SkuVelocity {
+	for i, v := range items {
+		if velocityBefore(after, v) {
+			return items[i:]
+		}
+	}
+	return nil
+}
+
+func velocityBefore(a, b planning.SkuVelocity) bool {
+	if a.Picks != b.Picks {
+		return a.Picks > b.Picks
+	}
+	if a.Units != b.Units {
+		return a.Units > b.Units
+	}
+	return a.SKU < b.SKU
 }

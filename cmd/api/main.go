@@ -42,26 +42,13 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	inboundhttp "github.com/claudioed/slotting-optimization/internal/adapters/inbound/http"
-	inboundkafka "github.com/claudioed/slotting-optimization/internal/adapters/inbound/kafka"
-	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/clock"
-	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/ids"
-	outboundkafka "github.com/claudioed/slotting-optimization/internal/adapters/outbound/kafka"
-	outboxrelay "github.com/claudioed/slotting-optimization/internal/adapters/outbound/outbox"
-	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/postgres"
-	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/postgres/pgtx"
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/telemetry"
-	"github.com/claudioed/slotting-optimization/internal/application/ports"
-	"github.com/claudioed/slotting-optimization/internal/application/usecases"
-	"github.com/claudioed/slotting-optimization/internal/bootretry"
-	"github.com/claudioed/slotting-optimization/internal/domain/planning"
+	"github.com/claudioed/slotting-optimization/internal/config"
 )
 
 // shutdownTimeout bounds the HTTP server's graceful drain.
@@ -70,15 +57,6 @@ const shutdownTimeout = 10 * time.Second
 // workerDrainTimeout bounds how long shutdown waits for the consumers and the
 // relay to return after their context is cancelled.
 const workerDrainTimeout = 10 * time.Second
-
-// DefaultShutdownDrainDelay is how long shutdown waits, after flipping
-// /readyz to not-ready, before closing the listener (SHUTDOWN_DRAIN_DELAY
-// overrides it; "0" disables it).
-const DefaultShutdownDrainDelay = 5 * time.Second
-
-// defaultForwardZoneCode is the zone code of the forward pick slots when
-// FORWARD_ZONE_CODES is unset.
-const defaultForwardZoneCode = "FWD"
 
 func main() {
 	if err := run(context.Background()); err != nil {
@@ -90,16 +68,18 @@ func main() {
 // run boots the service and serves until SIGINT/SIGTERM or until ctx is
 // cancelled (the integration test stops the real entry point that way).
 func run(ctx context.Context) error {
-	logger := newLogger(getenv("LOG_LEVEL", "info"))
+	// The boot logger stays at info until the configured level is known.
+	srv := config.ServerFromEnv(newLogger("info"))
+	logger := newLogger(srv.LogLevel)
 	slog.SetDefault(logger)
 
 	// Misconfiguration is refused before anything is opened or bound (ADR 0011).
-	rt, err := loadRuntime(os.Getenv)
+	rt, err := config.LoadRuntime(os.Getenv, consumerEnvs())
 	if err != nil {
 		return err
 	}
 
-	otelShutdown, err := setupTelemetry(logger)
+	otelShutdown, err := setupTelemetry(logger, srv)
 	if err != nil {
 		return err
 	}
@@ -121,444 +101,24 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("plan decision metrics: %w", err)
 	}
-	readiness := newReadiness(ad.pool.Ping, rt.brokers)
-	server, err := buildServer(ad, configFromEnv(logger), readiness, metrics, planDecisionMetrics)
+	readiness := newReadiness(ad.pool.Ping, rt.Brokers)
+	server, err := buildServer(ad, config.FromEnv(logger), readiness, metrics, planDecisionMetrics)
 	if err != nil {
 		return err
 	}
 	httpServer := &http.Server{
-		Addr:              getenv("HTTP_ADDR", ":8080"),
+		Addr:              srv.HTTPAddr,
 		Handler:           inboundhttp.NewRouter(server),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
 	consumers, closeConsumers := startConsumers(ad, rt, logger)
-	relay, closeRelay, err := startOutboxRelay(ad.outboxStore, rt.brokers, logger)
+	relay, closeRelay, err := startOutboxRelay(ad.outboxStore, rt.Brokers, logger)
 	if err != nil {
 		closeConsumers()
 		return err
 	}
-	return serveUntilSignal(ctx, logger, httpServer, readiness, consumers, closeConsumers, relay, closeRelay)
-}
-
-// Boot errors for the variables the context cannot run without. Each message
-// names the variable (ADR 0011).
-var (
-	errMissingDatabaseURL = errors.New("DATABASE_URL is required: this context runs on real Postgres, there is no in-memory mode")
-	errMissingBrokers     = errors.New("KAFKA_BROKERS is required: this context runs on real Kafka (outbox relay, consumers, /readyz)")
-)
-
-// runtimeEnv is the validated part of the environment that selects the real
-// runtime: the brokers and the consumer group of every consumer.
-type runtimeEnv struct {
-	brokers []string
-	// groups maps a consumer's group variable (DEMAND_CONSUMER_GROUP, ...) to
-	// its value; every consumer always runs, so every entry is present.
-	groups map[string]string
-}
-
-// loadRuntime validates the environment before anything is opened or bound:
-// DATABASE_URL, KAFKA_BROKERS and every consumer group are mandatory, the
-// consumer modes may only be `kafka` (the default), and EVENT_PUBLISHER may
-// only be `kafka`. Every error names the variable (ADR 0011).
-func loadRuntime(env func(string) string) (runtimeEnv, error) {
-	if env("DATABASE_URL") == "" {
-		return runtimeEnv{}, errMissingDatabaseURL
-	}
-	rt := runtimeEnv{brokers: splitBrokers(env("KAFKA_BROKERS")), groups: map[string]string{}}
-	if len(rt.brokers) == 0 {
-		return runtimeEnv{}, errMissingBrokers
-	}
-	if err := parsePublisherMode(env("EVENT_PUBLISHER")); err != nil {
-		return runtimeEnv{}, err
-	}
-	for _, spec := range consumerSpecs(adapters{}, config{}) {
-		if err := parseConsumerMode(spec.modeEnv, env(spec.modeEnv)); err != nil {
-			return runtimeEnv{}, err
-		}
-		group := env(spec.groupEnv)
-		if group == "" {
-			return runtimeEnv{}, fmt.Errorf("%s is required: the %s consumer always runs on real Kafka", spec.groupEnv, spec.modeEnv)
-		}
-		rt.groups[spec.groupEnv] = group
-	}
-	return rt, nil
-}
-
-// splitBrokers splits KAFKA_BROKERS on commas, trimming blanks.
-func splitBrokers(raw string) []string {
-	var out []string
-	for _, b := range strings.Split(raw, ",") {
-		if b = strings.TrimSpace(b); b != "" {
-			out = append(out, b)
-		}
-	}
-	return out
-}
-
-// newReadiness builds the /readyz gate: the drain gate plus a Postgres ping
-// and a Kafka broker answering a topic-less metadata request (never topics:
-// the broker auto-creates them on first write), cached 3s, bounded 2s. The
-// ping is a parameter so the gate is testable without a pool.
-func newReadiness(ping func(context.Context) error, brokers []string) *inboundhttp.Readiness {
-	return inboundhttp.NewReadiness(inboundhttp.DefaultReadinessTTL, inboundhttp.DefaultReadinessTimeout,
-		inboundhttp.Dependency{Name: "postgres", Check: ping},
-		inboundhttp.Dependency{Name: "kafka", Check: outboundkafka.NewBrokerCheck(brokers).Check},
-	)
-}
-
-// adapters is the set of outbound adapters the composition root wires.
-type adapters struct {
-	plans       ports.SlotPlanRepository
-	demand      ports.DemandLedger
-	profiles    ports.ProfileDirectory
-	catalogue   ports.SlotCatalogue
-	outbox      ports.OutboxRepository
-	outboxStore outboxrelay.Store
-	processed   ports.ProcessedEvents
-	executions  ports.MoveExecutionLedger
-	packLevels  ports.PackLevelView
-	uow         ports.UnitOfWork
-	// idempotency is the Idempotency-Key middleware of POST /slot-plans.
-	idempotency func(http.Handler) http.Handler
-	// pool is the Postgres pool (the readiness check pings it).
-	pool *pgxpool.Pool
-}
-
-// writer bundles the ports every write use case needs. The encoder is the
-// FanoutEncoder (ADR 0006): every domain event becomes TWO outbox rows — the
-// integration row on warehouse.slotting-optimization.events first, the
-// analytics row on warehouse.slotting-optimization.analytics second — under
-// ONE CloudEvents id minted per occurrence, so both streams commit together
-// and a relay retry republishes identical bytes.
-func (a adapters) writer() usecases.Writer {
-	return usecases.Writer{Plans: a.plans, Outbox: a.outbox, Encoder: outboundkafka.NewFanoutEncoder(), UoW: a.uow, Clock: clock.System{}}
-}
-
-// intake bundles the ports every consumer use case needs.
-func (a adapters) intake() usecases.Intake {
-	return usecases.Intake{UoW: a.uow, Processed: a.processed}
-}
-
-// config is the use-case configuration read from the environment.
-type config struct {
-	defaultSite      string
-	onlySite         string
-	lookbackDays     int
-	forwardZoneCodes []string
-	// casePickZoneCodes: CASE_PICK_ZONE_CODES; empty = no case-pick faces.
-	casePickZoneCodes []string
-}
-
-func configFromEnv(logger *slog.Logger) config {
-	site := os.Getenv("DEMAND_SITE_ID")
-	return config{
-		defaultSite:       getenv("DEMAND_SITE_ID", os.Getenv("DEFAULT_SITE_ID")),
-		onlySite:          site,
-		lookbackDays:      parseLookbackDays(os.Getenv("LOOKBACK_DAYS"), logger),
-		forwardZoneCodes:  parseZoneCodes(os.Getenv("FORWARD_ZONE_CODES")),
-		casePickZoneCodes: parseCasePickZoneCodes(os.Getenv("CASE_PICK_ZONE_CODES")),
-	}
-}
-
-// parseLookbackDays reads LOOKBACK_DAYS; unset, malformed or out of range
-// falls back to the use case default (0 = DefaultLookbackDays).
-func parseLookbackDays(raw string, logger *slog.Logger) int {
-	if raw == "" {
-		return 0
-	}
-	days, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || days < 1 || days > usecases.MaxLookbackDays {
-		logger.Warn("invalid LOOKBACK_DAYS; using the default", "value", raw, "default", usecases.DefaultLookbackDays)
-		return 0
-	}
-	return days
-}
-
-// parseZoneCodes reads FORWARD_ZONE_CODES (comma separated), defaulting to
-// FWD.
-func parseZoneCodes(raw string) []string {
-	var codes []string
-	for _, c := range strings.Split(raw, ",") {
-		if c = strings.TrimSpace(c); c != "" {
-			codes = append(codes, c)
-		}
-	}
-	if len(codes) == 0 {
-		return []string{defaultForwardZoneCode}
-	}
-	return codes
-}
-
-// parseCasePickZoneCodes reads CASE_PICK_ZONE_CODES (comma separated). Unlike
-// FORWARD_ZONE_CODES it has no default: unset means no case-pick faces.
-func parseCasePickZoneCodes(raw string) []string {
-	var codes []string
-	for _, c := range strings.Split(raw, ",") {
-		if c = strings.TrimSpace(c); c != "" {
-			codes = append(codes, c)
-		}
-	}
-	return codes
-}
-
-func buildServer(ad adapters, cfg config, readiness *inboundhttp.Readiness, metrics http.Handler, planMetrics ports.PlanDecisionMetrics) (*inboundhttp.Server, error) {
-	planner, err := planning.NewPlanner(planning.LexicalRanking{})
-	if err != nil {
-		return nil, fmt.Errorf("planner: %w", err)
-	}
-	w := ad.writer()
-	return &inboundhttp.Server{
-		GeneratePlan: &usecases.GeneratePlan{
-			Writer: w, Demand: ad.demand, Profiles: ad.profiles, Catalogue: ad.catalogue, IDs: ids.UUID{}, Planner: planner,
-			DefaultSite: cfg.defaultSite, ForwardZoneCodes: cfg.forwardZoneCodes, DefaultLookback: cfg.lookbackDays,
-			CasePickZoneCodes: cfg.casePickZoneCodes, PackLevels: ad.packLevels,
-		},
-		ApprovePlan:      &usecases.ApprovePlan{Writer: w, Metrics: planMetrics},
-		RejectPlan:       &usecases.RejectPlan{Writer: w, Metrics: planMetrics},
-		GetPlan:          &usecases.GetPlan{Plans: ad.plans, Executions: ad.executions},
-		ListPlans:        &usecases.ListPlans{Plans: ad.plans},
-		ListForwardSlots: &usecases.ListForwardSlots{Plans: ad.plans, DefaultSite: cfg.defaultSite},
-		ListSkuVelocity:  &usecases.ListSkuVelocity{Demand: ad.demand, Clock: clock.System{}, DefaultSite: cfg.defaultSite},
-		Idempotency:      ad.idempotency,
-		Readiness:        readiness,
-		Metrics:          metrics,
-	}, nil
-}
-
-// buildAdapters wires the Postgres adapters, running the embedded migrations
-// first. An empty databaseURL is a boot error: there is no in-memory runtime.
-func buildAdapters(ctx context.Context, databaseURL string, logger *slog.Logger) (adapters, func(), error) {
-	noop := func() {}
-	if databaseURL == "" {
-		return adapters{}, noop, errMissingDatabaseURL
-	}
-
-	// The first outbound dial of an injected pod can be reset (Istio native
-	// sidecars), so migrations and the first ping retry with backoff; on
-	// exhaustion the LAST error is returned and the process refuses to boot.
-	migrationsURL := migrationsDatabaseURL(databaseURL)
-	if err := bootretry.Retry(ctx, logger, "run migrations", func() error {
-		return postgres.RunMigrations(migrationsURL)
-	}); err != nil {
-		return adapters{}, noop, err
-	}
-	pool, err := postgres.NewPool(ctx, databaseURL)
-	if err != nil {
-		return adapters{}, noop, err
-	}
-	if err := bootretry.Retry(ctx, logger, "ping postgres", func() error { return pool.Ping(ctx) }); err != nil {
-		pool.Close()
-		return adapters{}, noop, err
-	}
-	logger.Info("postgres adapters configured")
-	return postgresAdapters(pool), pool.Close, nil
-}
-
-func postgresAdapters(pool *pgxpool.Pool) adapters {
-	ob := postgres.NewOutboxRepo(pool)
-	return adapters{
-		plans: postgres.NewSlotPlanRepo(pool), demand: postgres.NewDemandLedger(pool),
-		profiles: postgres.NewProfileDirectory(pool), catalogue: postgres.NewSlotCatalogue(pool),
-		outbox: ob, outboxStore: ob, processed: postgres.NewProcessedEventRepo(pool),
-		executions:  postgres.NewMoveExecutionLedger(pool),
-		packLevels:  postgres.NewPackLevelView(pool),
-		uow:         postgres.NewUnitOfWork(pool),
-		idempotency: inboundhttp.RequireIdempotencyKey(pool, pgtx.With),
-		pool:        pool,
-	}
-}
-
-// migrationsDatabaseURL returns MIGRATIONS_DATABASE_URL when set (a direct
-// DSN: golang-migrate's advisory lock does not survive PgBouncer transaction
-// pooling), else databaseURL.
-func migrationsDatabaseURL(databaseURL string) string {
-	return getenv("MIGRATIONS_DATABASE_URL", databaseURL)
-}
-
-// worker is a started background loop and the channel closed once it
-// returned.
-type worker struct {
-	name string
-	done chan struct{}
-}
-
-// modeKafka is the only consumer mode (DEMAND_MODE, PRODUCT_MODE,
-// LAYOUT_MODE, RELOCATION_MODE, PACK_LEVEL_MODE): the names stay because docs and
-// warehouse-infra set them, the legacy values are refused.
-const modeKafka = "kafka"
-
-// parseConsumerMode accepts the only runtime mode of a local-copy consumer:
-// "" (the default) or "kafka". `permissive` and `off` are refused: the
-// consumers always run.
-func parseConsumerMode(name, raw string) error {
-	switch raw {
-	case "", modeKafka:
-		return nil
-	case "permissive", "off":
-		return fmt.Errorf("%s=%s is not supported: this context runs on real Kafka", name, raw)
-	default:
-		return fmt.Errorf("%s: unknown mode %q (want kafka)", name, raw)
-	}
-}
-
-// consumerSpec is one local-copy consumer: its mode and group variables and
-// how to build it once both are resolved.
-type consumerSpec struct {
-	modeEnv, groupEnv string
-	build             func(brokers []string, group string, logger *slog.Logger) *inboundkafka.Consumer
-}
-
-func consumerSpecs(ad adapters, cfg config) []consumerSpec {
-	intake := ad.intake()
-	return []consumerSpec{
-		{"DEMAND_MODE", "DEMAND_CONSUMER_GROUP", func(brokers []string, group string, logger *slog.Logger) *inboundkafka.Consumer {
-			uc := &usecases.ApplyDemandChanged{Intake: intake, Demand: ad.demand, OnlySite: cfg.onlySite}
-			return inboundkafka.NewDemandConsumer(brokers, group, uc, logger)
-		}},
-		{"PRODUCT_MODE", "PRODUCT_CONSUMER_GROUP", func(brokers []string, group string, logger *slog.Logger) *inboundkafka.Consumer {
-			classified := &usecases.ApplyProductClassified{Intake: intake, Profiles: ad.profiles}
-			physical := &usecases.ApplyPhysicalProfile{Intake: intake, Profiles: ad.profiles}
-			return inboundkafka.NewProductConsumer(brokers, group, classified, physical, logger)
-		}},
-		{"LAYOUT_MODE", "LAYOUT_CONSUMER_GROUP", func(brokers []string, group string, logger *slog.Logger) *inboundkafka.Consumer {
-			return inboundkafka.NewLayoutConsumer(brokers, group,
-				&usecases.ApplyZoneRegistered{Intake: intake, Catalogue: ad.catalogue},
-				&usecases.ApplyLocationSlotRegistered{Intake: intake, Catalogue: ad.catalogue},
-				&usecases.ApplyLocationSlotDecommissioned{Intake: intake, Catalogue: ad.catalogue}, logger)
-		}},
-		{"RELOCATION_MODE", "RELOCATION_CONSUMER_GROUP", func(brokers []string, group string, logger *slog.Logger) *inboundkafka.Consumer {
-			uc := &usecases.RecordRelocation{Intake: intake, Plans: ad.plans, Executions: ad.executions, Metrics: relocationMetrics()}
-			return inboundkafka.NewStockConsumer(brokers, group, uc, logger)
-		}},
-		{"PACK_LEVEL_MODE", "PACK_LEVEL_CONSUMER_GROUP", func(brokers []string, group string, logger *slog.Logger) *inboundkafka.Consumer {
-			return inboundkafka.NewPackLevelConsumer(brokers, group, inboundkafka.PackLevelUseCases{
-				Declared: &usecases.ApplyPackLevelDeclared{Intake: intake, PackLevels: ad.packLevels},
-				Retired:  &usecases.ApplyPackLevelRetired{Intake: intake, PackLevels: ad.packLevels},
-				Measured: &usecases.ApplyPackLevelMeasured{Intake: intake, PackLevels: ad.packLevels},
-			}, logger)
-		}},
-	}
-}
-
-// relocationMetrics is the StockRelocated consumer's outcome counter, or
-// nil (record nothing) in the impossible case the instrument cannot be
-// registered; never a typed nil inside the interface.
-func relocationMetrics() ports.RelocationMetrics {
-	m, err := telemetry.NewRelocationMetrics()
-	if err != nil {
-		return nil
-	}
-	return m
-}
-
-// startConsumers starts every consumer; they are always on. The readers dial
-// lazily inside Run, so a broker outage never blocks boot.
-func startConsumers(ad adapters, rt runtimeEnv, logger *slog.Logger) ([]*worker, func()) {
-	ctx, stop := context.WithCancel(context.Background())
-	var (
-		workers []*worker
-		closers []func() error
-	)
-	for _, spec := range consumerSpecs(ad, configFromEnv(logger)) {
-		group := rt.groups[spec.groupEnv]
-		consumer := spec.build(rt.brokers, group, logger)
-		w := &worker{name: spec.modeEnv + " consumer", done: make(chan struct{})}
-		workers = append(workers, w)
-		closers = append(closers, consumer.Close)
-		go func() {
-			defer close(w.done)
-			logger.Info("consumer running", "consumer", consumer.Name, "topic", consumer.Topic, "group_id", group, "brokers", rt.brokers)
-			if err := consumer.Run(ctx); !errors.Is(err, context.Canceled) {
-				logger.Error("consumer stopped", "consumer", consumer.Name, "error", err)
-			}
-		}()
-	}
-	return workers, func() {
-		stop()
-		for _, closeFn := range closers {
-			_ = closeFn()
-		}
-	}
-}
-
-// parsePublisherMode validates EVENT_PUBLISHER: unset or "kafka". The log
-// sink is gone (ADR 0011); the variable stays because the chart and
-// warehouse-infra set it.
-func parsePublisherMode(raw string) error {
-	switch raw {
-	case "", "kafka":
-		return nil
-	case "log":
-		return errors.New("EVENT_PUBLISHER=log is not supported: this context publishes to real Kafka")
-	default:
-		return fmt.Errorf("EVENT_PUBLISHER: unknown value %q (want kafka)", raw)
-	}
-}
-
-// parseRelayInterval reads OUTBOX_RELAY_INTERVAL (Go duration or plain
-// seconds), defaulting when unset, malformed or non-positive.
-func parseRelayInterval(raw string, logger *slog.Logger) time.Duration {
-	if raw == "" {
-		return outboxrelay.DefaultInterval
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil {
-		if secs, serr := strconv.ParseFloat(raw, 64); serr == nil {
-			d, err = time.Duration(secs*float64(time.Second)), nil
-		}
-	}
-	if err != nil || d <= 0 {
-		logger.Warn("invalid OUTBOX_RELAY_INTERVAL; using the default", "value", raw, "default", outboxrelay.DefaultInterval)
-		return outboxrelay.DefaultInterval
-	}
-	return d
-}
-
-// outboxMaxAttempts reads OUTBOX_MAX_ATTEMPTS (gap fix D12, ADR 0008): how
-// many times an outbox row may fail before the relay excludes it from
-// claims. Unset = the fleet default (20); 0 = unlimited; negative or
-// unparsable values log a warning and use the default, so a typo never
-// silently removes the cap.
-func outboxMaxAttempts(raw string, logger *slog.Logger) int {
-	if raw == "" {
-		return outboxrelay.DefaultMaxAttempts
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || n < 0 {
-		logger.Warn("invalid OUTBOX_MAX_ATTEMPTS; using the default", "value", raw, "default", outboxrelay.DefaultMaxAttempts)
-		return outboxrelay.DefaultMaxAttempts
-	}
-	return n
-}
-
-// startOutboxRelay starts the always-on relay goroutine over the Kafka sink.
-// Kafka is dialled lazily on the first send, never here.
-func startOutboxRelay(store outboxrelay.Store, brokers []string, logger *slog.Logger) (*worker, func(), error) {
-	if len(brokers) == 0 {
-		return nil, nil, errMissingBrokers
-	}
-	kafkaSink := outboundkafka.NewRelaySink(brokers)
-	closeSink := func() {
-		if err := kafkaSink.Close(); err != nil {
-			logger.Error("kafka relay sink close failed", "error", err)
-		}
-	}
-	interval := parseRelayInterval(os.Getenv("OUTBOX_RELAY_INTERVAL"), logger)
-	maxAttempts := outboxMaxAttempts(os.Getenv("OUTBOX_MAX_ATTEMPTS"), logger)
-	relay := outboxrelay.NewRelay(store, kafkaSink, logger, outboxrelay.WithInterval(interval), outboxrelay.WithMaxAttempts(maxAttempts))
-
-	ctx, stop := context.WithCancel(context.Background())
-	w := &worker{name: "outbox-relay", done: make(chan struct{})}
-	go func() {
-		defer close(w.done)
-		defer closeSink()
-		logger.Info("outbox relay running", "publisher", "kafka", "interval", interval, "max_attempts", maxAttempts, "topic", outboundkafka.Topic)
-		if err := relay.Run(ctx); !errors.Is(err, context.Canceled) {
-			logger.Error("outbox relay stopped", "error", err)
-		}
-	}()
-	return w, stop, nil
+	return serveUntilSignal(ctx, logger, httpServer, readiness, consumers, closeConsumers, relay, closeRelay, srv.ShutdownDrainDelay)
 }
 
 // serveUntilSignal runs httpServer until SIGINT/SIGTERM (or a listen error),
@@ -567,7 +127,7 @@ func startOutboxRelay(store outboxrelay.Store, brokers []string, logger *slog.Lo
 // await the relay LAST so nothing committed above is stranded; the caller's
 // deferred pool.Close runs after all of it.
 func serveUntilSignal(ctx context.Context, logger *slog.Logger, httpServer *http.Server, readiness *inboundhttp.Readiness,
-	consumers []*worker, closeConsumers func(), relay *worker, closeRelay func(),
+	consumers []*worker, closeConsumers func(), relay *worker, closeRelay func(), drainDelay time.Duration,
 ) error {
 	errCh := make(chan error, 1)
 	go func() {
@@ -597,9 +157,9 @@ func serveUntilSignal(ctx context.Context, logger *slog.Logger, httpServer *http
 	}
 
 	readiness.SetNotReady()
-	if delay := shutdownDrainDelay(logger); delay > 0 {
-		logger.Info("shutdown: readiness flipped to not-ready; waiting for traffic to drain", "drain_delay", delay.String())
-		time.Sleep(delay)
+	if drainDelay > 0 {
+		logger.Info("shutdown: readiness flipped to not-ready; waiting for traffic to drain", "drain_delay", drainDelay.String())
+		time.Sleep(drainDelay)
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
@@ -643,27 +203,15 @@ func await(logger *slog.Logger, w *worker) {
 	}
 }
 
-// shutdownDrainDelay reads SHUTDOWN_DRAIN_DELAY ("0" disables; unset,
-// negative or unparsable = the default).
-func shutdownDrainDelay(logger *slog.Logger) time.Duration {
-	raw := os.Getenv("SHUTDOWN_DRAIN_DELAY")
-	if raw == "" {
-		return DefaultShutdownDrainDelay
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil || d < 0 {
-		logger.Warn("ignoring invalid SHUTDOWN_DRAIN_DELAY", "value", raw, "default", DefaultShutdownDrainDelay.String())
-		return DefaultShutdownDrainDelay
-	}
-	return d
-}
-
 // setupTelemetry installs the OTLP trace and metric providers (never blocks
 // on a missing Collector) and returns a bounded flush-on-exit closer.
-func setupTelemetry(logger *slog.Logger) (func(), error) {
+func setupTelemetry(logger *slog.Logger, srv config.Server) (func(), error) {
 	otelCtx, otelCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	otelShutdown, err := telemetry.Setup(otelCtx, inboundhttp.DefaultServiceName, getenv("SERVICE_VERSION", "dev"),
-		getenv("OTEL_EXPORTER_OTLP_ENDPOINT", telemetry.DefaultOTLPEndpoint))
+	endpoint := srv.OTLPEndpoint
+	if endpoint == "" {
+		endpoint = telemetry.DefaultOTLPEndpoint
+	}
+	otelShutdown, err := telemetry.Setup(otelCtx, inboundhttp.DefaultServiceName, srv.ServiceVersion, endpoint)
 	otelCancel()
 	if err != nil {
 		return nil, fmt.Errorf("telemetry setup: %w", err)
@@ -692,11 +240,4 @@ func newLogger(level string) *slog.Logger {
 		lvl = slog.LevelInfo
 	}
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
-}
-
-func getenv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
 }

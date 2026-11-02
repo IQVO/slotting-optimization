@@ -20,7 +20,7 @@ func TestGetSlotPlan_CarriesExecutionProgress(t *testing.T) {
 		t.Fatalf("POST /slot-plans must not carry execution: %s", created.raw)
 	}
 	id := created.body["planId"].(string)
-	f.mustDo(t, http.MethodPost, "/slot-plans/"+id+"/approve", "", http.StatusOK)
+	f.mustDo(t, http.MethodPost, "/slot-plans/"+id+"/approvals", "", http.StatusOK)
 	at := now.Add(2 * time.Hour)
 	for _, e := range []slotplan.MoveExecution{
 		{Seq: 0, RelocationID: "rel-1", SKU: "SKU-1", FromBin: "RES-1", ToBin: "A-01", Quantity: 4, At: at.Add(-time.Hour)},

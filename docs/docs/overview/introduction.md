@@ -55,8 +55,8 @@ plan's execution progress (ADR 0010).
 | Capability | Interface | Use case |
 | --- | --- | --- |
 | Generate a Draft plan for a site | `POST /slot-plans` (requires `Idempotency-Key`) | `GeneratePlan` |
-| Approve a Draft (supersedes the previous Approved plan) | `POST /slot-plans/{planId}/approve` | `ApprovePlan` |
-| Reject a Draft with an optional reason | `POST /slot-plans/{planId}/reject` | `RejectPlan` |
+| Approve a Draft (supersedes the previous Approved plan) | `POST /slot-plans/{planId}/approvals` | `ApprovePlan` |
+| Reject a Draft with an optional reason | `POST /slot-plans/{planId}/rejections` | `RejectPlan` |
 | Read plans | `GET /slot-plans`, `GET /slot-plans/{planId}` | `ListPlans`, `GetPlan` |
 | Read the current forward-slot map of a site | `GET /forward-slots` | `ListForwardSlots` |
 | Read SKU velocity (the planner's demand input) | `GET /sku-velocity` | `ListSkuVelocity` |
@@ -84,4 +84,8 @@ plan's execution progress (ADR 0010).
 Like the rest of the warehouse-systems fleet this repository is a personal
 study project (DDD, hexagonal architecture, AI-agent harness engineering). It
 is not production software.
+:::
+
+:::note[Disclaimer]
+This project is a domain-driven design study. It is not associated with, endorsed by or affiliated with any company, and it uses no company's code, data, logos or trademarks. All names, figures and examples are illustrative or synthetic.
 :::

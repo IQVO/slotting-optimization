@@ -72,7 +72,7 @@ func (r *OutboxRepo) LastError(i int) string {
 // 0 a row that already failed that many times is skipped (it stays
 // unpublished with its last error; ADR 0008). Drain stops at the first send
 // error (preserving per-key order among the claimable rows), records it on
-// that row and returns it as an *outbox.SendFailure (RowID is the row's
+// that row and returns it as an *outbox.SendFailureError (RowID is the row's
 // 1-based insertion position), together with how many rows were published.
 func (r *OutboxRepo) Drain(ctx context.Context, limit, maxAttempts int, send func(context.Context, outbox.Message) error) (int, error) {
 	type claimed struct {
@@ -99,7 +99,7 @@ func (r *OutboxRepo) Drain(ctx context.Context, limit, maxAttempts int, send fun
 			row.lastError = err.Error()
 			attempts := row.attempts
 			r.mu.Unlock()
-			return published, &outbox.SendFailure{RowID: c.id, Message: row.msg, Attempts: attempts, Err: err}
+			return published, &outbox.SendFailureError{RowID: c.id, Message: row.msg, Attempts: attempts, Err: err}
 		}
 		row.published = true
 		row.lastError = ""

@@ -23,15 +23,25 @@ info:
     a consumer needs no lookup; `supersedes_plan_id` names the previously
     Approved plan of the site, if any.
 
-    **Consumed (ADR 0003).** `SiteSkuDemandChanged` from order-management,
-    `ProductClassified`, `ProductDimensionsDeclared` and `ProductMeasured` from
-    product-master, and `ZoneRegistered`, `LocationSlotRegistered` and
-    `LocationSlotDecommissioned` from facility-layout. Each feeds a durable
-    local copy (modes `DEMAND_MODE`, `PRODUCT_MODE`, `LAYOUT_MODE`, default
-    `permissive`; consumer groups from `DEMAND_CONSUMER_GROUP`,
-    `PRODUCT_CONSUMER_GROUP`, `LAYOUT_CONSUMER_GROUP`). The consumed messages
-    below are the producers' own contracts, decoded independently here and never
-    imported.
+    **Consumed (ADR 0003, ADR 0010, ADR 0012).** `SiteSkuDemandChanged` from
+    order-management; `ProductClassified`, `ProductDimensionsDeclared`,
+    `ProductMeasured` and the three `ProductPackLevel*` events from
+    product-master; `ZoneRegistered`, `LocationSlotRegistered` and
+    `LocationSlotDecommissioned` from facility-layout; `StockRelocated` from
+    inventory-storage. Each feeds a durable local copy. Five consumers always
+    run on real Kafka (env `DEMAND_MODE`, `PRODUCT_MODE`, `LAYOUT_MODE`,
+    `RELOCATION_MODE`, `PACK_LEVEL_MODE`; the only accepted value, and the
+    default, is `kafka`: `permissive` and `off` are refused at boot) and each
+    needs its consumer group (`DEMAND_CONSUMER_GROUP`, `PRODUCT_CONSUMER_GROUP`,
+    `LAYOUT_CONSUMER_GROUP`, `RELOCATION_CONSUMER_GROUP`,
+    `PACK_LEVEL_CONSUMER_GROUP`; boot fails without it). A message that is not a
+    valid CloudEvent, or whose type is not handled, is skipped. A transient
+    failure retries the same message up to 5 attempts, then the message goes to
+    `<topic>.dlq` with `x-dlq-*` headers. A handled event whose payload can
+    never be applied is skipped with a WARN, except for `StockRelocated` and the
+    `ProductPackLevel*` events, which are dead-lettered at once. The consumed
+    messages below are the producers' own contracts, decoded independently here
+    and never imported.
 
     **Analytics (ADR 0006).** The same three events are ALSO published, in
     the same transaction and under the same `id` per occurrence, to
