@@ -13,6 +13,7 @@ import (
 
 	outboxrelay "github.com/claudioed/slotting-optimization/internal/adapters/outbound/outbox"
 	"github.com/claudioed/slotting-optimization/internal/application/outbox"
+	"github.com/claudioed/slotting-optimization/internal/config"
 )
 
 func quietLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -40,77 +41,12 @@ func withEnv(overrides map[string]string) func(string) string {
 	return func(k string) string { return env[k] }
 }
 
-func TestLoadRuntimeAcceptsTheMinimalRealEnvironment(t *testing.T) {
-	rt, err := loadRuntime(withEnv(nil))
-	if err != nil || len(rt.brokers) != 2 || rt.brokers[1] != "b:9092" {
-		t.Fatalf("rt = %+v, err = %v", rt, err)
-	}
-	for env, want := range map[string]string{"DEMAND_CONSUMER_GROUP": "g-demand", "PRODUCT_CONSUMER_GROUP": "g-product", "LAYOUT_CONSUMER_GROUP": "g-layout", "RELOCATION_CONSUMER_GROUP": "g-relocation", "PACK_LEVEL_CONSUMER_GROUP": "g-pack-level"} {
-		if rt.groups[env] != want {
-			t.Errorf("group %s = %q, want %q", env, rt.groups[env], want)
-		}
-	}
-	// The explicit values the chart renders are accepted too.
-	explicit := map[string]string{"DEMAND_MODE": "kafka", "PRODUCT_MODE": "kafka", "LAYOUT_MODE": "kafka", "RELOCATION_MODE": "kafka", "PACK_LEVEL_MODE": "kafka", "EVENT_PUBLISHER": "kafka"}
-	if _, err := loadRuntime(withEnv(explicit)); err != nil {
-		t.Fatalf("explicit kafka modes: %v", err)
-	}
-}
-
-// Every refused environment is a boot error whose message names the variable
-// (ADR 0011), raised by loadRuntime before anything is opened or bound.
-func TestLoadRuntimeRefusesWithAnErrorNamingTheVariable(t *testing.T) {
-	cases := []struct {
-		name     string
-		override map[string]string
-		wantVar  string
-	}{
-		{"no DATABASE_URL", map[string]string{"DATABASE_URL": "-"}, "DATABASE_URL"},
-		{"no KAFKA_BROKERS", map[string]string{"KAFKA_BROKERS": "-"}, "KAFKA_BROKERS"},
-		{"blank KAFKA_BROKERS", map[string]string{"KAFKA_BROKERS": " , "}, "KAFKA_BROKERS"},
-		{"no DEMAND_CONSUMER_GROUP", map[string]string{"DEMAND_CONSUMER_GROUP": "-"}, "DEMAND_CONSUMER_GROUP"},
-		{"no PRODUCT_CONSUMER_GROUP", map[string]string{"PRODUCT_CONSUMER_GROUP": "-"}, "PRODUCT_CONSUMER_GROUP"},
-		{"no LAYOUT_CONSUMER_GROUP", map[string]string{"LAYOUT_CONSUMER_GROUP": "-"}, "LAYOUT_CONSUMER_GROUP"},
-		{"no RELOCATION_CONSUMER_GROUP", map[string]string{"RELOCATION_CONSUMER_GROUP": "-"}, "RELOCATION_CONSUMER_GROUP"},
-		{"no PACK_LEVEL_CONSUMER_GROUP", map[string]string{"PACK_LEVEL_CONSUMER_GROUP": "-"}, "PACK_LEVEL_CONSUMER_GROUP"},
-		{"PACK_LEVEL_MODE=permissive", map[string]string{"PACK_LEVEL_MODE": "permissive"}, "PACK_LEVEL_MODE=permissive is not supported"},
-		{"PACK_LEVEL_MODE=off", map[string]string{"PACK_LEVEL_MODE": "off"}, "PACK_LEVEL_MODE=off is not supported"},
-		{"DEMAND_MODE=permissive", map[string]string{"DEMAND_MODE": "permissive"}, "DEMAND_MODE=permissive is not supported"},
-		{"PRODUCT_MODE=permissive", map[string]string{"PRODUCT_MODE": "permissive"}, "PRODUCT_MODE=permissive is not supported"},
-		{"LAYOUT_MODE=permissive", map[string]string{"LAYOUT_MODE": "permissive"}, "LAYOUT_MODE=permissive is not supported"},
-		{"RELOCATION_MODE=permissive", map[string]string{"RELOCATION_MODE": "permissive"}, "RELOCATION_MODE=permissive is not supported"},
-		{"DEMAND_MODE=off", map[string]string{"DEMAND_MODE": "off"}, "DEMAND_MODE=off is not supported"},
-		{"RELOCATION_MODE=off", map[string]string{"RELOCATION_MODE": "off"}, "RELOCATION_MODE=off is not supported"},
-		{"unknown LAYOUT_MODE", map[string]string{"LAYOUT_MODE": "http"}, "LAYOUT_MODE"},
-		{"EVENT_PUBLISHER=log", map[string]string{"EVENT_PUBLISHER": "log"}, "EVENT_PUBLISHER=log is not supported"},
-		{"unknown EVENT_PUBLISHER", map[string]string{"EVENT_PUBLISHER": "rabbit"}, "EVENT_PUBLISHER"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := loadRuntime(withEnv(tc.override))
-			if err == nil || !strings.Contains(err.Error(), tc.wantVar) {
-				t.Fatalf("err = %v, want a boot error containing %q", err, tc.wantVar)
-			}
-		})
-	}
-}
-
-func TestLoadRuntimePermissiveMessageNamesRealKafka(t *testing.T) {
-	_, err := loadRuntime(withEnv(map[string]string{"DEMAND_MODE": "permissive"}))
-	if err == nil || err.Error() != "DEMAND_MODE=permissive is not supported: this context runs on real Kafka" {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-// A completely empty environment fails on the first mandatory variable, and
-// buildAdapters refuses an empty DATABASE_URL by itself (no in-memory branch).
+// buildAdapters refuses an empty DATABASE_URL by itself (no in-memory branch);
+// the config package's own tests cover loadRuntime's refusal.
 func TestNoDatabaseURLIsABootErrorEverywhere(t *testing.T) {
-	if _, err := loadRuntime(func(string) string { return "" }); !errors.Is(err, errMissingDatabaseURL) {
-		t.Fatalf("loadRuntime(empty) = %v, want errMissingDatabaseURL", err)
-	}
 	_, closeFn, err := buildAdapters(context.Background(), "", quietLogger())
-	if !errors.Is(err, errMissingDatabaseURL) {
-		t.Fatalf("buildAdapters(\"\") = %v, want errMissingDatabaseURL", err)
+	if !errors.Is(err, config.ErrMissingDatabaseURL) {
+		t.Fatalf("buildAdapters(\"\") = %v, want ErrMissingDatabaseURL", err)
 	}
 	closeFn()
 }
@@ -123,72 +59,6 @@ func TestParseRelayInterval(t *testing.T) {
 	for raw, want := range cases {
 		if got := parseRelayInterval(raw, quietLogger()); got != want {
 			t.Errorf("parseRelayInterval(%q) = %v, want %v", raw, got, want)
-		}
-	}
-}
-
-func TestParseLookbackDays(t *testing.T) {
-	for raw, want := range map[string]int{"": 0, "7": 7, "\t14": 14, "365": 365, "0": 0, "-1": 0, "366": 0, "abc": 0} {
-		if got := parseLookbackDays(raw, quietLogger()); got != want {
-			t.Errorf("parseLookbackDays(%q) = %d, want %d", raw, got, want)
-		}
-	}
-}
-
-func TestParseZoneCodes(t *testing.T) {
-	cases := map[string]string{"": "FWD", " , ": "FWD", "FWD": "FWD", "FWD, PICK ,": "FWD,PICK"}
-	for raw, want := range cases {
-		if got := strings.Join(parseZoneCodes(raw), ","); got != want {
-			t.Errorf("parseZoneCodes(%q) = %q, want %q", raw, got, want)
-		}
-	}
-}
-
-func TestParseCasePickZoneCodes(t *testing.T) {
-	for raw, want := range map[string]string{"": "", " , ": "", "CASEPICK": "CASEPICK", " CASEPICK, BULK ,": "CASEPICK,BULK"} {
-		if got := strings.Join(parseCasePickZoneCodes(raw), ","); got != want {
-			t.Errorf("parseCasePickZoneCodes(%q) = %q, want %q", raw, got, want)
-		}
-	}
-	if parseCasePickZoneCodes("") != nil {
-		t.Error("unset means no case-pick zones, not a default zone")
-	}
-}
-
-func TestConfigFromEnv(t *testing.T) {
-	t.Setenv("CASE_PICK_ZONE_CODES", "")
-	t.Setenv("DEMAND_SITE_ID", "")
-	t.Setenv("DEFAULT_SITE_ID", "")
-	t.Setenv("LOOKBACK_DAYS", "")
-	t.Setenv("FORWARD_ZONE_CODES", "")
-	cfg := configFromEnv(quietLogger())
-	if cfg.defaultSite != "" || cfg.onlySite != "" || cfg.lookbackDays != 0 || len(cfg.forwardZoneCodes) != 1 || len(cfg.casePickZoneCodes) != 0 {
-		t.Fatalf("defaults = %+v", cfg)
-	}
-	t.Setenv("CASE_PICK_ZONE_CODES", "CASEPICK,BULK")
-	if cfg = configFromEnv(quietLogger()); strings.Join(cfg.casePickZoneCodes, ",") != "CASEPICK,BULK" {
-		t.Fatalf("CASE_PICK_ZONE_CODES = %+v", cfg.casePickZoneCodes)
-	}
-	t.Setenv("DEMAND_SITE_ID", "WH1")
-	t.Setenv("LOOKBACK_DAYS", "7")
-	cfg = configFromEnv(quietLogger())
-	if cfg.defaultSite != "WH1" || cfg.onlySite != "WH1" || cfg.lookbackDays != 7 {
-		t.Fatalf("DEMAND_SITE_ID = %+v: it is both the default site and the demand filter", cfg)
-	}
-	t.Setenv("DEMAND_SITE_ID", "")
-	t.Setenv("DEFAULT_SITE_ID", "WH2")
-	cfg = configFromEnv(quietLogger())
-	if cfg.defaultSite != "WH2" || cfg.onlySite != "" {
-		t.Fatalf("DEFAULT_SITE_ID = %+v: a default site alone must not filter demand", cfg)
-	}
-}
-
-func TestShutdownDrainDelay(t *testing.T) {
-	cases := map[string]time.Duration{"": DefaultShutdownDrainDelay, "0": 0, "2s": 2 * time.Second, "x": DefaultShutdownDrainDelay, "-1s": DefaultShutdownDrainDelay}
-	for raw, want := range cases {
-		t.Setenv("SHUTDOWN_DRAIN_DELAY", raw)
-		if got := shutdownDrainDelay(quietLogger()); got != want {
-			t.Errorf("shutdownDrainDelay(%q) = %v, want %v", raw, got, want)
 		}
 	}
 }
@@ -233,13 +103,13 @@ func TestStartOutboxRelay_StartsOverKafkaWithoutDialingAtBoot(t *testing.T) {
 }
 
 func TestStartOutboxRelay_WithoutBrokersIsABootError(t *testing.T) {
-	if _, _, err := startOutboxRelay(countingStore{}, nil, quietLogger()); !errors.Is(err, errMissingBrokers) {
-		t.Fatalf("err = %v, want errMissingBrokers", err)
+	if _, _, err := startOutboxRelay(countingStore{}, nil, quietLogger()); !errors.Is(err, config.ErrMissingBrokers) {
+		t.Fatalf("err = %v, want ErrMissingBrokers", err)
 	}
 }
 
-func realtimeEnv() runtimeEnv {
-	rt, err := loadRuntime(withEnv(map[string]string{"KAFKA_BROKERS": "127.0.0.1:1"}))
+func realtimeEnv() config.Runtime {
+	rt, err := config.LoadRuntime(withEnv(map[string]string{"KAFKA_BROKERS": "127.0.0.1:1"}), consumerEnvs())
 	if err != nil {
 		panic(err)
 	}
@@ -310,7 +180,7 @@ func TestBuildServer_WiresEveryPort(t *testing.T) {
 	if relocationMetrics() == nil {
 		t.Fatal("the relocation consumer must count its outcomes")
 	}
-	s, err := buildServer(ad, config{defaultSite: "SITE-1", forwardZoneCodes: []string{"FWD"}}, nil, nil, nil)
+	s, err := buildServer(ad, config.Config{DefaultSite: "SITE-1", ForwardZoneCodes: []string{"FWD"}}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,7 +199,7 @@ func TestBuildServer_WiresEveryPort(t *testing.T) {
 // applied. (The real Postgres/Kafka wiring is TestRunOnRealPostgresAndKafka.)
 func TestCompositionRootServesThePlanFlow(t *testing.T) {
 	ad := testDoubleAdapters(t)
-	s, err := buildServer(ad, config{defaultSite: "SITE-1", lookbackDays: 7, forwardZoneCodes: []string{"FWD"}}, nil, nil, nil)
+	s, err := buildServer(ad, config.Config{DefaultSite: "SITE-1", LookbackDays: 7, ForwardZoneCodes: []string{"FWD"}}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,30 +218,10 @@ func TestCompositionRootServesThePlanFlow(t *testing.T) {
 	}
 }
 
-func TestMigrationsDatabaseURL(t *testing.T) {
-	const pooled, direct = "postgres://u@pgbouncer:6432/db", "postgres://u@postgres:5432/db"
-	t.Setenv("MIGRATIONS_DATABASE_URL", "")
-	if got := migrationsDatabaseURL(pooled); got != pooled {
-		t.Errorf("unset: got %q", got)
-	}
-	t.Setenv("MIGRATIONS_DATABASE_URL", direct)
-	if got := migrationsDatabaseURL(pooled); got != direct {
-		t.Errorf("set: got %q", got)
-	}
-}
-
-func TestNewLoggerAndGetenv(t *testing.T) {
+func TestNewLogger(t *testing.T) {
 	for _, lvl := range []string{"debug", "info", "warn", "error", "nonsense"} {
 		if newLogger(lvl) == nil {
 			t.Fatalf("newLogger(%q) = nil", lvl)
 		}
-	}
-	t.Setenv("SO_TEST_KEY", "")
-	if getenv("SO_TEST_KEY", "fallback") != "fallback" {
-		t.Fatal("getenv fallback")
-	}
-	t.Setenv("SO_TEST_KEY", "v")
-	if getenv("SO_TEST_KEY", "fallback") != "v" {
-		t.Fatal("getenv value")
 	}
 }

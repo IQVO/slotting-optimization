@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 
 	inboundkafka "github.com/claudioed/slotting-optimization/internal/adapters/inbound/kafka"
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/telemetry"
 	"github.com/claudioed/slotting-optimization/internal/application/ports"
 	"github.com/claudioed/slotting-optimization/internal/application/usecases"
+	"github.com/claudioed/slotting-optimization/internal/config"
 )
 
 // worker is a started background loop and the channel closed once it
@@ -19,25 +19,6 @@ type worker struct {
 	done chan struct{}
 }
 
-// modeKafka is the only consumer mode (DEMAND_MODE, PRODUCT_MODE,
-// LAYOUT_MODE, RELOCATION_MODE, PACK_LEVEL_MODE): the names stay because docs and
-// warehouse-infra set them, the legacy values are refused.
-const modeKafka = "kafka"
-
-// parseConsumerMode accepts the only runtime mode of a local-copy consumer:
-// "" (the default) or "kafka". `permissive` and `off` are refused: the
-// consumers always run.
-func parseConsumerMode(name, raw string) error {
-	switch raw {
-	case "", modeKafka:
-		return nil
-	case "permissive", "off":
-		return fmt.Errorf("%s=%s is not supported: this context runs on real Kafka", name, raw)
-	default:
-		return fmt.Errorf("%s: unknown mode %q (want kafka)", name, raw)
-	}
-}
-
 // consumerSpec is one local-copy consumer: its mode and group variables and
 // how to build it once both are resolved.
 type consumerSpec struct {
@@ -45,11 +26,11 @@ type consumerSpec struct {
 	build             func(brokers []string, group string, logger *slog.Logger) *inboundkafka.Consumer
 }
 
-func consumerSpecs(ad adapters, cfg config) []consumerSpec {
+func consumerSpecs(ad adapters, cfg config.Config) []consumerSpec {
 	intake := ad.intake()
 	return []consumerSpec{
 		{"DEMAND_MODE", "DEMAND_CONSUMER_GROUP", func(brokers []string, group string, logger *slog.Logger) *inboundkafka.Consumer {
-			uc := &usecases.ApplyDemandChanged{Intake: intake, Demand: ad.demand, OnlySite: cfg.onlySite}
+			uc := &usecases.ApplyDemandChanged{Intake: intake, Demand: ad.demand, OnlySite: cfg.OnlySite}
 			return inboundkafka.NewDemandConsumer(brokers, group, uc, logger)
 		}},
 		{"PRODUCT_MODE", "PRODUCT_CONSUMER_GROUP", func(brokers []string, group string, logger *slog.Logger) *inboundkafka.Consumer {
@@ -77,6 +58,18 @@ func consumerSpecs(ad adapters, cfg config) []consumerSpec {
 	}
 }
 
+// consumerEnvs is the consumer wiring seen as the environment it validates:
+// the mode and group variables of every local-copy consumer, handed to
+// config.LoadRuntime so validation and wiring cannot drift apart.
+func consumerEnvs() []config.ConsumerEnv {
+	specs := consumerSpecs(adapters{}, config.Config{})
+	out := make([]config.ConsumerEnv, len(specs))
+	for i, s := range specs {
+		out[i] = config.ConsumerEnv{ModeEnv: s.modeEnv, GroupEnv: s.groupEnv}
+	}
+	return out
+}
+
 // relocationMetrics is the StockRelocated consumer's outcome counter, or
 // nil (record nothing) in the impossible case the instrument cannot be
 // registered; never a typed nil inside the interface.
@@ -90,21 +83,21 @@ func relocationMetrics() ports.RelocationMetrics {
 
 // startConsumers starts every consumer; they are always on. The readers dial
 // lazily inside Run, so a broker outage never blocks boot.
-func startConsumers(ad adapters, rt runtimeEnv, logger *slog.Logger) ([]*worker, func()) {
+func startConsumers(ad adapters, rt config.Runtime, logger *slog.Logger) ([]*worker, func()) {
 	ctx, stop := context.WithCancel(context.Background())
 	var (
 		workers []*worker
 		closers []func() error
 	)
-	for _, spec := range consumerSpecs(ad, configFromEnv(logger)) {
-		group := rt.groups[spec.groupEnv]
-		consumer := spec.build(rt.brokers, group, logger)
+	for _, spec := range consumerSpecs(ad, config.FromEnv(logger)) {
+		group := rt.Groups[spec.groupEnv]
+		consumer := spec.build(rt.Brokers, group, logger)
 		w := &worker{name: spec.modeEnv + " consumer", done: make(chan struct{})}
 		workers = append(workers, w)
 		closers = append(closers, consumer.Close)
 		go func() {
 			defer close(w.done)
-			logger.Info("consumer running", "consumer", consumer.Name, "topic", consumer.Topic, "group_id", group, "brokers", rt.brokers)
+			logger.Info("consumer running", "consumer", consumer.Name, "topic", consumer.Topic, "group_id", group, "brokers", rt.Brokers)
 			if err := consumer.Run(ctx); !errors.Is(err, context.Canceled) {
 				logger.Error("consumer stopped", "consumer", consumer.Name, "error", err)
 			}
