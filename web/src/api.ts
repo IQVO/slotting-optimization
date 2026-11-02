@@ -146,15 +146,15 @@ export async function getSlotPlan(planId: string): Promise<SlotPlan> {
   return normalizePlan((await request<SlotPlan>("GET", `/slot-plans/${seg(planId)}`)).data);
 }
 
-/** POST /slot-plans/{planId}/approve (409 plan-not-draft / approved-plan-conflict / concurrent-modification). */
+/** POST /slot-plans/{planId}/approvals (409 plan-not-draft / approved-plan-conflict / concurrent-modification). */
 export async function approveSlotPlan(planId: string): Promise<SlotPlan> {
-  return normalizePlan((await request<SlotPlan>("POST", `/slot-plans/${seg(planId)}/approve`)).data);
+  return normalizePlan((await request<SlotPlan>("POST", `/slot-plans/${seg(planId)}/approvals`)).data);
 }
 
-/** POST /slot-plans/{planId}/reject with an optional reason (409 plan-not-draft). */
+/** POST /slot-plans/{planId}/rejections with an optional reason (409 plan-not-draft). */
 export async function rejectSlotPlan(planId: string, reason?: string): Promise<SlotPlan> {
   const body = reason ? { reason } : undefined;
-  return normalizePlan((await request<SlotPlan>("POST", `/slot-plans/${seg(planId)}/reject`, body)).data);
+  return normalizePlan((await request<SlotPlan>("POST", `/slot-plans/${seg(planId)}/rejections`, body)).data);
 }
 
 /** GET /forward-slots?siteId= -- the site's currently Approved assignment map. */
@@ -163,11 +163,11 @@ export async function listForwardSlots(siteId?: string): Promise<ForwardSlots> {
   return { siteId: res.siteId, planId: res.planId, approvedAt: res.approvedAt, assignments: res.assignments ?? [] };
 }
 
-/** GET /sku-velocity?limit=&windowDays=&siteId= */
+/** GET /sku-velocity?limit=&cursor=&windowDays=&siteId= (`nextCursor` absent on the last page). */
 export async function listSkuVelocity(q: ListSkuVelocityQuery): Promise<SkuVelocityList> {
   const res = (await request<SkuVelocityList>(
     "GET",
-    withQuery("/sku-velocity", { limit: q.limit, windowDays: q.windowDays, siteId: q.siteId }),
+    withQuery("/sku-velocity", { limit: q.limit, cursor: q.cursor, windowDays: q.windowDays, siteId: q.siteId }),
   )).data;
-  return { ...res, items: res.items ?? [] };
+  return { ...res, items: res.items ?? [], nextCursor: res.nextCursor || undefined };
 }

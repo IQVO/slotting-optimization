@@ -171,12 +171,12 @@ func (w *world) iRequest(verb, path string) error {
 func (w *world) iGenerateAPlan() error { return w.mustCall(http.MethodPost, "/slot-plans", "{}") }
 
 func (w *world) iApprovePlan(n int) error {
-	return w.call(http.MethodPost, "/slot-plans/"+planID(n)+"/approve", "")
+	return w.call(http.MethodPost, "/slot-plans/"+planID(n)+"/approvals", "")
 }
 
 func (w *world) iRejectPlan(n int, reason string) error {
 	b, _ := json.Marshal(map[string]string{"reason": reason})
-	return w.call(http.MethodPost, "/slot-plans/"+planID(n)+"/reject", string(b))
+	return w.call(http.MethodPost, "/slot-plans/"+planID(n)+"/rejections", string(b))
 }
 
 func (w *world) planIsInState(n int, state string) error {

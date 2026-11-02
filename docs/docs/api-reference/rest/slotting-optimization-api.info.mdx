@@ -36,7 +36,7 @@ it. Policy `abc-velocity-v1`: rank SKUs by order-line picks over a lookback
 window, class them A/B/C, and assign eligible forward slots with stickiness
 (a SKU that still fits its current slot keeps it).
 
-A plan is created as a `Draft`. Only `approve` makes it the site's forward
+A plan is created as a `Draft`. Only an approval (`POST /slot-plans/{planId}/approvals`) makes it the site's forward
 slot map (at most one `Approved` plan per site; approving a new one
 supersedes the previous one in the same transaction). Approval publishes
 `SlotPlanApproved` with the full assignment map and the moves. This service

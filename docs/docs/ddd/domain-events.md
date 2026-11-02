@@ -50,7 +50,7 @@ by `slotplan.Generate` through `POST /slot-plans`.
 ### `SlotPlanApproved`
 
 `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved`, raised
-by `SlotPlan.Approve` through `POST /slot-plans/{planId}/approve`. It
+by `SlotPlan.Approve` through `POST /slot-plans/{planId}/approvals`. It
 carries the **full** map so a consumer needs no lookup.
 
 | Field | Type | Meaning |
@@ -86,7 +86,7 @@ carries the **full** map so a consumer needs no lookup.
 ### `SlotPlanRejected`
 
 `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanRejected`, raised
-by `SlotPlan.Reject` through `POST /slot-plans/{planId}/reject`.
+by `SlotPlan.Reject` through `POST /slot-plans/{planId}/rejections`.
 
 | Field | Type | Meaning |
 | --- | --- | --- |

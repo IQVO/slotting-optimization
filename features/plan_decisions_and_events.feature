@@ -53,7 +53,7 @@ Feature: Decide on a slot plan - lifecycle edges and the events it publishes
     And the response field "title" is "Reject reason is too long"
 
   Scenario: An unknown field in the reject body is refused
-    When I send POST "/slot-plans/plan-0001/reject" with the JSON {"why":"no"}
+    When I send POST "/slot-plans/plan-0001/rejections" with the JSON {"why":"no"}
     Then the response status is 400
     And the problem type is "malformed-request"
     And plan number 1 is "Draft"
@@ -65,10 +65,10 @@ Feature: Decide on a slot plan - lifecycle edges and the events it publishes
 
     Examples:
       | verb | path                                                                | status | slug            |
-      | POST | /slot-plans/plan-unknown/reject                                     | 404    | plan-not-found  |
-      | POST | /slot-plans/nope/approve                                            | 400    | invalid-plan-id |
-      | POST | /slot-plans/nope/reject                                             | 400    | invalid-plan-id |
-      | POST | /slot-plans/plan-/approve                                           | 400    | invalid-plan-id |
+      | POST | /slot-plans/plan-unknown/rejections                                     | 404    | plan-not-found  |
+      | POST | /slot-plans/nope/approvals                                            | 400    | invalid-plan-id |
+      | POST | /slot-plans/nope/rejections                                             | 400    | invalid-plan-id |
+      | POST | /slot-plans/plan-/approvals                                           | 400    | invalid-plan-id |
       | GET  | /slot-plans/plan-a%2Fb                                              | 400    | invalid-plan-id |
       | GET  | /slot-plans/plan-a%20b                                              | 400    | invalid-plan-id |
       | GET  | /slot-plans/plan-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx | 400    | invalid-plan-id |

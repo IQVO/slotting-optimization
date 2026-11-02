@@ -97,4 +97,4 @@ Feature: Approve or reject a slot plan
       | verb | path                             | status | slug            |
       | GET  | /slot-plans/plan-unknown         | 404    | plan-not-found  |
       | GET  | /slot-plans/nope                 | 400    | invalid-plan-id |
-      | POST | /slot-plans/plan-unknown/approve | 404    | plan-not-found  |
+      | POST | /slot-plans/plan-unknown/approvals | 404    | plan-not-found  |

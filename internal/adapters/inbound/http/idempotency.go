@@ -17,6 +17,26 @@ import (
 // wrapped by RequireIdempotencyKey.
 const IdempotencyKeyHeader = "Idempotency-Key"
 
+// IdempotencyReplayedHeader is set to "true" on a response replayed from the
+// stored answer of an earlier request with the same key, and only then.
+const IdempotencyReplayedHeader = "Idempotency-Replayed"
+
+// maxIdempotencyKeyLen is the longest accepted Idempotency-Key.
+const maxIdempotencyKeyLen = 128
+
+// validIdempotencyKey reports whether key is 1-128 printable ASCII characters.
+func validIdempotencyKey(key string) bool {
+	if len(key) == 0 || len(key) > maxIdempotencyKeyLen {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < 0x20 || key[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
 // TxBinder returns a child context carrying tx, so the use case's own unit of
 // work (the Postgres adapter's) JOINS the transaction the middleware opened
 // instead of beginning a second one. cmd/ passes the outbound adapter's
@@ -25,7 +45,7 @@ type TxBinder func(ctx context.Context, tx pgx.Tx) context.Context
 
 // RequireIdempotencyKey is the fleet's transactional Idempotency-Key
 // middleware (the reference implementation is order-management's), applied
-// route by route to a resource-CREATION endpoint (POST /slot-plans).
+// route by route to every POST and PATCH of the service.
 //
 // The correctness argument in short:
 //
@@ -42,8 +62,9 @@ type TxBinder func(ctx context.Context, tx pgx.Tx) context.Context
 //     (TxBinder), so the idempotency row, the plan and its outbox rows commit
 //     or roll back together.
 //   - Every normal response below 500 is cached, 4xx included: the same key
-//     and body replays the same answer, a different body is 422
-//     idempotency-key-reused. A 5xx or a panic rolls everything back and is
+//     and request replays the same answer (with Idempotency-Replayed: true);
+//     the same key with a different method, path or body is 409
+//     idempotency-key-reused. The key is global: it is looked up alone. A 5xx or a panic rolls everything back and is
 //     never cached, so the same key can retry the real work.
 func RequireIdempotencyKey(pool *pgxpool.Pool, bind TxBinder) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -54,6 +75,11 @@ func RequireIdempotencyKey(pool *pgxpool.Pool, bind TxBinder) func(http.Handler)
 					"send an Idempotency-Key header with a unique value per logical request")
 				return
 			}
+			if !validIdempotencyKey(key) {
+				writeProblem(w, r, idempotencyKeyInvalid,
+					"the Idempotency-Key must be 1 to 128 printable ASCII characters")
+				return
+			}
 			body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes))
 			if err != nil {
 				writeError(w, r, errMalformedRequest)
@@ -61,7 +87,7 @@ func RequireIdempotencyKey(pool *pgxpool.Pool, bind TxBinder) func(http.Handler)
 			}
 			_ = r.Body.Close()
 			r.Body = io.NopCloser(bytes.NewReader(body))
-			sum := sha256.Sum256(body)
+			sum := sha256.Sum256(append([]byte(r.Method+" "+r.URL.Path+"\n"), body...))
 			requestHash := hex.EncodeToString(sum[:])
 
 			ctx := r.Context()
@@ -91,7 +117,8 @@ func RequireIdempotencyKey(pool *pgxpool.Pool, bind TxBinder) func(http.Handler)
 }
 
 // replayCachedResponse answers a request whose key already has a committed
-// row: the stored outcome when the body matches, 422 when it does not.
+// row: the stored outcome when the fingerprint (method + path + body hash,
+// folded into requestHash) matches, 409 idempotency-key-reused when it does not.
 func replayCachedResponse(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, key, requestHash string) {
 	var (
 		storedHash string
@@ -108,7 +135,7 @@ func replayCachedResponse(w http.ResponseWriter, r *http.Request, pool *pgxpool.
 		return
 	}
 	if storedHash != requestHash {
-		writeProblem(w, r, idempotencyKeyReused, "the Idempotency-Key was used with a different request body")
+		writeProblem(w, r, idempotencyKeyReused, "the Idempotency-Key was used with a different request")
 		return
 	}
 	if statusCode == nil {
@@ -118,6 +145,7 @@ func replayCachedResponse(w http.ResponseWriter, r *http.Request, pool *pgxpool.
 		return
 	}
 	copyStoredHeaders(w.Header(), headersRaw)
+	w.Header().Set(IdempotencyReplayedHeader, "true")
 	w.WriteHeader(*statusCode)
 	_, _ = w.Write(body)
 }
@@ -169,6 +197,15 @@ func (c *capture) Write(b []byte) (int, error) {
 // runFreshRequest handles a genuinely new key: capture the response, persist
 // the outcome in the same transaction, commit, and only then write to the
 // real client.
+//
+// The handler runs behind a SAVEPOINT. A mapped domain conflict -- a racing
+// approval losing on uq_slot_plans_one_approved_per_site, say -- fails a
+// statement on the server and leaves the transaction ABORTED even though the
+// handler answers a truthful 4xx. Releasing the savepoint exposes that: the
+// release fails, ROLLBACK TO SAVEPOINT discards the half-done work and heals
+// the transaction, and the 4xx outcome is recorded and committed like any
+// other. A 2xx answer behind a failed release is a lie (its writes are
+// gone), so it rolls everything back and fails the request instead.
 func runFreshRequest(ctx context.Context, w http.ResponseWriter, r *http.Request, tx pgx.Tx, bind TxBinder, key string, next http.Handler) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -176,6 +213,11 @@ func runFreshRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 			panic(p)
 		}
 	}()
+	if _, err := tx.Exec(ctx, "SAVEPOINT handler_run"); err != nil {
+		_ = tx.Rollback(ctx)
+		writeError(w, r, err)
+		return
+	}
 	rec := &capture{header: http.Header{}}
 	next.ServeHTTP(rec, r.WithContext(bind(ctx, tx)))
 	if rec.code == 0 {
@@ -187,6 +229,24 @@ func runFreshRequest(ctx context.Context, w http.ResponseWriter, r *http.Request
 		_ = tx.Rollback(ctx)
 		flush(w, rec)
 		return
+	}
+	if _, err := tx.Exec(ctx, "RELEASE SAVEPOINT handler_run"); err != nil {
+		// A statement inside the handler failed on the server: the
+		// transaction is aborted. Rolling back to the savepoint discards the
+		// handler's partial writes -- the correct all-or-nothing semantics
+		// for an error answer -- and returns the transaction to health.
+		if _, rerr := tx.Exec(ctx, "ROLLBACK TO SAVEPOINT handler_run"); rerr != nil {
+			_ = tx.Rollback(ctx)
+			writeError(w, r, err)
+			return
+		}
+		if rec.code < http.StatusBadRequest {
+			// A success answer whose writes cannot be committed must neither
+			// be returned nor cached: fail the request so the key retries.
+			_ = tx.Rollback(ctx)
+			writeError(w, r, err)
+			return
+		}
 	}
 	headers, err := json.Marshal(rec.header)
 	if err != nil {

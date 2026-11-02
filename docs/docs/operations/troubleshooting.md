@@ -52,9 +52,9 @@ Every error is `application/problem+json` with
 
 | Status and slug | Cause | Fix |
 | --- | --- | --- |
-| `400 idempotency-key-required` | `POST /slot-plans` without `Idempotency-Key` (the middleware is always on: there is no in-memory mode) | send a unique key per logical request |
+| `400 idempotency-key-required` | a POST without `Idempotency-Key` (`400 idempotency-key-invalid` when it is not 1-128 printable ASCII) (the middleware is always on: there is no in-memory mode) | send a unique key per logical request |
 | `400 malformed-request` / `404 resource-not-found` on a request that carries a NUL character (U+0000) | Postgres text cannot hold NUL: the NUL guard refuses it before any idempotency key is recorded (a NUL in the path is a 404, in the body or query a 400) | strip the NUL from the path, body and query |
-| `422 idempotency-key-reused` | same key, different body (compared by SHA-256 of the raw body, so whitespace counts) | new key for a new request; resend the identical bytes to replay |
+| `409 idempotency-key-reused` | same key, different method, path or body (compared by SHA-256 of the raw body, so whitespace counts) | new key for a new request; resend the identical bytes to replay |
 | `400 malformed-request` | invalid JSON, an unknown field (`DisallowUnknownFields`), trailing data, wrong types, or a body over 64 KiB | send only `siteId`/`lookbackDays` (generate) or `reason` (reject) |
 | `400 invalid-site-id` | malformed `siteId` (empty, longer than 64 characters, whitespace, control characters or `/`), or no `siteId` while neither `DEMAND_SITE_ID` nor `DEFAULT_SITE_ID` is set | pass `siteId` or configure a default |
 | `400 invalid-lookback` | `lookbackDays` is 0 or outside 1 to 365 | 1 to 365 |

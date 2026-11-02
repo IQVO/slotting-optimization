@@ -31,3 +31,4 @@ section.
 Where the code on `develop` has moved past an ADR's wording (for example
 ADR 0001's "consumer built in the service phase" status column, now built),
 the code is authoritative and the documentation pages describe the code.
+| [0014](/docs/adr/0014-adopt-the-fleet-rest-api-guideline) | Adopt the fleet REST API guideline: noun routes (`approvals`, `rejections`), every POST keyed, `409 idempotency-key-reused`, `Idempotency-Replayed`, keyset `sku-velocity` | Accepted (2026-11-01); amends the REST surface of ADR 0001 and ADR 0011 |

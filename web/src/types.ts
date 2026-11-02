@@ -125,6 +125,7 @@ export interface SkuVelocityList {
   windowFrom: string;
   windowTo: string;
   items: SkuVelocity[];
+  nextCursor?: string;
 }
 
 export interface ListSlotPlansQuery {
@@ -136,6 +137,7 @@ export interface ListSlotPlansQuery {
 
 export interface ListSkuVelocityQuery {
   limit?: number;
+  cursor?: string;
   windowDays?: number;
   siteId?: string;
 }

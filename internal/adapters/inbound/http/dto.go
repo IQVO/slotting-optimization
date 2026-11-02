@@ -130,6 +130,7 @@ type skuVelocityListBody struct {
 	WindowFrom string            `json:"windowFrom"`
 	WindowTo   string            `json:"windowTo"`
 	Items      []skuVelocityBody `json:"items"`
+	NextCursor string            `json:"nextCursor,omitempty"`
 }
 
 // ts formats an instant as RFC 3339 UTC; the zero time is "" (omitted).
@@ -217,6 +218,9 @@ func toSkuVelocity(r usecases.SkuVelocityResult) skuVelocityListBody {
 	out := skuVelocityListBody{SiteID: string(r.Site), WindowFrom: ts(r.From), WindowTo: ts(r.To), Items: make([]skuVelocityBody, len(r.Items))}
 	for i, v := range r.Items {
 		out.Items[i] = velocityBody(v)
+	}
+	if r.More && len(r.Items) > 0 {
+		out.NextCursor = velocityCursor(r.Items[len(r.Items)-1])
 	}
 	return out
 }
