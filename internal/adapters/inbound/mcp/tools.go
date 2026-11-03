@@ -289,10 +289,14 @@ func (d Deps) getSkuVelocity(ctx context.Context, in skuVelocityInput) (skuVeloc
 
 // registerTools adds the four read-only tools. Every tool is annotated
 // read-only, idempotent and closed-world; TestToolSurface pins the set and
-// fails the build on any write-verb name (docs/adr/0005).
+// fails the build on any write-verb name (docs/adr/0005). Every tool also
+// declares its authority level in Meta (Agentic Standard v2, AS-1): the whole
+// surface is a pure read of this context's own state, so L1 everywhere. The
+// ToolAnnotations literal is written out per tool on purpose: the fleet's
+// static sensor must be able to prove ReadOnlyHint true (identical values,
+// no behaviour change).
 func (d Deps) registerTools(server *mcp.Server) {
 	closedWorld := false
-	readOnly := &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &closedWorld}
 
 	addTool(server, &mcp.Tool{
 		Name: "get_slot_plan",
@@ -304,7 +308,8 @@ func (d Deps) registerTools(server *mcp.Server) {
 			"moves_total, moves_executed, last_executed_at and per move move_seq, sku, kind, executed, executed_quantity, " +
 			"last_executed_at) recorded from inventory-storage's relocations. Read-only; fails with plan-not-found " +
 			"for an unknown id and invalid-plan-id for a malformed one.",
-		Annotations: readOnly,
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &closedWorld},
+		Meta:        authorityMeta(authorityL1),
 	}, d.getSlotPlan)
 
 	addTool(server, &mcp.Tool{
@@ -314,7 +319,8 @@ func (d Deps) registerTools(server *mcp.Server) {
 			"(Draft, Approved, Rejected or Superseded). Pass the returned next_cursor to get the next page; it is absent on " +
 			"the last page. Read-only; a bad limit fails with invalid-limit, a bad cursor with invalid-cursor, an unknown " +
 			"state with invalid-state and a malformed site with invalid-site-id.",
-		Annotations: readOnly,
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &closedWorld},
+		Meta:        authorityMeta(authorityL1),
 	}, d.listSlotPlans)
 
 	addTool(server, &mcp.Tool{
@@ -323,7 +329,8 @@ func (d Deps) registerTools(server *mcp.Server) {
 			"with that plan_id and approved_at. A site without an Approved plan yields an empty assignment list and no " +
 			"plan_id, not an error. site_id defaults to the service's default site. Read-only; fails with invalid-site-id " +
 			"for a malformed site or when no site is given and no default is configured.",
-		Annotations: readOnly,
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &closedWorld},
+		Meta:        authorityMeta(authorityL1),
 	}, d.getForwardSlots)
 
 	addTool(server, &mcp.Tool{
@@ -332,7 +339,8 @@ func (d Deps) registerTools(server *mcp.Server) {
 			"window_days days (default 28, max 365) of a site, fastest first, cut to limit SKUs (default 100, max 500). " +
 			"site_id defaults to the service's default site. Returns window_from and window_to (UTC). Read-only; a bad " +
 			"limit or window fails with invalid-limit and a malformed or missing site with invalid-site-id.",
-		Annotations: readOnly,
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true, OpenWorldHint: &closedWorld},
+		Meta:        authorityMeta(authorityL1),
 	}, d.getSkuVelocity)
 }
 

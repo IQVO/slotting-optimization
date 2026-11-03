@@ -37,18 +37,28 @@ const instructions = "Forward pick slot planning of the warehouse (read-only): r
 	"picks and units per SKU over a window). Nothing here changes data: generating a plan and approving or rejecting it " +
 	"(the human decision) are REST operations of slotting-optimization."
 
-// NewServer builds the MCP server for this bounded context with every tool
-// registered.
+// NewServer builds the MCP server for this bounded context with every tool,
+// resource, and workflow prompt registered.
 func NewServer(deps Deps) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{Name: serverName, Version: serverVersion},
 		&mcp.ServerOptions{Instructions: instructions},
 	)
 	deps.registerTools(server)
+	deps.registerResources(server)
+	deps.registerPrompts(server)
 	return server
 }
 
 // Handler returns the Streamable HTTP handler for the MCP server.
 func Handler(server *mcp.Server) http.Handler {
-	return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil)
+	// Stateless (Agentic Standard v2, AS-4): no Mcp-Session-Id is issued, so
+	// the server also answers the 2026-07-28 revision's per-request handshake
+	// (server/discover) while legacy initialize clients keep working.
+	// Nothing here relies on cross-call session state: every tool is a pure
+	// read (ADR 0005), so there is no conversation to remember.
+	return mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return server },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	)
 }

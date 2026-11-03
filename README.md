@@ -308,7 +308,13 @@ in the `chart-tests` job and lints the chart in `helm-lint`.
 | `get_sku_velocity` | order-line picks and units per SKU over `window_days`, fastest first, `limit` |
 
 Generating, approving and rejecting a plan stay on REST: the MCP surface has
-no write tool and the build fails if one appears.
+no write tool and the build fails if one appears. Every tool and both A2A
+skills declare authority `L1` (`_meta` `com.warehouse/authority` / tag
+`authority:L1`, Agentic Standard v2), the transport is stateless (2026-07-28
+`server/discover` plus legacy `initialize`), and the surface carries one
+resource (`warehouse://slotting-optimization/forward-slots/{siteId}`) and one
+prompt (`review_slot_plan`, the operator SOP for reviewing a plan) —
+[ADR 0015](docs/adr/0015-agent-authority-levels-and-complete-mcp-surface.md).
 
 ### Running the A2A agent in Kubernetes
 
@@ -325,6 +331,9 @@ as REST), never a JSON-RPC error.
 |---|---|
 | `forward_slot_map` | the CURRENT forward slot map of a site (`siteId`, default site if omitted) |
 | `slot_plan_review` | one plan in full with its execution progress, by `planId`, or the newest plan matching `siteId` / `state` |
+
+Both skills declare `authority:L1` on the card (Agentic Standard v2,
+[ADR 0015](docs/adr/0015-agent-authority-levels-and-complete-mcp-surface.md)).
 
 Like MCP it has no write skill, wires no write use case and never dials
 Kafka; A2A carries delegation only, facts still leave as CloudEvents from
