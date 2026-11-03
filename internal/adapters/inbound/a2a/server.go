@@ -86,7 +86,7 @@ func Card(cfg Config) *a2a.AgentCard {
 				ID:          skillForwardSlotMap,
 				Name:        "Current forward slot map of a site",
 				Description: "Read the CURRENT forward slot map of a site: the assignments (sku, slot, abcClass, pickUnit, casesCapacity for CASE faces) of its Approved slot plan, with that planId and approvedAt. A site without an Approved plan yields an empty assignment list and no planId, not a problem. siteId defaults to the service's default site; a malformed site (or none given while no default is configured) is answered as a 400 problem. Read-only.",
-				Tags:        []string{"slotting", "forward-slots", "read"},
+				Tags:        []string{"slotting", "forward-slots", "read", "authority:L1"},
 				InputModes:  []string{appJSON},
 				Examples: []string{
 					`{"skill":"forward_slot_map","arguments":{"siteId":"SITE-1"}}`,
@@ -97,7 +97,7 @@ func Card(cfg Config) *a2a.AgentCard {
 				ID:          skillSlotPlanReview,
 				Name:        "Review a slot plan",
 				Description: "Read one slot plan in full: siteId, state (Draft, Approved, Rejected or Superseded), policy, the demand window, generatedAt and the decision instants (approvedAt, rejectedAt, supersededAt, each omitted until it happens), rejectReason and supersedesPlanId (omitted when none), the assignments (sku, slot, abcClass, picks, units), the moves against the previous plan (sku, fromSlot, toSlot, kind), the unassigned SKUs with their reason, the version and the execution progress of its relocations. Give planId to read that plan (404 problem when unknown, 400 when malformed); without planId the NEWEST plan matching the optional siteId and/or state (Draft, Approved, Rejected, Superseded) is read, and a 404 problem says when none matches. planId cannot be combined with siteId or state. Read-only.",
-				Tags:        []string{"slotting", "slot-plan", "read"},
+				Tags:        []string{"slotting", "slot-plan", "read", "authority:L1"},
 				InputModes:  []string{appJSON},
 				Examples: []string{
 					`{"skill":"slot_plan_review","arguments":{"planId":"plan-1b4e28ba-2fa1-4d3c-8f6e-0a1b2c3d4e5f"}}`,

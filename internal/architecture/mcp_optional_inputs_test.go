@@ -20,6 +20,11 @@ import (
 // page").
 var optionalWordRE = regexp.MustCompile(`(?i)\b(optional|omitted)\b`)
 
+// mcpAdapterDir is where the fleet keeps the MCP inbound adapter (relative
+// to this package); the agent-authority sensor (mcp_authority_fitness_test.go)
+// scans the same directory.
+const mcpAdapterDir = "../adapters/inbound/mcp"
+
 // mcpOptionalInputViolations returns every struct field in one Go source
 // file whose `jsonschema` description calls the field optional while its
 // `json` tag lacks `omitempty`. The MCP Go SDK infers a tool's input schema
