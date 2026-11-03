@@ -106,6 +106,11 @@ const sidebars: SidebarsConfig = {
           label: '0013 A2A inbound adapter',
           href: '/docs/adr/0013-a2a-inbound-adapter',
         },
+        {
+          type: 'link',
+          label: '0015 Agent authority levels and complete MCP surface',
+          href: '/docs/adr/0015-agent-authority-levels-and-complete-mcp-surface',
+        },
       ],
     },
   ],
