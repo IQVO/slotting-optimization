@@ -384,6 +384,8 @@ jobs:
         run: |
           pip install --require-hashes -r .github/requirements/chart-tests.txt
           python3 charts/slotting-optimization/tests/test_service_selectors.py
+      - name: Kong config test (routes + plugins live in the chart, no auth plugin)
+        run: python3 charts/slotting-optimization/tests/test_kong_config.py
 
   # ============================================================
   # CLASSIFICATION: LINTERS & STATIC ANALYSIS (architecture fitness)
