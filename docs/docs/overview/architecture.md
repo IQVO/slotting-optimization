@@ -10,7 +10,7 @@ sidebar_position: 2
 `slotting-optimization` is one Go module (`github.com/claudioed/slotting-optimization`)
 built as a hexagonal (ports and adapters) service. It ships **five binaries**
 in one image (`/app/<name>`, the `Dockerfile` builds every `cmd/*`
-directory): `cmd/api` (the OLTP writer: REST, the four local-copy Kafka
+directory): `cmd/api` (the OLTP writer: REST, the five local-copy Kafka
 consumers and the transactional-outbox relay in one process), `cmd/mcp` (the
 read-only MCP server, ADR 0005), `cmd/a2a` (the read-only A2A agent, ADR 0013) and the analytics read side of ADR 0006,
 `cmd/slotting-projector` (writer) and `cmd/slotting-reports` (reader).
@@ -44,7 +44,7 @@ it calls the REST API of `cmd/api` only.
 | Application | `internal/application/repository`, `internal/application/outbox` | The ports' non-interface vocabulary: typed errors (`ErrPlanNotFound`, `ErrConcurrentModification`, `ErrApprovedPlanConflict`, `ErrProfileNotFound`), filters, local-copy value types and the outbox `Message`. |
 | Analytics region | `internal/analytics/report` | The self-contained read model of ADR 0006: the funnel report shape, the range and granularity rules, percentiles and freshness, event validation, and the `Projection` (writer) and `Reader` ports. It imports no other internal package (arch test). |
 | Inbound adapter | `internal/adapters/inbound/http` | chi router, RFC 7807 problem mapping (`errors.go`), the transactional `Idempotency-Key` middleware (`idempotency.go`), the NUL guard (`nul.go`), the readiness gate (`readiness.go`), DTOs; and the reports router of `cmd/slotting-reports` (`reports_handler.go`). |
-| Inbound adapter | `internal/adapters/inbound/kafka` | The four consumers of `cmd/api` (`demand_consumer.go`, `product_consumer.go`, `layout_consumer.go`, `stock_consumer.go`), the projector's `AnalyticsConsumer` (`analytics_consumer.go`), the at-least-once run loop (`kafka.go`) and dead-lettering (`deadletter.go`). |
+| Inbound adapter | `internal/adapters/inbound/kafka` | The five consumers of `cmd/api` (`demand_consumer.go`, `product_consumer.go`, `packlevel_consumer.go`, `layout_consumer.go`, `stock_consumer.go`), the projector's `AnalyticsConsumer` (`analytics_consumer.go`), the at-least-once run loop (`kafka.go`) and dead-lettering (`deadletter.go`). |
 | Inbound adapter | `internal/adapters/inbound/mcp` | The MCP server and its four read-only tools (`tools.go`), used by `cmd/mcp`. |
 | Shared adapter | `internal/adapters/kafka/cloudevents` | The only place a CloudEvents 1.0 envelope is built (`New`) or decoded (`Decode`). |
 | Outbound adapter | `internal/adapters/outbound/postgres` | pgx repositories, the unit of work (`pgtx` carries the transaction in the context), the outbox store and the golang-migrate runner over the embedded `migrations/*.sql`. |
@@ -140,7 +140,7 @@ flip readiness (projector) or stop listening (reports) and drain within 10 s,
 see the [Runbook](/docs/operations/runbook#analytics-read-side).
 
 Boot order (`run` in `cmd/api/main.go`): logger, the environment is validated
-(`DATABASE_URL`, `KAFKA_BROKERS` and the four consumer groups are mandatory, so
+(`DATABASE_URL`, `KAFKA_BROKERS` and the five consumer groups are mandatory, so
 a misconfiguration exits before anything is opened), OpenTelemetry
 (non-blocking), adapters (migrations through
 `MIGRATIONS_DATABASE_URL` with up to 5 attempts and 1 s, 2 s, 4 s, 8 s backoff,
