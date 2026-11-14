@@ -92,3 +92,13 @@ One aggregate, `SlotPlan`, and one pure domain service, `planning.Planner`
   copy yields an empty or partial plan; the plan lists SKUs it could not place
   with a reason instead of guessing.
 - Nothing happens on the floor until the planned execution edge exists.
+
+## Addendum 2026-11-13: current state
+
+Three statements above no longer match the code.
+
+- **Execution is built, not planned.** [ADR 0010](./0010-approved-slot-plans-are-executed-as-wes-relocation-work.md) (which supersedes ADR 0007) decided it: wes-work-planning consumes `SlotPlanApproved` and plans one RELOCATE work unit per move (wes-work-planning `internal/adapters/inbound/kafka/consumer.go`, wired in `cmd/wes/serving.go`); this context records progress per move (`internal/adapters/inbound/kafka/stock_consumer.go`, `slot_plan_move_executions`).
+- **There is an edge to inventory-storage, but no command edge.** This context consumes `StockRelocated`; inventory-storage consumes `SlotPlanApproved` into its forward-face read model (inventory-storage `internal/adapters/inbound/kafka/slot_plan_consumer.go`, its ADR 0050). An approved plan still moves no stock by itself.
+- **Three contexts consume `SlotPlanApproved`**: wes-work-planning, inventory-storage and pick-face-replenishment (`internal/adapters/inbound/kafka/slotting_consumer.go`). This context also consumes `ProductPackLevelDeclared`, `ProductPackLevelRetired` and `ProductPackLevelMeasured` ([ADR 0012](./0012-case-pick-faces.md), `internal/adapters/inbound/kafka/packlevel_consumer.go`).
+
+The API is routed through Kong at `/api/slotting-optimization` (warehouse-infra `helm-values/slotting-optimization.yaml`, `gatewayApi`).

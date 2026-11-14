@@ -15,11 +15,11 @@ tooling does not exist yet the page says so.
 
 | Item | State on `develop` |
 | --- | --- |
-| Binaries | five in one image: `cmd/api` (`/app/api`: REST, the four consumers and the outbox relay in one process, [Architecture](/docs/overview/architecture)), `cmd/mcp` (`/app/mcp`: the read-only MCP server, ADR 0005), `cmd/a2a` (`/app/a2a`: the read-only A2A agent, ADR 0013), `cmd/slotting-projector` (`/app/slotting-projector`) and `cmd/slotting-reports` (`/app/slotting-reports`): the analytics read side, ADR 0006 |
+| Binaries | five in one image: `cmd/api` (`/app/api`: REST, the five consumers and the outbox relay in one process, [Architecture](/docs/overview/architecture)), `cmd/mcp` (`/app/mcp`: the read-only MCP server, ADR 0005), `cmd/a2a` (`/app/a2a`: the read-only A2A agent, ADR 0013), `cmd/slotting-projector` (`/app/slotting-projector`) and `cmd/slotting-reports` (`/app/slotting-reports`): the analytics read side, ADR 0006 |
 | Web remote | `web/` is the Module Federation remote `slotting_mfe` (exposes `./App`, mounted by warehouse-console on `/slotting/*`). It has its own image, built from `web/Dockerfile` (nginx-unprivileged on `8080`), and the chart's `frontend` component serves it; see [Frontend image](#frontend-image-web-remote) |
 | Container image | built from the repository's `Dockerfile`; the `docker-publish` job of `.github/workflows/ci.yml` pushes `ghcr.io/iqvo/slotting-optimization:{latest,<short-sha>}` on a push to `main` |
 | Helm chart | `charts/slotting-optimization`: the api Deployment (always), the mcp Deployment, Service and Kong route (`mcp.enabled`, `mcp.route.enabled`, off by default), the projector Deployment (no Service) and the reports Deployment + Service `<fullname>-reports:80` (`analytics.enabled`, off by default), the web remote (`frontend.enabled`, off by default), an optional HPA for the api, ingress or Gateway API route. The api Deployment renders every variable `cmd/api` reads as explicit `env` and also mounts the chart ConfigMap with `envFrom` (explicit `env` wins); `tests/render_test.sh` (CI job `chart-tests`) fails when a variable a binary reads is not rendered into its Deployment, when the mount disappears, when the ConfigMap carries a key no binary reads, or when the analytics components render while `analytics.enabled` is false. The `release` job packages and pushes the chart. |
-| Deployment in the kind cluster | warehouse-infra (`origin/develop`): `terraform/apps.yaml` registers `slotting-optimization` (`kind: service`, `database: true`, `analytics: true`, no `frontend_remote`) and `helm-values/slotting-optimization.yaml` sets the four consumer groups, `kafka.enabled: true`, `mcp.enabled: true` with `mcp.route` on, `analytics.enabled: true` (`existingSecret: slotting-optimization-analytics-db`, group `slotting-optimization-analytics`) and `gatewayApi` on. So api, mcp, projector and reports are deployed; the web remote is not. |
+| Deployment in the kind cluster | warehouse-infra (`origin/develop`): `terraform/apps.yaml` registers `slotting-optimization` (`kind: service`, `database: true`, `analytics: true`, no `frontend_remote`) and `helm-values/slotting-optimization.yaml` sets the five consumer groups, `kafka.enabled: true`, `mcp.enabled: true` with `mcp.route` on, `analytics.enabled: true` (`existingSecret: slotting-optimization-analytics-db`, group `slotting-optimization-analytics`) and `gatewayApi` on. So api, mcp, projector and reports are deployed; the web remote is not. |
 | Edge routes | Kong `:8000`: `/api/slotting-optimization` (the api, the chart's `gatewayApi` HTTPRoute, prefix stripped) and `/api/mcp/slotting-optimization` (rewritten to `/mcp`). The chart renders no route for the reports Service, so `/api/slotting-optimization/reports/...` reaches `cmd/api`, which has no `/reports` route (404). |
 | Auth | none, by fleet decision (REST and MCP are unauthenticated; `TestNoAuthMiddlewareReintroduced`) |
 
@@ -62,7 +62,7 @@ restarts the service`) so the pod restarts.
 
 1. Logger (`LOG_LEVEL`), then the environment is validated before anything is
    opened or bound (`loadRuntime`): `DATABASE_URL`, `KAFKA_BROKERS` and the
-   four `*_CONSUMER_GROUP` are mandatory, `*_MODE` accepts only `kafka` and
+   five `*_CONSUMER_GROUP` are mandatory, `*_MODE` accepts only `kafka` and
    `EVENT_PUBLISHER` only `kafka`. A violation exits 1 with an error naming
    the variable (`service exited with error`).
 2. OpenTelemetry (`OTEL_EXPORTER_OTLP_ENDPOINT`, non-blocking).
@@ -71,7 +71,7 @@ restarts the service`) so the pod restarts.
    with 1 s, 2 s, 4 s, 8 s waits (15 s of backoff in total; `internal/bootretry`) because a pod's first
    outbound dial can be reset by its Istio sidecar. The last error is returned
    and the process exits 1 (`service exited with error`).
-4. Build the router, then start the four consumers
+4. Build the router, then start the five consumers
    (`consumer running` with `consumer`, `topic`, `group_id`, `brokers`), then
    the relay (`outbox relay running` with `publisher`, `interval`,
    `max_attempts`, `topic`).
@@ -180,11 +180,12 @@ message is a CloudEvents 1.0 structured-mode JSON value with the header
 | --- | --- | --- | --- | --- |
 | `warehouse.order-management.events` | `com.warehouse.wes.order-management.siteskudemand.SiteSkuDemandChanged` | `DEMAND_MODE`, `DEMAND_CONSUMER_GROUP` | `slotting-demand` | `warehouse.order-management.events.dlq` |
 | `warehouse.product-master.events` | `com.warehouse.wms.product-master.product.ProductClassified`, `...ProductDimensionsDeclared`, `...ProductMeasured` | `PRODUCT_MODE`, `PRODUCT_CONSUMER_GROUP` | `slotting-product` | `warehouse.product-master.events.dlq` |
+| `warehouse.product-master.events` (second consumer, own group) | `com.warehouse.wms.product-master.product.ProductPackLevelDeclared`, `...ProductPackLevelRetired`, `...ProductPackLevelMeasured` (ADR 0012) | `PACK_LEVEL_MODE`, `PACK_LEVEL_CONSUMER_GROUP` | `slotting-pack-level` | `warehouse.product-master.events.dlq` |
 | `warehouse.facility.events` | `com.warehouse.wms.facility-layout.zone.ZoneRegistered`, `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered`, `...LocationSlotDecommissioned` | `LAYOUT_MODE`, `LAYOUT_CONSUMER_GROUP` | `slotting-layout` | `warehouse.facility.events.dlq` |
 | `warehouse.inventory.events` | `com.warehouse.wms.inventory-storage.stock.StockRelocated` (ADR 0010) | `RELOCATION_MODE`, `RELOCATION_CONSUMER_GROUP` | `slotting-relocation` | `warehouse.inventory.events.dlq` |
 | `warehouse.slotting-optimization.analytics` (`cmd/slotting-projector`) | the three `slotplan` types | `ANALYTICS_CONSUMER_GROUP` (default `slotting-optimization-analytics`) | `analytics_processed_events` in the analytical database (by CloudEvents id) | `warehouse.slotting-optimization.analytics.dlq` |
 
-The four api consumers have no default group ids: the deployment chooses them (the chart's
+The five api consumers have no default group ids: the deployment chooses them (the chart's
 `config.relocationConsumerGroup`, e.g. `slotting-optimization-relocation`).
 Other types on the four topics are ignored silently. A new relocation group
 replays `warehouse.inventory.events` from the start; only `StockRelocated`

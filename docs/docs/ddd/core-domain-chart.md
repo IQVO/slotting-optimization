@@ -45,7 +45,8 @@ pick travel and labor, which matters, and slotting rules differ per
 retailer, so it is not Generic. But every commercial WMS ships slotting as a
 standard capability (ADR 0001 cites the 2026 WMS Magic Quadrant), and
 nothing in the fleet's promise to customers depends on it today: an
-approved plan moves no stock yet.
+approved plan moves no stock by itself: its moves become RELOCATE work planned by
+wes-work-planning (ADR 0010).
 
 **Model complexity is moderate (x = 0.46).** Evidence from the code:
 

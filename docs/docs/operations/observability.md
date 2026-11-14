@@ -106,7 +106,7 @@ Trace ids are not injected into log lines.
 | --- | --- | --- | --- |
 | `postgres adapters configured` | INFO | | `cmd/api/main.go` |
 | `retrying` / `succeeded after retry` | WARN / INFO | `op` (`run migrations`, `ping postgres`), `attempt`, `in`, `err` | `internal/bootretry` |
-| `consumer running` | INFO | `consumer`, `topic`, `group_id`, `brokers` (one line per consumer, four in total) | `cmd/api/main.go` |
+| `consumer running` | INFO | `consumer`, `topic`, `group_id`, `brokers` (one line per consumer, five in total) | `cmd/api/main.go` |
 | `consumer stopped` | ERROR | `consumer`, `error` | `cmd/api/main.go` (reader failure; the process then exits non-zero) |
 | `outbox relay running` | INFO | `publisher` (always `kafka`), `interval`, `max_attempts`, `topic` | `cmd/api/main.go` |
 | `outbox relay stopped` | ERROR | `error` (the process then exits non-zero) | `cmd/api/main.go` |

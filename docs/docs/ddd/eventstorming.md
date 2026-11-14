@@ -40,6 +40,9 @@ flowchart LR
     rejected["Slot plan rejected"]:::event
     fwd["Forward-slot map"]:::readmodel
     hs1["Who executes the moves?"]:::hotspot
+    wwp["wes-work-planning<br/>one RELOCATE work unit per move"]:::external
+    ist["inventory-storage<br/>forward-face read model"]:::external
+    pfr["pick-face-replenishment<br/>forward assignment map"]:::external
 
     planner --> vel --> gen --> agg
     pol --> agg
@@ -50,7 +53,16 @@ flowchart LR
     agg --> approved --> fwd
     agg --> rejected
     approved --> hs1
+    approved --> wwp
+    approved --> ist
+    approved --> pfr
 ```
+
+The three sibling consumers of `SlotPlanApproved` are in wes-work-planning
+(`internal/adapters/inbound/kafka/consumer.go`), inventory-storage
+(`internal/adapters/inbound/kafka/slot_plan_consumer.go`) and
+pick-face-replenishment (`internal/adapters/inbound/kafka/slotting_consumer.go`),
+each on its `origin/develop`.
 
 Source: `internal/application/usecases/{generate_plan,decide_plan,queries}.go`,
 `internal/domain/slotplan/plan.go`, `internal/domain/planning/planner.go`.
@@ -68,18 +80,25 @@ flowchart LR
     om["order-management"]:::external
     pm["product-master"]:::external
     fl["facility-layout"]:::external
+    is["inventory-storage"]:::external
     e1["Site SKU demand changed"]:::event
     e2["Product classified"]:::event
     e3["Product dimensions declared or measured"]:::event
+    e7["Product pack level declared, retired or measured"]:::event
+    e8["Stock relocated"]:::event
     e4["Zone registered"]:::event
     e5["Location slot registered"]:::event
     e6["Location slot decommissioned"]:::event
     p1["Whenever demand changes, upsert the line (last writer wins)"]:::policy
     p2["Whenever a product changes, keep the newest version"]:::policy
     p3["Whenever the layout changes, upsert, never revive a retired slot"]:::policy
+    p4["Whenever a pack level changes, keep the newest version"]:::policy
+    p5["Whenever stock is relocated, record it once per relocation id against the plan's move"]:::policy
     r1["Demand copy"]:::readmodel
     r2["Product copy"]:::readmodel
     r3["Slot copy"]:::readmodel
+    r4["Pack-level copy"]:::readmodel
+    r5["Move execution progress"]:::readmodel
     hs2["Demand site id equals facility site code?"]:::hotspot
 
     om --> e1 --> p1 --> r1
@@ -88,11 +107,15 @@ flowchart LR
     fl --> e4 --> p3
     fl --> e5 --> p3
     fl --> e6 --> p3 --> r3
+    pm --> e7 --> p4 --> r4
+    is --> e8 --> p5 --> r5
     r1 --> hs2
     r3 --> hs2
 ```
 
-Source: `internal/application/usecases/consumers.go`,
+Source: `cmd/api/wire_kafka.go` (`consumerSpecs`: five consumers),
+`internal/adapters/inbound/kafka/{demand,product,packlevel,layout,stock}_consumer.go`,
+`internal/application/usecases/consumers.go`,
 `internal/adapters/outbound/postgres/read_models.go`.
 
 ## Hotspots
@@ -102,4 +125,4 @@ Source: `internal/application/usecases/consumers.go`,
 | Who executes the moves? | decided by ADR 0010 (supersedes ADR 0007): wes-work-planning plans one RELOCATE work unit per move of `SlotPlanApproved`, fulfillment-execution executes it, inventory-storage records `StockRelocated`, and this context records the progress per move | resolved; open follow-up: gating new proposals on unfinished execution is out of scope in v1 |
 | Demand site id equals facility site code? | `ForwardSlots` joins `zones.site_code` to the plan's site, which comes from demand `site_id`; ADR 0003 calls for verifying this against live data | a mismatch makes every SKU `NoEligibleSlot` |
 | Lexical slot ranking | layout events carry no travel distance, so v1 ranks slots by location code; `LocationGeometryUpdated` is ignored | "best" slot means "first code", not "closest" |
-| No consumer, no Kong route, no chart | the service is built but not wired into the cluster | [Runbook](/docs/operations/runbook#deployment) |
+| No Kong route to the reports Service, web remote not deployed | the chart routes the api, the MCP server and the A2A agent through Kong, but renders no route for `cmd/slotting-reports`, and warehouse-infra deploys no `slotting_mfe` image | [Integration](/docs/ecosystem/integration#edge-and-infrastructure), [Runbook](/docs/operations/runbook#deployment) |
