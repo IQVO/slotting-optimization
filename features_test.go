@@ -68,14 +68,22 @@ func planID(n int) string { return fmt.Sprintf("plan-%04d", n) }
 
 // world is the per-scenario state.
 type world struct {
-	server    *httptest.Server
-	outbox    *memory.OutboxRepo
-	demand    *inboundkafka.Consumer
-	product   *inboundkafka.Consumer
-	layout    *inboundkafka.Consumer
-	status    int
-	body      []byte
-	listQuery string
+	server  *httptest.Server
+	outbox  *memory.OutboxRepo
+	demand  *inboundkafka.Consumer
+	product *inboundkafka.Consumer
+	layout  *inboundkafka.Consumer
+	// the StockRelocated consumer (ADR 0010), its outcome log, and what the
+	// demand consumer can be rebuilt from (DEMAND_SITE_ID scenarios)
+	stock        *inboundkafka.Consumer
+	relocations  *relocationLog
+	outcomes     *outcomeLog
+	intake       usecases.Intake
+	demandLedger *memory.DemandLedger
+	logger       *slog.Logger
+	status       int
+	body         []byte
+	listQuery    string
 
 	eventSeq int
 	versions map[string]int64 // product version per SKU
@@ -85,7 +93,8 @@ type world struct {
 func (w *world) start() {
 	plans, ob, processed := memory.NewSlotPlanRepo(), memory.NewOutboxRepo(), memory.NewProcessedEventRepo()
 	demand, profiles, catalogue := memory.NewDemandLedger(), memory.NewProfileDirectory(), memory.NewSlotCatalogue()
-	uow := memory.NewUnitOfWork(plans, ob, demand, profiles, catalogue, processed)
+	executions := memory.NewMoveExecutionLedger()
+	uow := memory.NewUnitOfWork(plans, ob, demand, profiles, catalogue, processed, executions)
 	writer := usecases.Writer{Plans: plans, Outbox: ob, Encoder: outboundkafka.NewEncoder(), UoW: uow, Clock: fixedClock{}}
 	planner, err := planning.NewPlanner(planning.LexicalRanking{})
 	if err != nil {
@@ -98,7 +107,7 @@ func (w *world) start() {
 		},
 		ApprovePlan:      &usecases.ApprovePlan{Writer: writer},
 		RejectPlan:       &usecases.RejectPlan{Writer: writer},
-		GetPlan:          &usecases.GetPlan{Plans: plans},
+		GetPlan:          &usecases.GetPlan{Plans: plans, Executions: executions},
 		ListPlans:        &usecases.ListPlans{Plans: plans},
 		ListForwardSlots: &usecases.ListForwardSlots{Plans: plans, DefaultSite: "SITE-1"},
 		ListSkuVelocity:  &usecases.ListSkuVelocity{Demand: demand, Clock: fixedClock{}, DefaultSite: "SITE-1"},
@@ -107,7 +116,8 @@ func (w *world) start() {
 	w.outbox = ob
 
 	intake := usecases.Intake{UoW: uow, Processed: processed}
-	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	w.outcomes = &outcomeLog{}
+	logger := slog.New(w.outcomes)
 	classified := &usecases.ApplyProductClassified{Intake: intake, Profiles: profiles}
 	physical := &usecases.ApplyPhysicalProfile{Intake: intake, Profiles: profiles}
 	w.demand = &inboundkafka.Consumer{Name: "demand", Logger: logger,
@@ -117,6 +127,10 @@ func (w *world) start() {
 		&usecases.ApplyZoneRegistered{Intake: intake, Catalogue: catalogue},
 		&usecases.ApplyLocationSlotRegistered{Intake: intake, Catalogue: catalogue},
 		&usecases.ApplyLocationSlotDecommissioned{Intake: intake, Catalogue: catalogue}, logger)}
+	w.intake, w.demandLedger, w.logger = intake, demand, logger
+	w.relocations = &relocationLog{}
+	w.stock = &inboundkafka.Consumer{Name: "relocation", Logger: logger, DLQ: nopDLQ{}, DeadLetterInvalid: true,
+		Handlers: inboundkafka.StockHandlers(&usecases.RecordRelocation{Intake: intake, Plans: plans, Executions: executions, Metrics: w.relocations}, logger)}
 
 	w.status, w.body, w.listQuery, w.eventSeq = 0, nil, "", 0
 	w.versions, w.units = map[string]int64{}, map[string]int{}
@@ -545,6 +559,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	registerWhen(sc, w)
 	registerThen(sc, w)
 	registerWave2(sc, w) // features_wave2_test.go
+	registerRules(sc, w) // steps_rules_test.go (documentation-derived scenarios)
 }
 
 func registerGiven(sc *godog.ScenarioContext, w *world) {
