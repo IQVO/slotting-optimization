@@ -452,6 +452,28 @@ jobs:
           done
           curl -fsS -o /dev/null -w 'remoteEntry.js -> %{http_code}\n' http://localhost:18194/remoteEntry.js
 
+  # Every consumed contract copy in contracts/pinned.json must byte-equal its
+  # producer's develop: the job fails when a pin in contracts/pinned.json
+  # differs from the producer's develop. The producer repos are readable with
+  # the workflow token; a producer that cannot be read fails the job (exit 2),
+  # never passes it.
+  # ============================================================
+  # CLASSIFICATION: CONTRACT DRIFT (pinned producer specs)
+  # ============================================================
+  pinned-contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Pins equal the producer's develop
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/harness/pinned_contract_gate.py
+      - name: The gate's own tests
+        run: python3 scripts/harness/test_pinned_contract_gate.py
+
   # Shift-left container scan: builds the image (no push) on pull requests,
   # so a vulnerable base image or dependency is caught before merge, not just
   # at publish time. Blocks on CRITICAL/HIGH with a known fix; findings also
