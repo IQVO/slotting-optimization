@@ -63,7 +63,7 @@ is right and this page is a bug.
 | Demand line | One source order line: site, SKU, units, due time, `ACTIVE` or `REMOVED`. Last writer wins. | `repository.DemandLine`, `demand_lines` |
 | Product profile | Handling tags, temperature class and effective unit size of a SKU, guarded by product-master's version. | `repository.ProductProfile`, `product_profiles` |
 | Zone, slot | Facility-layout's zones and location slots; a decommissioned slot never comes back. | `repository.Zone`, `repository.Slot`, `zones`, `slots` |
-| Outcome | What a consumer did with a message: `applied`, `duplicate`, `stale`, `ignored`. | `usecases.Outcome` |
+| Outcome | What a consumer did with a message: `applied`, `duplicate`, `stale`, `ignored`, and for `RecordRelocation` also `unmatched` (the relocation is no move of any plan: claimed and counted, never dead-lettered). | `usecases.Outcome` |
 | Claim | The record that a consumer processed a CloudEvents id, taken in the same transaction as the effect. | `ports.ProcessedEvents`, `processed_events` |
 
 ## Events
