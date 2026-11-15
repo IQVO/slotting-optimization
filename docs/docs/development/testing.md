@@ -16,7 +16,7 @@ read side, ADR 0006, and the real-only runtime, ADR 0011).
 flowchart TB
     arch["Architecture fitness: internal/architecture (24 tests, arch-go + AST)"]
     mut["Mutation: gremlins on internal/domain/slotplan and internal/domain/planning (efficacy and mutant coverage at least 99 %)"]
-    bdd["BDD: 5 features, 50 Scenario / Scenario Outline blocks, real router + real consumers over in-memory adapters"]
+    bdd["BDD: 10 features, 148 Scenario / Scenario Outline blocks (290 executed), real router + real consumers over in-memory adapters"]
     integ["Integration: 21 files in 10 packages tagged integration, testcontainers Postgres 16 and Kafka"]
     unit["Unit: domain, use cases with fakes, HTTP handlers through httptest, consumers with fake readers"]
     unit --> integ --> bdd
@@ -116,7 +116,20 @@ in CI with no explicit package list to keep in sync.
 real chi router over HTTP and feed the local copies through the real
 consumers' `HandleMessage` with raw CloudEvents, over the in-memory adapters
 wired the way `cmd/api` wires them, with a fixed clock (2026-10-08 12:00 UTC)
-and sequential plan ids. Strict mode: an undefined step fails.
+and sequential plan ids. Strict mode: an undefined step fails. The execution
+ledger is wired into the unit of work and `GetPlan`, and the real `StockRelocated`
+consumer runs with a recording metrics port and a dead-letter stub, so the
+execution progress of `GET /slot-plans/{id}` and the relocation outcomes are
+reachable from the suite. The `*_rules.feature` files pin the rules the
+context documentation and ADR 0010 state, one rule per scenario with boundaries
+as Outline rows; their steps are in `steps_rules_test.go`.
+
+The runner executes **290 scenarios** once every Outline Examples row is
+expanded (the `N scenarios` line of
+`go test . -run TestFeatures -count=1 -v`); the table counts definitions
+(`^[[:space:]]*Scenario` in `features/`). BDD-only statement coverage over
+`./internal/...` (`go test . -run TestFeatures -count=1 -coverpkg=./internal/...`)
+is 58.0 %.
 
 | Feature file | Scenario / Scenario Outline blocks |
 | --- | --- |
@@ -125,7 +138,12 @@ and sequential plan ids. Strict mode: an undefined step fails.
 | `features/approve_and_reject.feature` | 10 |
 | `features/plan_decisions_and_events.feature` | 20 |
 | `features/velocity_and_listing.feature` | 5 |
-| **Total** | **50** (7 of them are outlines with example tables) |
+| `features/planning_policy_rules.feature` | 16: ABC class edges, ordering, one SKU per slot, capacity fit, hazmat and temperature, stickiness |
+| `features/local_copies_rules.feature` | 30: demand window, product and physical versions, layout upserts, invalid payloads |
+| `features/plan_lifecycle_rules.feature` | 29: state machine, reasons, list filters and paging, NUL and body-size guards |
+| `features/relocation_execution_rules.feature` | 18: move reference, quantities, duplicates, unmatched reasons, poison payloads |
+| `features/relocation_matching_rules.feature` | 5: bins per move kind without a reference |
+| **Total** | **148** (34 of them outlines with example tables) |
 
 ## Mutation testing
 
