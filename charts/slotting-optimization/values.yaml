@@ -416,6 +416,16 @@ analytics:
       type: ClusterIP
       port: 80
       targetPort: 8092
+    # Kong exposure of the reports API (reports-route.yaml): host path
+    # /api/slotting-optimization/reports rewritten to /reports. Off by default;
+    # warehouse-infra turns it on with the real parentRefs and path.
+    route:
+      enabled: false
+      path: "/api/slotting-optimization/reports"
+      parentRefs:
+        - name: ""
+          namespace: ""
+          sectionName: "http"
     resources:
       limits:
         cpu: 500m
