@@ -42,9 +42,21 @@ func poisonTx(t *testing.T, r *http.Request) {
 	t.Fatal("the duplicate insert did not abort the transaction")
 }
 
-func conflictHandler(t *testing.T) http.Handler {
+// poisonedFinalRefusalHandler poisons the middleware's transaction (a failed
+// statement ABORTS it, like a racing approval hitting the unique index) and
+// then answers 409 plan-not-draft through the PRODUCTION error writer, so the
+// answer carries the class its catalogue entry declares (FINAL).
+func poisonedFinalRefusalHandler(t *testing.T) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		poisonTx(t, r)
+		inboundhttp.RefuseForTest(w, r, "plan-not-draft", http.StatusConflict)
+	})
+}
+
+// handWrittenConflictHandler answers a 409 problem+json BY HAND: no catalogue
+// entry, no class. The rule's safe fallback: it is released like RETRYABLE.
+func handWrittenConflictHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/problem+json")
 		w.WriteHeader(http.StatusConflict)
 		_, _ = w.Write([]byte(`{"type":"https://errors.slotting-optimization.warehouse-systems.dev/approved-plan-conflict","title":"Conflict","status":409}`))
@@ -57,13 +69,14 @@ func keyedRequest(key string) *http.Request {
 	return req
 }
 
-// TestIdempotency_A409FromAnAbortedTransactionCommitsTheOutcome: a racing
-// approval that loses on the unique index answers 409, not 500, and that 409
-// is cached and replayed -- a retry with the same key must NEVER re-run the
-// handler (a re-run would supersede the winner and steal the approval).
-func TestIdempotency_A409FromAnAbortedTransactionCommitsTheOutcome(t *testing.T) {
+// TestIdempotency_AFinal409FromAnAbortedTransactionCommitsTheOutcome: a mapped
+// domain conflict that is FINAL for its request (409 plan-not-draft, ADR 0016)
+// answers 409, not 500, even though the failed statement ABORTED the
+// transaction; the savepoint healing still lets that 409 be recorded and
+// replayed -- a retry with the same key must NOT re-run the handler.
+func TestIdempotency_AFinal409FromAnAbortedTransactionCommitsTheOutcome(t *testing.T) {
 	pool := pgtest.NewPool(t)
-	mw := inboundhttp.RequireIdempotencyKey(pool, pgtx.With)(conflictHandler(t))
+	mw := inboundhttp.RequireIdempotencyKey(pool, pgtx.With)(poisonedFinalRefusalHandler(t))
 
 	first := httptest.NewRecorder()
 	mw.ServeHTTP(first, keyedRequest("k-poison"))
@@ -73,7 +86,7 @@ func TestIdempotency_A409FromAnAbortedTransactionCommitsTheOutcome(t *testing.T)
 
 	var statusCode int
 	if err := pool.QueryRow(t.Context(), `SELECT status_code FROM idempotency_keys WHERE key = 'k-poison'`).Scan(&statusCode); err != nil {
-		t.Fatalf("the 409 outcome was not committed: %v", err)
+		t.Fatalf("the FINAL 409 outcome was not committed: %v", err)
 	}
 	if statusCode != http.StatusConflict {
 		t.Fatalf("cached status = %d", statusCode)
@@ -86,6 +99,41 @@ func TestIdempotency_A409FromAnAbortedTransactionCommitsTheOutcome(t *testing.T)
 	}
 	if replay.Body.String() != first.Body.String() {
 		t.Fatalf("replay body = %s, want %s", replay.Body.String(), first.Body.String())
+	}
+}
+
+// TestIdempotency_AnUnclassified4xxFromAnAbortedTransactionIsReleased: a
+// hand-written problem answer declares no class; the safe fallback (ADR 0016)
+// releases it like RETRYABLE -- the key row is rolled back with the aborted
+// transaction and a retry under the same key executes again.
+func TestIdempotency_AnUnclassified4xxFromAnAbortedTransactionIsReleased(t *testing.T) {
+	pool := pgtest.NewPool(t)
+	var calls atomic.Int64
+	handler := handWrittenConflictHandler()
+	mw := inboundhttp.RequireIdempotencyKey(pool, pgtx.With)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if calls.Load() == 1 {
+			poisonTx(t, r)
+		}
+		handler.ServeHTTP(w, r)
+	}))
+
+	first := httptest.NewRecorder()
+	mw.ServeHTTP(first, keyedRequest("k-unc"))
+	if first.Code != http.StatusConflict {
+		t.Fatalf("first = %d %s, want the hand-written 409 answered", first.Code, first.Body.String())
+	}
+	if n := queryInt(t, pool, `SELECT count(*) FROM idempotency_keys WHERE key = 'k-unc'`); n != 0 {
+		t.Fatalf("an unclassified refusal left %d key rows: the safe fallback releases it", n)
+	}
+
+	again := httptest.NewRecorder()
+	mw.ServeHTTP(again, keyedRequest("k-unc"))
+	if again.Code != http.StatusConflict || again.Header().Get(inboundhttp.IdempotencyReplayedHeader) != "" {
+		t.Fatalf("retry = %d replayed=%q, want the released key to execute again", again.Code, again.Header().Get(inboundhttp.IdempotencyReplayedHeader))
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("handler ran %d times, want 2", calls.Load())
 	}
 }
 

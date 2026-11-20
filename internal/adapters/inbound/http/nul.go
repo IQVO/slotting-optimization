@@ -7,9 +7,6 @@ import (
 	"strings"
 )
 
-// notFoundResource is the 404 of a request path that can never name a resource.
-var notFoundResource = problem{status: http.StatusNotFound, slug: "resource-not-found", title: "Resource not found"}
-
 // rejectNUL turns a NUL character in a request into a client error before it
 // can reach a Postgres text parameter. PostgreSQL text cannot hold U+0000, and
 // a statement that carries one aborts the surrounding transaction (SQLSTATE
@@ -17,8 +14,9 @@ var notFoundResource = problem{status: http.StatusNotFound, slug: "resource-not-
 // became a 500 on the real runtime, hidden for as long as the in-memory
 // adapters served the contract run (ADR 0011).
 //
-//   - a NUL in the URL path can never name a resource: 404 resource-not-found,
-//     the same answer as any other identifier that does not exist;
+//   - a NUL in the URL path can never name a resource: 404 resource-not-found
+//     (notFoundResource, declared in errors.go with its replay class), the
+//     same answer as any other identifier that does not exist;
 //   - a NUL in the query string (raw byte or %00) or in a JSON body (a raw
 //     byte or the \u0000 escape) is a malformed request: 400 malformed-request,
 //     before the Idempotency-Key middleware records anything.
