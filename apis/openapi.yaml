@@ -199,8 +199,11 @@ paths:
         Moves a `Draft` plan to `Approved` and publishes `SlotPlanApproved` with
         the full assignment map and the moves. The site's previously Approved
         plan, if any, becomes `Superseded` in the same transaction. Approving a
-        plan that is not a `Draft` is a 409 `plan-not-draft`; losing a race to
-        another approval of the same site is a 409 `approved-plan-conflict`.
+        plan that is not a `Draft` is a 409 `plan-not-draft` (final: stored and
+        replayed under the same `Idempotency-Key`); losing a race to
+        another approval of the same site is a 409 `approved-plan-conflict` or a
+        409 `concurrent-modification` (retryable: not stored, the key is
+        released and a retry under the same key executes again).
       tags: [Slot plans]
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -544,8 +547,14 @@ components:
         an invalid one (longer than 128 characters or
         with a control or non-ASCII character) is a 400 `idempotency-key-invalid`.
         A replay with the same key and the same method, path and body returns the
-        stored response (status, headers and body, including a stored 4xx) with
-        `Idempotency-Replayed: true`; the same key with a different request is
+        stored response (status, headers and body) with `Idempotency-Replayed:
+        true`, but only when the first answer was final for the request: a 2xx
+        and a FINAL refusal are stored and replayed, while a RETRYABLE refusal
+        (409 `approved-plan-conflict`, 409 `concurrent-modification`, 400
+        `invalid-site-id` when no default site is configured) is not stored --
+        its key is released and the retry executes the work again, so the same
+        key with a different body afterwards is a NEW request, not a conflict.
+        The same key with a different request against a STORED answer is
         409 `idempotency-key-reused`. A 5xx outcome is never stored.
       schema:
         type: string
@@ -699,7 +708,7 @@ components:
             detail: slot plan not found
             instance: /slot-plans/plan-unknown
     PlanConflict:
-      description: The plan is not a Draft, another request changed the plan or the site's approval first, or the Idempotency-Key was already used with a different request (`idempotency-key-reused`).
+      description: The plan is not a Draft, another request changed the plan or the site's approval first, or the Idempotency-Key was already used with a different request (`idempotency-key-reused`). `plan-not-draft` and `idempotency-key-reused` are final (stored and replayed under the same key); `approved-plan-conflict` and `concurrent-modification` are retryable (not stored, the key is released, the retry executes again).
       content:
         application/problem+json:
           schema:

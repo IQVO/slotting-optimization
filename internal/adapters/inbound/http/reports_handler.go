@@ -85,14 +85,12 @@ func (s *ReportsServer) handleSlotPlanFunnel(w http.ResponseWriter, r *http.Requ
 	now := s.now()
 	rg, err := report.ParseRange(q.Get("from"), q.Get("to"), now)
 	if err != nil {
-		writeProblem(w, r, problem{http.StatusBadRequest, "invalid-report-range",
-			"from and to must form a valid RFC 3339 range of at most 366 days"}, err.Error())
+		writeProblem(w, r, invalidReportRange, err.Error())
 		return
 	}
 	granularity, err := report.ParseGranularity(q.Get("granularity"))
 	if err != nil {
-		writeProblem(w, r, problem{http.StatusBadRequest, "invalid-report-granularity",
-			"granularity must be \"day\""}, err.Error())
+		writeProblem(w, r, invalidReportGranularity, err.Error())
 		return
 	}
 	days, err := s.Reader.FunnelDays(r.Context(), report.FunnelQuery{Range: rg, SiteID: q.Get("siteId"), Granularity: granularity})
@@ -128,6 +126,5 @@ func (s *ReportsServer) handleFreshness(w http.ResponseWriter, r *http.Request) 
 // is logged, never echoed: it can carry SQL and connection details.
 func writeReportStoreError(w http.ResponseWriter, r *http.Request, err error) {
 	slog.ErrorContext(r.Context(), "report query failed", "error", err, "path", sanitizeLog(r.URL.Path))
-	writeProblem(w, r, problem{http.StatusInternalServerError, "report-store-error",
-		"The report could not be served"}, "the analytical database query failed")
+	writeProblem(w, r, reportStoreError, "the analytical database query failed")
 }

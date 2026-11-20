@@ -7,6 +7,13 @@ Accepted (2026-11-01). Amends the REST surface of
 idempotency statements of [ADR 0011](./0011-postgres-and-kafka-are-the-only-runtime.md).
 Hard cutover: no aliases, no dual routes, no toggles.
 
+> 2026-11-20: this ADR's "Same key and fingerprint replays the stored answer"
+> statement is amended by
+> [ADR 0016](./0016-every-problem-type-has-a-replay-class.md): the stored
+> answer is replayed only when it was final for the request (a 2xx, a FINAL or
+> OUTCOME refusal); a RETRYABLE refusal is not stored and its key is released.
+> The Decision text below is unchanged.
+
 ## Context
 
 The fleet REST API guideline (warehouse-docs, STANDARD.md) removes the
