@@ -64,10 +64,10 @@ func logRelocation(ctx context.Context, logger *slog.Logger, e ce.Event, d stock
 		"source_ref", d.SourceRef, "outcome", string(res.Outcome), "plan_id", string(res.Plan),
 	}
 	if res.Outcome == usecases.OutcomeUnmatched {
-		logger.InfoContext(ctx, "relocation matched no slot-plan move", append(attrs, "reason", string(res.Unmatched))...)
+		logger.InfoContext(ctx, "relocation matched no slot-plan move", sanitizeArgs(append(attrs, "reason", string(res.Unmatched)))...)
 		return
 	}
-	logger.InfoContext(ctx, "event processed", append(attrs, "move_seq", res.MoveSeq)...)
+	logger.InfoContext(ctx, "event processed", sanitizeArgs(append(attrs, "move_seq", res.MoveSeq))...)
 }
 
 // NewStockConsumer reads inventory-storage's topic under groupID
