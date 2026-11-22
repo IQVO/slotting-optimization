@@ -308,19 +308,25 @@ the projector's group lag on the analytics topic before acting.
 
 ## Housekeeping
 
-There is **no sweeper** on `develop`. Three tables only grow:
+`cmd/api` runs ONE sweeper: the idempotency-key retention purge (ADR 0016,
+addendum 2026-11-22) — one pass at start, then hourly, in statements of at
+most 500 rows (`FOR UPDATE SKIP LOCKED`, never a row a request holds). A
+stored answer lives for 24 hours; past the window the key is claimed by the
+next request under it and the row deleted by the purge, so
+`idempotency_keys` no longer needs a manual cleanup. Two tables still only
+grow:
 
 | Table | Grows with | Safe cleanup |
 | --- | --- | --- |
 | `outbox_events` | every plan decision | rows with `published_at IS NOT NULL` are never read again: `DELETE FROM outbox_events WHERE published_at < now() - interval '7 days';` |
-| `idempotency_keys` | every POST | `idx_idempotency_keys_created_at` exists for this: `DELETE FROM idempotency_keys WHERE created_at < now() - interval '1 day';` (a client retrying with an older key then gets a fresh plan) |
+| `idempotency_keys` | every POST | **automatic**: the hourly purge in `cmd/api` (`main_purge.go`) deletes rows older than 24 h; a client retrying with an older key gets a fresh plan (the claim re-executes it) |
 | `processed_events` | every consumed event | only delete claims older than the topic's retention; a younger claim protects against a redelivery |
 
 `slot_plans` keeps every plan by design (the audit trail of decisions). In
 the analytical database `analytics_processed_events` and `slot_plan_facts`
 also only grow (one claim row per event, one fact row per plan). There is
-no retention job; both are safe to drop together and rebuild from the topic
-(above).
+no retention job for them; both are safe to drop together and rebuild from
+the topic (above).
 
 ## Scaling
 
