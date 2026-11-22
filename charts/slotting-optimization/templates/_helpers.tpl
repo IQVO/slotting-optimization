@@ -87,6 +87,15 @@ Fully qualified name of the A2A agent Deployment/Service (<release>-a2a, ADR 001
 {{- include "slotting-optimization.fullname" . }}-a2a
 {{- end }}
 
+{{/* agents.colocate (warehouse-infra ADR 0012): "true" iff colocate, mcp and a2a are all on; else empty. */}}
+{{- define "slotting-optimization.agentsColocated" -}}
+{{- if and (.Values.agents | default dict).colocate .Values.mcp.enabled .Values.a2a.enabled }}true{{ end -}}
+{{- end }}
+
+{{- define "slotting-optimization.agentsFullname" -}}
+{{- printf "%s-agents" (include "slotting-optimization.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
 {{/*
 Image reference shared by every Deployment (api, mcp, a2a).
 */}}
