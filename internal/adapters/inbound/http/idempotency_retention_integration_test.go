@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	inboundhttp "github.com/claudioed/slotting-optimization/internal/adapters/inbound/http"
 )
 
-// The retention rule (ADR 0016, addendum 2026-11-22): a stored answer lives
-// for a 24-hour TTL, then the key is forgotten -- an expired row must never
+// The TTL rule (ADR 0016, addendum 2026-11-22): a stored answer lives for
+// IdempotencyTTL, then the key is forgotten -- an expired row must never
 // answer a replay; the request under that key EXECUTES again. These tests
 // drive the REAL router and Postgres of the pgFixture.
 
@@ -50,7 +52,7 @@ func TestAnExpiredKeyExecutesInsteadOfReplaying(t *testing.T) {
 	if expired.status != http.StatusCreated {
 		t.Fatalf("expired first post = %d %s", expired.status, expired.raw)
 	}
-	ageKeyRow(t, f, "age-key", 25*time.Hour) // one hour past the 24h TTL
+	ageKeyRow(t, f, "age-key", inboundhttp.IdempotencyTTL+time.Hour) // one hour past the TTL
 	again := f.post(t, "/slot-plans", "age-key", `{}`)
 	if again.status != http.StatusCreated {
 		t.Fatalf("expired replay = %d %s, want 201: the request executes again", again.status, again.raw)
