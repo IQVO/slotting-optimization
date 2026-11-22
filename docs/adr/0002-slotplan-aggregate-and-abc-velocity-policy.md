@@ -166,3 +166,7 @@ approval of a plan.
 - Because stickiness is applied on one pass in rank order, a rare cascade is
   possible (A takes B's slot, B takes C's, ...). That is accepted for v1 and
   visible in the moves.
+
+## Addendum 2026-11-13: current state
+
+"Execution of approved moves is PLANNED, not built" is out of date. The moves of an Approved plan are executed as RELOCATE work planned by wes-work-planning, as decided in [ADR 0010](./0010-approved-slot-plans-are-executed-as-wes-relocation-work.md) (not as the MOVE and REPLENISH tasks named above). This context still only plans: it never creates floor work and never writes the stock ledger; it records the progress it reads from `StockRelocated` (`internal/adapters/inbound/kafka/stock_consumer.go`).

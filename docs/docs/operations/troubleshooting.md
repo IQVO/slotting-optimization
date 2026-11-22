@@ -69,6 +69,21 @@ Every error is `application/problem+json` with
 | `409 concurrent-modification` | the plan's `version` changed between load and save | re-fetch and retry |
 | `500 internal-error` | anything unmapped, typically a Postgres outage or a query hitting `statement_timeout = 5s`. The detail is generic; the cause is in the `request failed` log line | check the log and the database |
 
+### Which refusals are replayed under the same `Idempotency-Key`
+
+Only an answer that was final for the request is stored and replayed
+(ADR 0016). A RETRYABLE refusal — `400 invalid-site-id` (no `siteId` and no
+default site configured), `409 approved-plan-conflict`, `409
+concurrent-modification` — is NOT stored: its key is released, so a retry with
+the same key executes the work again, and a different body under that key is a
+new request, not `409 idempotency-key-reused`. A FINAL refusal (`plan-not-found`,
+`plan-not-draft`, every request-validation slug) is stored and replayed
+byte-identically with `Idempotency-Replayed: true`; the same key with a
+different body is then a `409 idempotency-key-reused`. A 5xx is never stored.
+Automation may retry a released key immediately; a person who sees
+`approved-plan-conflict` or `concurrent-modification` should re-read the plan
+and retry consciously.
+
 There is no `412` in this service: no endpoint takes `If-Match` or returns
 an `ETag`. A browser call blocked before it reaches the API is CORS: add the
 console's origin to `CORS_ALLOWED_ORIGINS`.

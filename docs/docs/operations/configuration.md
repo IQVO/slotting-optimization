@@ -60,13 +60,13 @@ not render one of them, and when the ConfigMap has a key no binary reads.
 | Variable | Default | Required | Meaning | Source |
 | --- | --- | --- | --- | --- |
 | `EVENT_PUBLISHER` | `kafka` | no | Kept because the chart and warehouse-infra set it. The only value is `kafka` (the outbox relay writes to `warehouse.slotting-optimization.events`, always on). `log` refuses to boot (`EVENT_PUBLISHER=log is not supported: this context publishes to real Kafka`), any other value too (`EVENT_PUBLISHER: unknown value ... (want kafka)`). | `cmd/api/main.go` (`parsePublisherMode`, `startOutboxRelay`) |
-| `KAFKA_BROKERS` | none | **yes** | Comma-separated bootstrap brokers, shared by the relay writer, the four readers, the four DLQ writers and the `/readyz` broker check. Unset exits at boot with `KAFKA_BROKERS is required: this context runs on real Kafka (outbox relay, consumers, /readyz)`. The fleet broker is reachable at `localhost:9092` from a laptop. | `cmd/api/main.go` (`loadRuntime`, `startConsumers`, `startOutboxRelay`) |
+| `KAFKA_BROKERS` | none | **yes** | Comma-separated bootstrap brokers, shared by the relay writer, the five readers, the five DLQ writers and the `/readyz` broker check. Unset exits at boot with `KAFKA_BROKERS is required: this context runs on real Kafka (outbox relay, consumers, /readyz)`. The fleet broker is reachable at `localhost:9092` from a laptop. | `cmd/api/main.go` (`loadRuntime`, `startConsumers`, `startOutboxRelay`) |
 | `OUTBOX_RELAY_INTERVAL` | `1s` | no | Sleep between relay passes that did not fill a batch of 100 rows. Go duration (`500ms`) or plain seconds (`0.5`); invalid or non-positive logs `invalid OUTBOX_RELAY_INTERVAL; using the default`. | `cmd/api/main.go` (`parseRelayInterval`), `outbox.DefaultInterval` |
 | `OUTBOX_MAX_ATTEMPTS` | `20` | no | How many times one outbox row may fail before the relay **excludes it from claims** ([ADR 0008](/docs/adr/0008-outbox-relay-attempt-cap)), so a poison row cannot block every row behind it forever. The excluded row stays in `outbox_events` with `attempts` and `last_error`; the failure that reaches the cap logs one ERROR (`outbox relay: row reached the attempt cap ...`). `0` = unlimited (the old behaviour); a negative or non-integer value logs `invalid OUTBOX_MAX_ATTEMPTS; using the default` and uses 20. Re-arm a row with `UPDATE outbox_events SET attempts = 0 WHERE id = ...` ([Runbook](/docs/operations/runbook#outbox-relay-attempt-cap)). Chart value `config.outboxMaxAttempts`. | `cmd/api/main.go` (`outboxMaxAttempts`), `outbox.DefaultMaxAttempts` |
 
 ### Kafka: consumers
 
-Each local copy has its own mode variable and consumer group. All four
+Each local copy has its own mode variable and consumer group. All five
 consumers **always run** ([ADR 0011](/docs/adr/0011-postgres-and-kafka-are-the-only-runtime)).
 The mode names are kept because the chart and warehouse-infra set them, but
 the only value is `kafka` (also the default when unset): `permissive` and
@@ -86,6 +86,8 @@ always runs on real Kafka`. Group ids are never hard-coded
 | `LAYOUT_CONSUMER_GROUP` | none | **yes** | Consumer group id of the layout consumer. | `cmd/api/main.go` (`loadRuntime`) |
 | `RELOCATION_MODE` | `kafka` | no | The StockRelocated consumer on `warehouse.inventory.events`: the execution progress of the slot plans (ADR 0010). Only `kafka`. Chart value `config.relocationMode`. | `cmd/api/main.go` (`consumerSpecs`, `parseConsumerMode`) |
 | `RELOCATION_CONSUMER_GROUP` | none | **yes** | Consumer group id of the StockRelocated consumer (e.g. `slotting-optimization-relocation`). Chart value `config.relocationConsumerGroup`. | `cmd/api/main.go` (`loadRuntime`) |
+| `PACK_LEVEL_MODE` | `kafka` | no | The pack-level consumer on `warehouse.product-master.events`: `ProductPackLevelDeclared`, `ProductPackLevelRetired` and `ProductPackLevelMeasured` feed the local pack-level view (ADR 0012). Only `kafka`. Chart value `config.packLevelMode`. | `cmd/api/main.go` (`consumerSpecs`, `parseConsumerMode`) |
+| `PACK_LEVEL_CONSUMER_GROUP` | none | **yes** | Consumer group id of the pack-level consumer. Chart value `config.packLevelConsumerGroup`. | `cmd/api/main.go` (`loadRuntime`) |
 
 ### Readiness and worker failure
 
@@ -188,6 +190,6 @@ These are constants in code; changing them is a code change.
 | Profile | Variables |
 | --- | --- |
 | Unit tests, BDD | nothing: they use the in-memory test doubles directly and never boot the binary |
-| Local run (`docker compose up -d`, [Quickstart](/docs/overview/quickstart)) | `DATABASE_URL`, `KAFKA_BROKERS`, the four `*_CONSUMER_GROUP`, and `DEFAULT_SITE_ID=WH1` to omit `siteId` |
+| Local run (`docker compose up -d`, [Quickstart](/docs/overview/quickstart)) | `DATABASE_URL`, `KAFKA_BROKERS`, the five `*_CONSUMER_GROUP`, and `DEFAULT_SITE_ID=WH1` to omit `siteId` |
 | Local analytics read side ([Quickstart](/docs/overview/quickstart#run-the-analytics-read-side-optional)) | `ANALYTICS_DATABASE_URL` (a second database), `KAFKA_BROKERS` and a `*-local` `ANALYTICS_CONSUMER_GROUP` for the projector; `ANALYTICS_DATABASE_URL` for the reports |
-| A cluster deployment | everything above with real DSNs and brokers, plus `MIGRATIONS_DATABASE_URL` when `DATABASE_URL` goes through a pooler, `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` and `CORS_ALLOWED_ORIGINS`, all set by `charts/slotting-optimization` from its values; the chart refuses to render without `database.*`, `kafka.brokers` and the four consumer groups, and without an analytics DSN source when `analytics.enabled` ([Runbook](/docs/operations/runbook#deployment)). warehouse-infra sets `mcp.enabled: true` and `analytics.enabled: true` with `analytics.existingSecret: slotting-optimization-analytics-db`. |
+| A cluster deployment | everything above with real DSNs and brokers, plus `MIGRATIONS_DATABASE_URL` when `DATABASE_URL` goes through a pooler, `OTEL_EXPORTER_OTLP_ENDPOINT`, `SERVICE_VERSION`, `ENVIRONMENT` and `CORS_ALLOWED_ORIGINS`, all set by `charts/slotting-optimization` from its values; the chart refuses to render without `database.*`, `kafka.brokers` and the five consumer groups, and without an analytics DSN source when `analytics.enabled` ([Runbook](/docs/operations/runbook#deployment)). warehouse-infra sets `mcp.enabled: true` and `analytics.enabled: true` with `analytics.existingSecret: slotting-optimization-analytics-db`. |

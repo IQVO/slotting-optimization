@@ -107,6 +107,11 @@ func (x *wave2) readBackEqualsKept(n int) error {
 	if err := json.Unmarshal(x.body, &got); err != nil {
 		return fmt.Errorf("read-back is not JSON: %w", err)
 	}
+	// GET adds the execution progress (ADR 0010) to the stored plan: the plan
+	// itself must be what was kept.
+	if m, ok := got.(map[string]any); ok {
+		delete(m, "execution")
+	}
 	if !reflect.DeepEqual(want, got) {
 		return fmt.Errorf("plan read back differs:\n kept: %s\n read: %s", x.planRaw, x.body)
 	}

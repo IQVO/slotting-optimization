@@ -97,12 +97,15 @@ by `SlotPlan.Reject` through `POST /slot-plans/{planId}/rejections`.
 `Supersede` raises **no** event: consumers learn it from
 `supersedes_plan_id` on the newer `SlotPlanApproved`.
 
-**Consumers:** `wes-work-planning` consumes `SlotPlanApproved` and plans one
-RELOCATE work unit per move (its ADR 0040; `move_seq` = the move's 0-based
-position in `moves`), executed by fulfillment-execution and recorded by
+**Consumers:** three contexts consume `SlotPlanApproved`. `wes-work-planning`
+plans one RELOCATE work unit per move (its ADR 0040; `move_seq` = the move's
+0-based position in `moves`), executed by fulfillment-execution and recorded by
 inventory-storage ([ADR 0010](/docs/adr/0010-approved-slot-plans-are-executed-as-wes-relocation-work),
-[Integration](/docs/ecosystem/integration#downstream)). Nothing consumes
-`SlotPlanGenerated` or `SlotPlanRejected`.
+[Integration](/docs/ecosystem/integration#downstream)). `inventory-storage`
+also reads the `assignments` map into its forward-face read model (its ADR 0050,
+`slot_plan_consumer.go`) and `pick-face-replenishment` into its forward
+assignment map (`slotting_consumer.go`). Nothing consumes `SlotPlanGenerated`
+or `SlotPlanRejected`.
 
 ## Consumed
 
@@ -112,6 +115,9 @@ inventory-storage ([ADR 0010](/docs/adr/0010-approved-slot-plans-are-executed-as
 | `com.warehouse.wms.product-master.product.ProductClassified` | `warehouse.product-master.events` | product-master | `sku`, `handling_tags`, `temperature_class`, `version` | `ApplyProductClassified` |
 | `com.warehouse.wms.product-master.product.ProductDimensionsDeclared` | `warehouse.product-master.events` | product-master | `sku`, `effective.volume_mm3`, `effective.weight_g`, `effective_source`, `version` | `ApplyPhysicalProfile` |
 | `com.warehouse.wms.product-master.product.ProductMeasured` | `warehouse.product-master.events` | product-master | same as above | `ApplyPhysicalProfile` |
+| `com.warehouse.wms.product-master.product.ProductPackLevelDeclared` | `warehouse.product-master.events` | product-master | `sku`, `level`, `gtin`, `units_per_pack`, `dims{length_mm,width_mm,height_mm,weight_g}`, `effective_from`, `version` | `ApplyPackLevelDeclared` (ADR 0012) |
+| `com.warehouse.wms.product-master.product.ProductPackLevelRetired` | `warehouse.product-master.events` | product-master | `sku`, `level`, `gtin`, `effective_to`, `version` | `ApplyPackLevelRetired` |
+| `com.warehouse.wms.product-master.product.ProductPackLevelMeasured` | `warehouse.product-master.events` | product-master | `sku`, `level`, `gtin`, `dims{length_mm,width_mm,height_mm,weight_g}`, `version` | `ApplyPackLevelMeasured` |
 | `com.warehouse.wms.facility-layout.zone.ZoneRegistered` | `warehouse.facility.events` | facility-layout | `zoneId`, `siteCode`, `areaCode`, `zoneCode`, `temperatureClass`, `hazmat` | `ApplyZoneRegistered` |
 | `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` | `warehouse.facility.events` | facility-layout | `locationCode`, `zoneId`, `role`, `maxWeightKg`, `maxVolumeM3` (`aisleId`, `locationType`, `dockFlow`, `activities` ignored) | `ApplyLocationSlotRegistered` |
 | `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | `warehouse.facility.events` | facility-layout | `locationCode` | `ApplyLocationSlotDecommissioned` |

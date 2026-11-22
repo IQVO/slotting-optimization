@@ -28,12 +28,13 @@ flowchart LR
     pfr["pick-face-replenishment (wms)"]
     proj["slotting-projector -> slotting-reports (this repo)"]
     om -->|"SiteSkuDemandChanged"| so
-    pm -->|"ProductClassified, ProductDimensionsDeclared, ProductMeasured"| so
+    pm -->|"ProductClassified, ProductDimensionsDeclared, ProductMeasured, ProductPackLevelDeclared, ProductPackLevelRetired, ProductPackLevelMeasured"| so
     fl -->|"ZoneRegistered, LocationSlotRegistered, LocationSlotDecommissioned"| so
     users -->|"REST /slot-plans, /forward-slots, /sku-velocity"| so
     agent -->|"MCP list_slot_plans, get_slot_plan"| so
     so -->|"SlotPlanApproved: RELOCATE work per move"| wwp
     so -->|"SlotPlanApproved: forward assignment map"| pfr
+    so -->|"SlotPlanApproved: forward-face read model"| is
     so -->|"analytics topic: all three events"| proj
     console -.->|"GET /reports/* (no Kong route)"| proj
     wwp -->|"TaskCompleted RELOCATE"| is
@@ -47,7 +48,7 @@ Topics: `warehouse.order-management.events`, `warehouse.product-master.events`,
 repository's projector, ADR 0006). The dashed edge is wired in the console
 but does not reach the reports binary in the kind cluster (see below).
 
-Source: `internal/adapters/inbound/kafka/{demand,product,layout,stock}_consumer.go`,
+Source: `internal/adapters/inbound/kafka/{demand,product,packlevel,layout,stock}_consumer.go`,
 `internal/adapters/outbound/kafka/encoder.go`,
 `internal/adapters/inbound/http/server.go`, ADR 0001 (context map),
 [ADR 0010](/docs/adr/0010-approved-slot-plans-are-executed-as-wes-relocation-work)
@@ -66,6 +67,7 @@ the topic constant and the type strings below exist in its code.
 | `order-management` | `warehouse.order-management.events` | `com.warehouse.wes.order-management.siteskudemand.SiteSkuDemandChanged` | `source_order_id`, `line_no`, `site_id`, `sku`, `demanded_units`, `due_at`, `state` (`ACTIVE` or `REMOVED`) | upsert of `demand_lines` by `(source_order_id, line_no)`, last writer wins; dropped when `DEMAND_SITE_ID` names another site |
 | `product-master` | `warehouse.product-master.events` | `com.warehouse.wms.product-master.product.ProductClassified` | `sku`, `handling_tags`, `temperature_class`, `version` | replaces the classification in `product_profiles` if `version` is newer |
 | `product-master` | same | `com.warehouse.wms.product-master.product.ProductDimensionsDeclared`, `com.warehouse.wms.product-master.product.ProductMeasured` | `sku`, `effective.volume_mm3`, `effective.weight_g`, `effective_source`, `version` | replaces the effective unit size if `version` is newer; `effective_source = none` clears it |
+| `product-master` | same | `com.warehouse.wms.product-master.product.ProductPackLevelDeclared`, `...ProductPackLevelRetired`, `...ProductPackLevelMeasured` | `sku`, `level`, `gtin`, and per type `units_per_pack`, `dims{length_mm,width_mm,height_mm,weight_g}`, `effective_from` (Declared); `effective_to` (Retired); `dims` (Measured); `version` | upsert of `pack_levels`, one row per `(sku, level)`, guarded by `version` (ADR 0012); read by the case-pick faces. An undecodable payload is dead-lettered at once |
 | `facility-layout` | `warehouse.facility.events` | `com.warehouse.wms.facility-layout.zone.ZoneRegistered` | `zoneId`, `siteCode`, `areaCode`, `zoneCode`, `temperatureClass`, `hazmat` | upsert of `zones` |
 | `facility-layout` | same | `com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered` | `locationCode`, `zoneId`, `role` (empty means `Storage`), `maxWeightKg`, `maxVolumeM3` | upsert of `slots` unless the slot was decommissioned |
 | `facility-layout` | same | `com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned` | `locationCode` | `slots.active = false`, for good |
@@ -101,7 +103,8 @@ wes-work-planning numbers the moves in (its ADR 0040).
 
 | Consumer | Protocol | Contract | State on `develop` |
 | --- | --- | --- | --- |
-| any subscriber of `warehouse.slotting-optimization.events` | Kafka, CloudEvents 1.0 structured mode, key = plan id, optional W3C `traceparent` header of the writing request ([ADR 0009](/docs/adr/0009-trace-context-crosses-the-outbox)) | `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated`, `...SlotPlanApproved` (full `{sku, slot}` map, the moves, `supersedes_plan_id`), `...SlotPlanRejected`; dataschema `urn:warehouse:slotting-optimization:events:<EventName>:v1` ([Domain events](/docs/ddd/domain-events)) | `wes-work-planning` (below) and `pick-face-replenishment` consume `SlotPlanApproved`; no sibling consumes `SlotPlanGenerated` or `SlotPlanRejected` |
+| any subscriber of `warehouse.slotting-optimization.events` | Kafka, CloudEvents 1.0 structured mode, key = plan id, optional W3C `traceparent` header of the writing request ([ADR 0009](/docs/adr/0009-trace-context-crosses-the-outbox)) | `com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated`, `...SlotPlanApproved` (full `{sku, slot}` map, the moves, `supersedes_plan_id`), `...SlotPlanRejected`; dataschema `urn:warehouse:slotting-optimization:events:<EventName>:v1` ([Domain events](/docs/ddd/domain-events)) | `wes-work-planning` (below), `inventory-storage` (below) and `pick-face-replenishment` consume `SlotPlanApproved`; no sibling consumes `SlotPlanGenerated` or `SlotPlanRejected` |
+| `inventory-storage` | Kafka, Published Language / Conformist | `SlotPlanApproved` v1: the full `assignments` map replaces the site's forward-face read model, which `ReserveStock` reads to draw a SKU's forward pick face before its reserve bins (`SlotPlanConsumer`, `internal/adapters/inbound/kafka/slot_plan_consumer.go` on its `origin/develop`, its ADR 0050; its `apis/asyncapi.yaml` says the consumer always runs) | **built** there; this context's `moves` are ignored by it (RELOCATE work goes through wes-work-planning, above) |
 | `pick-face-replenishment` | Kafka, Published Language / Conformist | `SlotPlanApproved` v1: its forward-assignment map (`ApplyForwardAssignmentMap`, `internal/adapters/inbound/kafka/slotting_consumer.go` on its `origin/develop`) | **live**: built there and wired by warehouse-infra (`helm-values/pick-face-replenishment.yaml`, group `pick-face-replenishment-slotting`) |
 | `cmd/slotting-projector` (this repository) | Kafka `warehouse.slotting-optimization.analytics`, same CloudEvents ids as the integration topic | the three event types with byte-identical payloads, dataschema `urn:warehouse:slotting-optimization:analytics:<EventName>:v1` (ADR 0006) | **live**: `analytics.enabled: true` in warehouse-infra's values; not an integration contract, no sibling reads it |
 | planners, web remote `slotting_mfe` | REST (Open Host Service), unauthenticated | `apis/openapi.yaml`: `POST /slot-plans`, `GET /slot-plans`, `GET /slot-plans/{planId}`, `POST /slot-plans/{planId}/approvals`, `POST /slot-plans/{planId}/rejections`, `GET /forward-slots`, `GET /sku-velocity` | API **live** behind Kong `/api/slotting-optimization`. The remote (`web/`) is built and registered by `warehouse-console` (route `/slotting/*`, container `slotting_mfe`, `/mfes/slotting-optimization/`), but warehouse-infra does not deploy it (no `frontend_remote` in `terraform/apps.yaml`, no `frontend.enabled`): **wired-but-unused**. `CORS_ALLOWED_ORIGINS` defaults to the console's dev origin `http://localhost:5173`. |
@@ -127,7 +130,9 @@ later events of the same plan then overtake it until an operator re-arms it
   stock itself and does not change stow behaviour (ADR 0001). The stock moves
   of an approved plan are planned by wes-work-planning, executed by
   fulfillment-execution and recorded by inventory-storage; this context only
-  reads the resulting `StockRelocated` (ADR 0010).
+  reads the resulting `StockRelocated` (ADR 0010). The edge that does exist is
+  an event edge: inventory-storage consumes `SlotPlanApproved` for its
+  forward-face read model (row above).
 - **Proposals are not gated on execution** in v1: a new plan can be
   generated and approved while the previous one is half executed.
 - **No edge to `inbound-receiving` or `warehouse-planning`.**

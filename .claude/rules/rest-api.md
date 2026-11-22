@@ -30,11 +30,14 @@ prefix `/api/slotting-optimization`.
   `idempotency-key-reused`, `plan-not-found`, `plan-not-draft`,
   `approved-plan-conflict`, `concurrent-modification`, `internal-error`.
 - Request bodies reject unknown fields (`DisallowUnknownFields`).
-- `POST /slot-plans` creates a resource: the fleet `Idempotency-Key` middleware
-  applies (missing key = 400 `idempotency-key-required`; same key + different
-  body = 409 `idempotency-key-reused`; replays carry `Idempotency-Replayed: true`). Approve and reject are state transitions
-  on an existing resource and do not take a key: repeating one answers 409
-  `plan-not-draft`.
+- Every POST is behind the fleet `Idempotency-Key` middleware (missing key =
+  400 `idempotency-key-required`; same key + different body against a stored
+  answer = 409 `idempotency-key-reused`; replays carry
+  `Idempotency-Replayed: true`). A stored answer is replayed only when it was
+  final for the request (ADR 0016): a 2xx and a FINAL refusal are stored;
+  a RETRYABLE refusal (`invalid-site-id`, `approved-plan-conflict`,
+  `concurrent-modification`) is not stored -- its key is released and a retry
+  under the same key executes the work again.
 - Lists use opaque cursors (`nextCursor` absent on the last page).
 - Auth: none (fleet-wide revert 2026-09-11; `TestNoAuthMiddlewareReintroduced`).
 - No outbound HTTP client and no MCP client: plans are computed from event-fed

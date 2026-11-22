@@ -40,7 +40,7 @@ on [Testing](/docs/development/testing).
 
 Postgres and Kafka are the only runtime ([ADR 0011](/docs/adr/0011-postgres-and-kafka-are-the-only-runtime)):
 the binary has no in-memory mode, so it exits at boot without `DATABASE_URL`,
-`KAFKA_BROKERS` and the four `*_CONSUMER_GROUP` variables, naming the missing
+`KAFKA_BROKERS` and the five `*_CONSUMER_GROUP` variables, naming the missing
 one. The `docker-compose.yml` at the repository root starts both
 dependencies (Postgres on `localhost:55432`, a single-node Kafka on
 `localhost:9092`, advertised as `localhost` so the first produce works):
@@ -68,7 +68,7 @@ broker splits the partitions between your laptop and the cluster (the reason
 
 The binary applies the embedded migrations `0001_slotting_schema.up.sql` and
 `0002_slot_plan_move_executions.up.sql` at boot (through `MIGRATIONS_DATABASE_URL`, which defaults to `DATABASE_URL`),
-starts the four consumers and the outbox relay, and only then binds the
+starts the five consumers and the outbox relay, and only then binds the
 listener. The process logs JSON lines to stdout:
 
 ```json

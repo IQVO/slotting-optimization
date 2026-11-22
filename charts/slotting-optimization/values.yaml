@@ -358,6 +358,12 @@ a2a:
       cpu: 100m
       memory: 128Mi
 
+# capacity step 3 (warehouse-infra ADR 0012): true (with mcp.enabled and a2a.enabled) runs cmd/mcp and cmd/a2a as
+# two containers of one <release>-agents Deployment. Off by default; warehouse-infra switches it on.
+agents:
+  colocate: false
+  strategy: {}   # {} = k8s default (RollingUpdate); {type: Recreate} only when no surge slot is free
+
 nodeSelector: {}
 tolerations: []
 affinity: {}
@@ -416,6 +422,16 @@ analytics:
       type: ClusterIP
       port: 80
       targetPort: 8092
+    # Kong exposure of the reports API (reports-route.yaml): host path
+    # /api/slotting-optimization/reports rewritten to /reports. Off by default;
+    # warehouse-infra turns it on with the real parentRefs and path.
+    route:
+      enabled: false
+      path: "/api/slotting-optimization/reports"
+      parentRefs:
+        - name: ""
+          namespace: ""
+          sectionName: "http"
     resources:
       limits:
         cpu: 500m

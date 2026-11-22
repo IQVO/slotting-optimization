@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	inboundhttp "github.com/claudioed/slotting-optimization/internal/adapters/inbound/http"
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/ids"
 	"github.com/claudioed/slotting-optimization/internal/adapters/outbound/kafka"
@@ -28,6 +30,7 @@ import (
 // fleet Idempotency-Key middleware on POST /slot-plans, a fixed clock.
 type pgFixture struct {
 	server *httptest.Server
+	pool   *pgxpool.Pool
 	query  func(sql string, args ...any) int
 }
 
@@ -77,7 +80,7 @@ func newPgFixture(t *testing.T) *pgFixture {
 			t.Fatal(err)
 		}
 	}
-	return &pgFixture{server: srv, query: func(sql string, args ...any) int {
+	return &pgFixture{server: srv, pool: pool, query: func(sql string, args ...any) int {
 		var n int
 		if err := pool.QueryRow(ctx, sql, args...).Scan(&n); err != nil {
 			t.Fatal(err)

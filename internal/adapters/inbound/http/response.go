@@ -62,8 +62,10 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	writeProblem(w, r, p, detail)
 }
 
-// writeProblem writes p with an explicit detail.
+// writeProblem writes p with an explicit detail and marks the idempotency
+// middleware's capturing writer with p's replay class (replay_class.go).
 func writeProblem(w http.ResponseWriter, r *http.Request, p problem, detail string) {
+	markReplayClass(w, p.class)
 	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(p.status)
 	_ = json.NewEncoder(w).Encode(problemDetail{

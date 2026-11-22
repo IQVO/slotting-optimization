@@ -109,3 +109,7 @@ and BDD tests.
   moved or invented.
 - Creating topics: infra owns them; the service still relies on broker
   auto-creation.
+
+## Addendum 2026-11-13: current state
+
+Decisions 1 and 2 name four consumers and four consumer groups. `cmd/api` now starts five: [ADR 0012](./0012-case-pick-faces.md) added the pack-level consumer (`PACK_LEVEL_MODE`, `PACK_LEVEL_CONSUMER_GROUP`, `cmd/api/wire_kafka.go` `consumerSpecs`), so `PACK_LEVEL_CONSUMER_GROUP` is mandatory too and all five consumers always start.

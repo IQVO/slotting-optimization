@@ -34,8 +34,10 @@ carried by `supersedes_plan_id` on the new `SlotPlanApproved`.
 
 Consumers of this integration topic on `origin/develop` of the siblings:
 `wes-work-planning` (`SlotPlanApproved`: one RELOCATE work unit per move,
-its ADR-0040) and `pick-face-replenishment` (`SlotPlanApproved`: its local
-forward-assignment map, `internal/adapters/inbound/kafka/slotting_consumer.go`).
+its ADR-0040), `inventory-storage` (`SlotPlanApproved`: its forward-face read
+model, `internal/adapters/inbound/kafka/slot_plan_consumer.go`, its ADR 0050) and
+`pick-face-replenishment` (`SlotPlanApproved`: its local forward-assignment
+map, `internal/adapters/inbound/kafka/slotting_consumer.go`).
 No sibling consumes `SlotPlanGenerated` or `SlotPlanRejected`.
 
 ### Analytics stream

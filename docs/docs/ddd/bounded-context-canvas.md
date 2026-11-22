@@ -57,7 +57,7 @@ flowchart LR
     in0 -->|"cmd - REST<br/>Generate slot plan, Approve,<br/>Reject"| BC
     in0 -.->|"qry - REST<br/>Get plan, List plans, Forward<br/>slots, SKU velocity"| BC
     in1 ==>|"evt - Kafka<br/>warehouse.order-management.events<br/>SiteSkuDemandChanged"| BC
-    in2 ==>|"evt - Kafka<br/>warehouse.product-master.events<br/>ProductClassified,<br/>ProductDimensionsDeclared,<br/>ProductMeasured"| BC
+    in2 ==>|"evt - Kafka<br/>warehouse.product-master.events<br/>ProductClassified,<br/>ProductDimensionsDeclared,<br/>ProductMeasured,<br/>ProductPackLevelDeclared,<br/>ProductPackLevelRetired,<br/>ProductPackLevelMeasured"| BC
     in3 ==>|"evt - Kafka<br/>warehouse.facility.events<br/>ZoneRegistered,<br/>LocationSlotRegistered,<br/>LocationSlotDecommissioned"| BC
     in4 -.->|"qry - MCP<br/>list_slot_plans, get_slot_plan"| BC
     in5 ==>|"evt - Kafka<br/>warehouse.inventory.events<br/>StockRelocated"| BC
@@ -150,7 +150,7 @@ Source: `internal/adapters/inbound/kafka/{demand,product,layout,stock}_consumer.
 | Collaborator | Message | Kind | Channel |
 | --- | --- | --- | --- |
 | order-management | `SiteSkuDemandChanged` | event | `warehouse.order-management.events` |
-| product-master | `ProductClassified`, `ProductDimensionsDeclared`, `ProductMeasured` | events | `warehouse.product-master.events` |
+| product-master | `ProductClassified`, `ProductDimensionsDeclared`, `ProductMeasured`, `ProductPackLevelDeclared`, `ProductPackLevelRetired`, `ProductPackLevelMeasured` (ADR 0012) | events | `warehouse.product-master.events` |
 | facility-layout | `ZoneRegistered`, `LocationSlotRegistered`, `LocationSlotDecommissioned` | events | `warehouse.facility.events` |
 | inventory-storage | `StockRelocated` | event | `warehouse.inventory.events` (execution progress, ADR 0010) |
 | planner (human, or the web remote `slotting_mfe`) | Generate slot plan, Approve, Reject | commands | `POST /slot-plans`, `POST /slot-plans/{planId}/approvals`, `POST /slot-plans/{planId}/rejections` |
@@ -166,6 +166,7 @@ flowchart LR
     so -->|"same three events, same ids"| atopic["warehouse.slotting-optimization.analytics"]
     topic -->|"SlotPlanApproved: RELOCATE work per move"| exec["wes-work-planning, fulfillment-execution"]
     topic -->|"SlotPlanApproved: forward assignment map"| pfr["pick-face-replenishment"]
+    topic -->|"SlotPlanApproved: forward-face read model"| ist["inventory-storage"]
     atopic --> proj["slotting-projector (this repository)"]
     exec -->|"StockRelocated via inventory-storage"| so
 ```
@@ -174,8 +175,8 @@ Source: `internal/adapters/outbound/kafka/encoder.go` (`FanoutEncoder`), ADR 000
 
 | Message | Kind | Channel | Consumers |
 | --- | --- | --- | --- |
-| `SlotPlanGenerated` | event | `warehouse.slotting-optimization.events` and `warehouse.slotting-optimization.analytics` | no sibling (wes-work-planning and pick-face-replenishment skip it); this repository's `slotting-projector` reads the analytics copy |
-| `SlotPlanApproved` | event | same | wes-work-planning (RELOCATE work per move, its ADR 0040; ADR 0010), pick-face-replenishment (forward assignment map, `ApplyForwardAssignmentMap`); `slotting-projector` (analytics copy) |
+| `SlotPlanGenerated` | event | `warehouse.slotting-optimization.events` and `warehouse.slotting-optimization.analytics` | no sibling (wes-work-planning, inventory-storage and pick-face-replenishment skip it); this repository's `slotting-projector` reads the analytics copy |
+| `SlotPlanApproved` | event | same | wes-work-planning (RELOCATE work per move, its ADR 0040; ADR 0010), pick-face-replenishment (forward assignment map, `ApplyForwardAssignmentMap`), inventory-storage (forward-face read model, its ADR 0050); `slotting-projector` (analytics copy) |
 | `SlotPlanRejected` | event | same | no sibling; `slotting-projector` (analytics copy) |
 
 ## Ubiquitous language
@@ -223,8 +224,9 @@ forward slot, eligibility, stickiness, local copy. Full glossary:
   (wes-work-planning RELOCATE work, inventory-storage records it; progress
   comes back as `StockRelocated`). Should a new proposal wait for the
   previous plan's execution? Not in v1.
-- Which consumer reads `SlotPlanApproved`? Answered on `develop`:
-  wes-work-planning (RELOCATE work) and pick-face-replenishment (forward
-  assignment map). No sibling reads `SlotPlanGenerated` or `SlotPlanRejected`.
+- Which consumer reads `SlotPlanApproved`? Answered on `develop`: three
+  contexts. wes-work-planning (RELOCATE work), inventory-storage (forward-face
+  read model) and pick-face-replenishment (forward assignment map). No
+  sibling reads `SlotPlanGenerated` or `SlotPlanRejected`.
 - A travel-distance ranking needs layout geometry the consumer does not read
   yet (`LocationGeometryUpdated` is ignored today).
