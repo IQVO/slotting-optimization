@@ -63,7 +63,8 @@ paths:
         assignments, the moves against the site's current Approved plan and the
         SKUs it could not place, each with a reason. Requires an
         `Idempotency-Key`; replaying the same key and body returns the original
-        plan.
+        plan for 24 hours after the first answer (then the key is forgotten
+        and the request executes again).
       tags: [Slot plans]
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
@@ -555,7 +556,10 @@ components:
         its key is released and the retry executes the work again, so the same
         key with a different body afterwards is a NEW request, not a conflict.
         The same key with a different request against a STORED answer is
-        409 `idempotency-key-reused`. A 5xx outcome is never stored.
+        409 `idempotency-key-reused`. A 5xx outcome is never stored. A stored
+        answer lives for 24 hours: past that window the key is forgotten (the
+        row is deleted), so the same key and body EXECUTES again instead of
+        replaying, and an hourly background purge deletes the expired rows.
       schema:
         type: string
         minLength: 1

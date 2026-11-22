@@ -238,7 +238,7 @@ ten paths:
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/slot-plans` | Generate a plan (policy `abc-velocity-v1`). **Requires an `Idempotency-Key` header**: the same key + body replays the stored response when the first answer was final (a 2xx or a FINAL refusal; a RETRYABLE refusal — `invalid-site-id`, `approved-plan-conflict`, `concurrent-modification` — is not stored and its key is released, so the retry executes again); the same key with a different request against a stored answer is a `409 idempotency-key-reused`; a replay carries `Idempotency-Replayed: true`. Every POST requires the key |
+| POST | `/slot-plans` | Generate a plan (policy `abc-velocity-v1`). **Requires an `Idempotency-Key` header**: the same key + body replays the stored response when the first answer was final (a 2xx or a FINAL refusal; a RETRYABLE refusal — `invalid-site-id`, `approved-plan-conflict`, `concurrent-modification` — is not stored and its key is released, so the retry executes again); the same key with a different request against a stored answer is a `409 idempotency-key-reused`; a replay carries `Idempotency-Replayed: true`. A stored answer lives for 24 hours (`IdempotencyTTL`, ADR 0016 addendum): past the window the key is forgotten, the request executes again and an hourly purge deletes the expired rows. Every POST requires the key |
 | GET | `/slot-plans` | List plans (filters `siteId`, `state`; `limit`, `cursor`; answers `{items, nextCursor}`) |
 | GET | `/slot-plans/{planId}` | One plan in full: assignments, moves, unassigned, execution progress |
 | POST | `/slot-plans/{planId}/approvals` | Record the human approval (Draft → Approved) |

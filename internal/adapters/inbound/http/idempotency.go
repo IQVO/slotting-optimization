@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,6 +25,32 @@ const IdempotencyReplayedHeader = "Idempotency-Replayed"
 
 // maxIdempotencyKeyLen is the longest accepted Idempotency-Key.
 const maxIdempotencyKeyLen = 128
+
+// IdempotencyTTL is how long a stored answer lives: the ONE constant the
+// claim (claimExpiredKeySQL below), the replay read (replayStoredKeysSQL)
+// and the retention purge (idempotency_retention.go) all use, so they can
+// never disagree about which rows are live. A key older than this is
+// forgotten: the request under it executes again (ADR 0016, addendum
+// 2026-11-22).
+const IdempotencyTTL = 24 * time.Hour
+
+// claimExpiredKeySQL forgets an expired key inside the request's OWN
+// transaction, before the INSERT: created_at <= now() - ttl is the exact
+// complement of the replay read's created_at > now() - ttl and matches the
+// purge's predicate, all on the same IdempotencyTTL. The DELETE takes the
+// row lock, so of the requests racing on an expired key exactly one claims
+// it and re-executes; the losers block on the claimer's INSERT, then replay
+// the fresh answer.
+const claimExpiredKeySQL = `DELETE FROM idempotency_keys
+WHERE key = $1 AND created_at <= now() - make_interval(secs => $2)`
+
+// replayStoredKeysSQL reads the stored answer of a key. The age guard
+// (created_at > now() - ttl) is the exact complement of the claim and the
+// purge: a row past the TTL can never answer, not even in the window
+// between its expiry and the sweep.
+const replayStoredKeysSQL = `SELECT request_hash, status_code, response_body, response_headers
+FROM idempotency_keys
+WHERE key = $1 AND created_at > now() - $2::interval`
 
 // validIdempotencyKey reports whether key is 1-128 printable ASCII characters.
 func validIdempotencyKey(key string) bool {
@@ -69,6 +97,11 @@ type TxBinder func(ctx context.Context, tx pgx.Tx) context.Context
 //     with no class roll everything back, key row included, and are never
 //     cached, so the same key can retry the real work. The key is global: it
 //     is looked up alone.
+//   - A stored answer lives for IdempotencyTTL (24h). An expired row is
+//     claimed (deleted) by the next request under the key, which then
+//     executes the work again, and is never answered by the replay read;
+//     the background purge deletes what is left (ADR 0016, addendum
+//     2026-11-22).
 func RequireIdempotencyKey(pool *pgxpool.Pool, bind TxBinder) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -99,17 +132,13 @@ func RequireIdempotencyKey(pool *pgxpool.Pool, bind TxBinder) func(http.Handler)
 				writeError(w, r, err)
 				return
 			}
-			tag, err := tx.Exec(ctx, `
-				INSERT INTO idempotency_keys (key, method, path, request_hash)
-				VALUES ($1, $2, $3, $4)
-				ON CONFLICT (key) DO NOTHING
-			`, key, r.Method, r.URL.Path, requestHash)
+			inserted, err := claimKey(ctx, tx, key, r.Method, r.URL.Path, requestHash)
 			if err != nil {
 				_ = tx.Rollback(ctx)
 				writeError(w, r, err)
 				return
 			}
-			if tag.RowsAffected() == 0 {
+			if !inserted {
 				_ = tx.Rollback(ctx)
 				replayCachedResponse(w, r, pool, key, requestHash)
 				return
@@ -119,9 +148,31 @@ func RequireIdempotencyKey(pool *pgxpool.Pool, bind TxBinder) func(http.Handler)
 	}
 }
 
+// claimKey runs the request-time claim inside the middleware's transaction:
+// an expired row for the key is forgotten first (the claim, ADR 0016 addendum
+// 2026-11-22), then the key's own row is inserted. inserted is false when a
+// LIVE row won the race -- the caller replays that row's stored answer; the
+// row lock the DELETE and INSERT take makes exactly one racing request the
+// claimer, on an expired key as on a fresh one.
+func claimKey(ctx context.Context, tx pgx.Tx, key, method, path, requestHash string) (bool, error) {
+	if _, err := tx.Exec(ctx, claimExpiredKeySQL, key, IdempotencyTTL.Seconds()); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO idempotency_keys (key, method, path, request_hash)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (key) DO NOTHING
+	`, key, method, path, requestHash)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // replayCachedResponse answers a request whose key already has a committed
 // row: the stored outcome when the fingerprint (method + path + body hash,
-// folded into requestHash) matches, 409 idempotency-key-reused when it does not.
+// folded into requestHash) matches, 409 idempotency-key-reused when it does
+// not. A row past IdempotencyTTL never answers (the age guard).
 func replayCachedResponse(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool, key, requestHash string) {
 	var (
 		storedHash string
@@ -129,11 +180,17 @@ func replayCachedResponse(w http.ResponseWriter, r *http.Request, pool *pgxpool.
 		body       []byte
 		headersRaw []byte
 	)
-	err := pool.QueryRow(r.Context(), `
-		SELECT request_hash, status_code, response_body, response_headers
-		FROM idempotency_keys WHERE key = $1
-	`, key).Scan(&storedHash, &statusCode, &body, &headersRaw)
+	err := pool.QueryRow(r.Context(), replayStoredKeysSQL, key, IdempotencyTTL.String()).
+		Scan(&storedHash, &statusCode, &body, &headersRaw)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The row expired in the microscopic window between the
+			// conflicting INSERT and this read. It must not answer: fail the
+			// request (a 500 is never stored) -- the client's retry claims
+			// the expired row and executes the work again.
+			writeError(w, r, errIdempotencyRowExpired)
+			return
+		}
 		writeError(w, r, err)
 		return
 	}
@@ -154,6 +211,12 @@ func replayCachedResponse(w http.ResponseWriter, r *http.Request, pool *pgxpool.
 }
 
 var errMissingOutcome = idempotencyError("idempotency row committed with no recorded outcome")
+
+// errIdempotencyRowExpired guards the microscopic window in which a row
+// expires between the conflicting INSERT and the replay read: the row must
+// not answer, and the failed request (never stored) makes the client's retry
+// claim the expired key and execute again.
+var errIdempotencyRowExpired = idempotencyError("the idempotency row expired during the replay lookup; a retry executes the work again")
 
 type idempotencyError string
 
