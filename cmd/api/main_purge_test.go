@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -69,11 +70,12 @@ func TestPurgeOnceStopsWhenTheContextEnds(t *testing.T) {
 	}
 }
 
-// countingExec counts Exec calls (each answering an empty batch).
-type countingExec struct{ calls int }
+// countingExec counts Exec calls (each answering an empty batch); the count
+// is atomic: the purge goroutine writes it, the test reads it.
+type countingExec struct{ calls atomic.Int32 }
 
 func (c *countingExec) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
-	c.calls++
+	c.calls.Add(1)
 	return pgconn.NewCommandTag("DELETE 0"), nil
 }
 
@@ -82,10 +84,10 @@ func TestStartIdempotencyPurgeRunsAtOnceThenStops(t *testing.T) {
 	db := &countingExec{}
 	w, stop := startIdempotencyPurge(db, discardLogger())
 	deadline := time.Now().Add(5 * time.Second)
-	for db.calls == 0 && time.Now().Before(deadline) {
+	for db.calls.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	if db.calls == 0 {
+	if db.calls.Load() == 0 {
 		t.Fatal("the purge never ran its at-start pass")
 	}
 	stop()
@@ -94,10 +96,10 @@ func TestStartIdempotencyPurgeRunsAtOnceThenStops(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the purge did not stop after stop()")
 	}
-	after := db.calls
+	after := db.calls.Load()
 	time.Sleep(50 * time.Millisecond)
-	if db.calls != after {
-		t.Fatalf("the purge ran %d more passes after stop", db.calls-after)
+	if n := db.calls.Load(); n != after {
+		t.Fatalf("the purge ran %d more passes after stop", n-after)
 	}
 }
 
