@@ -1,7 +1,8 @@
 // Command api is slotting-optimization's composition root: it wires env
 // config into adapters, adapters into use cases, and use cases into the HTTP
-// router, the four local-copy Kafka consumers (ADR 0003, ADR 0010) and the
-// outbox relay, all on real Postgres and real Kafka (ADR 0011): there is no
+// router, the four local-copy Kafka consumers (ADR 0003, ADR 0010), the
+// outbox relay and the idempotency-key retention purge (ADR 0016, addendum
+// 2026-11-22), all on real Postgres and real Kafka (ADR 0011): there is no
 // in-memory mode, no log sink and no consumer that is off.
 //
 // Environment:
@@ -118,14 +119,20 @@ func run(ctx context.Context) error {
 		closeConsumers()
 		return err
 	}
-	return serveUntilSignal(ctx, logger, httpServer, readiness, consumers, closeConsumers, relay, closeRelay, srv.ShutdownDrainDelay)
+	// The idempotency-key retention purge (ADR 0016, addendum 2026-11-22):
+	// one pass at start, then hourly, over the same pool the middleware
+	// reads. Like the relay it only ever logs; it is stopped and awaited on
+	// every shutdown path, with the other workers.
+	purge, closePurge := startIdempotencyPurge(ad.pool, logger)
+	return serveUntilSignal(ctx, logger, httpServer, readiness, append(consumers, purge),
+		func() { closeConsumers(); closePurge() }, relay, closeRelay, srv.ShutdownDrainDelay)
 }
 
 // serveUntilSignal runs httpServer until SIGINT/SIGTERM (or a listen error),
 // then shuts down in the fleet order: (1) /readyz flips to 503, (2) wait the
-// drain delay, (3) drain HTTP, (4) stop and await the consumers, (5) stop and
-// await the relay LAST so nothing committed above is stranded; the caller's
-// deferred pool.Close runs after all of it.
+// drain delay, (3) drain HTTP, (4) stop and await the consumers and the
+// idempotency purge, (5) stop and await the relay LAST so nothing committed
+// above is stranded; the caller's deferred pool.Close runs after all of it.
 func serveUntilSignal(ctx context.Context, logger *slog.Logger, httpServer *http.Server, readiness *inboundhttp.Readiness,
 	consumers []*worker, closeConsumers func(), relay *worker, closeRelay func(), drainDelay time.Duration,
 ) error {
