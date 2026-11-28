@@ -1,0 +1,51 @@
+# slotting-optimization 2.0.5 (v2.0.5, 748599c) - System Assets & Interaction Standard v0.4
+apiVersion: warehouse/system-assets/v1
+application: application.yaml
+release:
+  version: 2.0.5
+  tag: v2.0.5
+  commit: 748599c42bc237c98f8a74970c0fc3675e60610d
+  chart: oci://ghcr.io/iqvo/slotting-optimization:2.0.5
+  images:
+  - ghcr.io/iqvo/warehouse-infra/slotting-optimization:748599c-arm64
+  drift:
+  - MCP initialize serverInfo slotting-optimization-mcp@'1.0.0' != release 2.0.5 (MC-5)
+  - served A2A Agent Card version '748599c-arm64' != release 2.0.5 (SERVICE_VERSION is rendered from the
+    image tag)
+  - cluster runs chart 'slotting-optimization-0.1.0', not the released chart slotting-optimization-2.0.5
+assets:
+- id: slotting-optimization/openapi
+  kind: openapi
+  path: openapi/openapi.yaml
+  spec:
+    name: openapi
+    version: 3.0.3
+  version: 1.0.0
+  exposure: kong
+- id: slotting-optimization/asyncapi
+  kind: asyncapi
+  path: asyncapi/asyncapi.yaml
+  spec:
+    name: asyncapi
+    version: 2.6.0
+  version: 1.0.0
+  exposure: kafka
+- id: slotting-optimization/mcp
+  kind: mcp
+  documents:
+    serverCard: mcp/server-card.json
+    primitives: mcp/primitives.json
+  spec:
+    name: mcp
+    version: '2026-07-28'
+    serverCard: sep-2127
+  version: 2.0.5
+  exposure: agent-router
+- id: slotting-optimization/a2a
+  kind: a2a
+  path: a2a/agent-card.json
+  spec:
+    name: a2a
+    version: 1.0.0
+  version: 2.0.5
+  exposure: agent-router

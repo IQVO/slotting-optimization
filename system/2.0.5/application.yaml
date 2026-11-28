@@ -1,0 +1,33 @@
+# slotting-optimization 2.0.5 (v2.0.5, 748599c) - System Assets & Interaction Standard v0.4
+apiVersion: warehouse/application/v1
+application:
+  id: slotting-optimization
+  name: Slotting Optimization
+  kind: bounded-context
+  version: 2.0.5
+  description: Slotting Optimization — ABC-velocity forward pick slot plans (Draft, Approved, Rejected);
+    publishes Slotting events on warehouse.slotting-optimization.events
+  repository: https://github.com/IQVO/slotting-optimization
+  owners:
+  - claudioed
+  lifecycle: production
+subdomain:
+  id: wms
+  name: WMS
+  summary: 'Warehouse Management System: what is held where, in what state, and how it gets in.'
+boundedContext:
+  id: slotting-optimization
+  name: Slotting Optimization
+  classification: Supporting
+  tier: WMS
+  purpose: 'Decides which SKUs deserve a forward pick slot: velocity-ranked slot plans and slot moves
+    that a human approves, derived purely from event-fed local copies.'
+  publishes:
+  - warehouse.slotting-optimization.analytics
+  - warehouse.slotting-optimization.events
+tags:
+- slot-plan
+- forward-slot
+- velocity
+assets: system-assets.yaml
+interactions: interactions.yaml

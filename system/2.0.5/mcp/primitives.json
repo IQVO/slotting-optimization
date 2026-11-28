@@ -1,0 +1,519 @@
+{
+  "apiVersion": "warehouse/mcp-primitives/v1",
+  "server": "com.warehouse.wms/slotting-optimization",
+  "tools": [
+    {
+      "_meta": {
+        "com.warehouse/authority": "L1"
+      },
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read the CURRENT forward slot map of a site: the assignments (sku, slot, abc_class) of its Approved plan, with that plan_id and approved_at. A site without an Approved plan yields an empty assignment list and no plan_id, not an error. site_id defaults to the service's default site. Read-only; fails with invalid-site-id for a malformed site or when no site is given and no default is configured.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "description": "the site to read the forward slot map of; omitted means the service's default site"
+          }
+        },
+        "additionalProperties": false
+      },
+      "name": "get_forward_slots",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "site_id": {
+            "type": "string"
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "approved_at": {
+            "type": "string"
+          },
+          "assignments": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "sku": {
+                  "type": "string"
+                },
+                "slot": {
+                  "type": "string"
+                },
+                "abc_class": {
+                  "type": "string"
+                },
+                "pick_unit": {
+                  "type": "string"
+                },
+                "cases_capacity": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "sku",
+                "slot",
+                "abc_class",
+                "pick_unit"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "site_id",
+          "assignments"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "_meta": {
+        "com.warehouse/authority": "L1"
+      },
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read the demand the planner works from: per SKU the ACTIVE order lines (picks) and units over the last window_days days (default 28, max 365) of a site, fastest first, cut to limit SKUs (default 100, max 500). site_id defaults to the service's default site. Returns window_from and window_to (UTC). Read-only; a bad limit or window fails with invalid-limit and a malformed or missing site with invalid-site-id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "site_id": {
+            "type": "string",
+            "description": "the site to read demand of; omitted means the service's default site"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "keep only the N fastest SKUs, 1..500; omitted or 0 means 100"
+          },
+          "window_days": {
+            "type": "integer",
+            "description": "demand window in days ending now, 1..365; omitted or 0 means 28"
+          }
+        },
+        "additionalProperties": false
+      },
+      "name": "get_sku_velocity",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "site_id": {
+            "type": "string"
+          },
+          "window_from": {
+            "type": "string"
+          },
+          "window_to": {
+            "type": "string"
+          },
+          "items": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "sku": {
+                  "type": "string"
+                },
+                "picks": {
+                  "type": "integer"
+                },
+                "units": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "sku",
+                "picks",
+                "units"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "site_id",
+          "window_from",
+          "window_to",
+          "items"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "_meta": {
+        "com.warehouse/authority": "L1"
+      },
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read one forward pick slot plan by id: site_id, state (Draft, Approved, Rejected or Superseded), policy, the demand window (window_from, window_to), generated_at and the decision instants (approved_at, rejected_at, superseded_at, each omitted until it happens), reject_reason and supersedes_plan_id (omitted when none), the assignments (sku, slot, abc_class, picks, units), the moves against the previous plan (sku, from_slot, to_slot, kind) and the unassigned SKUs with their reason, plus version, and the execution progress (execution: moves_total, moves_executed, last_executed_at and per move move_seq, sku, kind, executed, executed_quantity, last_executed_at) recorded from inventory-storage's relocations. Read-only; fails with plan-not-found for an unknown id and invalid-plan-id for a malformed one.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "plan_id": {
+            "type": "string",
+            "description": "the slot plan id returned when it was generated, e.g. plan-1b4e28ba-2fa1-4d3c-8f6e-0a1b2c3d4e5f"
+          }
+        },
+        "required": [
+          "plan_id"
+        ],
+        "additionalProperties": false
+      },
+      "name": "get_slot_plan",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "plan_id": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "policy": {
+            "type": "string"
+          },
+          "window_from": {
+            "type": "string"
+          },
+          "window_to": {
+            "type": "string"
+          },
+          "generated_at": {
+            "type": "string"
+          },
+          "approved_at": {
+            "type": "string"
+          },
+          "rejected_at": {
+            "type": "string"
+          },
+          "superseded_at": {
+            "type": "string"
+          },
+          "reject_reason": {
+            "type": "string"
+          },
+          "supersedes_plan_id": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "assignments": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "sku": {
+                  "type": "string"
+                },
+                "slot": {
+                  "type": "string"
+                },
+                "abc_class": {
+                  "type": "string"
+                },
+                "picks": {
+                  "type": "integer"
+                },
+                "units": {
+                  "type": "integer"
+                },
+                "pick_unit": {
+                  "type": "string"
+                },
+                "cases_capacity": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "sku",
+                "slot",
+                "abc_class",
+                "picks",
+                "units",
+                "pick_unit"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "moves": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "sku": {
+                  "type": "string"
+                },
+                "from_slot": {
+                  "type": "string"
+                },
+                "to_slot": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sku",
+                "kind"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "unassigned": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "sku": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "sku",
+                "reason"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "execution": {
+            "type": [
+              "null",
+              "object"
+            ],
+            "properties": {
+              "moves_total": {
+                "type": "integer"
+              },
+              "moves_executed": {
+                "type": "integer"
+              },
+              "last_executed_at": {
+                "type": "string"
+              },
+              "moves": {
+                "type": [
+                  "null",
+                  "array"
+                ],
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "move_seq": {
+                      "type": "integer"
+                    },
+                    "sku": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "executed": {
+                      "type": "boolean"
+                    },
+                    "executed_quantity": {
+                      "type": "integer"
+                    },
+                    "last_executed_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "move_seq",
+                    "sku",
+                    "kind",
+                    "executed",
+                    "executed_quantity"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "moves_total",
+              "moves_executed",
+              "moves"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "plan_id",
+          "site_id",
+          "state",
+          "policy",
+          "window_from",
+          "window_to",
+          "generated_at",
+          "version",
+          "assignments",
+          "moves",
+          "unassigned"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "_meta": {
+        "com.warehouse/authority": "L1"
+      },
+      "annotations": {
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "List slot plans newest first, a page at a time (default 100, max 500), as summaries (ids, site, state, policy, window and assignment/move/unassigned counts), optionally only those of one site and/or in one state (Draft, Approved, Rejected or Superseded). Pass the returned next_cursor to get the next page; it is absent on the last page. Read-only; a bad limit fails with invalid-limit, a bad cursor with invalid-cursor, an unknown state with invalid-state and a malformed site with invalid-site-id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "page size, 1..500; omitted or 0 means 100"
+          },
+          "cursor": {
+            "type": "string",
+            "description": "the opaque next_cursor returned by the previous page; omitted means the first page"
+          },
+          "site_id": {
+            "type": "string",
+            "description": "keep only plans of this site; omitted means every site"
+          },
+          "state": {
+            "type": "string",
+            "description": "keep only plans in this state: Draft, Approved, Rejected or Superseded"
+          }
+        },
+        "additionalProperties": false
+      },
+      "name": "list_slot_plans",
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": [
+              "null",
+              "array"
+            ],
+            "items": {
+              "type": "object",
+              "properties": {
+                "plan_id": {
+                  "type": "string"
+                },
+                "site_id": {
+                  "type": "string"
+                },
+                "state": {
+                  "type": "string"
+                },
+                "policy": {
+                  "type": "string"
+                },
+                "window_from": {
+                  "type": "string"
+                },
+                "window_to": {
+                  "type": "string"
+                },
+                "generated_at": {
+                  "type": "string"
+                },
+                "approved_at": {
+                  "type": "string"
+                },
+                "assignment_count": {
+                  "type": "integer"
+                },
+                "move_count": {
+                  "type": "integer"
+                },
+                "unassigned_count": {
+                  "type": "integer"
+                },
+                "version": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "plan_id",
+                "site_id",
+                "state",
+                "policy",
+                "window_from",
+                "window_to",
+                "generated_at",
+                "assignment_count",
+                "move_count",
+                "unassigned_count",
+                "version"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "next_cursor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ],
+  "resources": [],
+  "resourceTemplates": [
+    {
+      "description": "The assignments (sku, slot, abc_class, pick_unit, cases_capacity for CASE faces) of a site's Approved slot plan, with that plan_id and approved_at; a site without an Approved plan yields an empty assignment list and no plan_id, not an error.",
+      "mimeType": "application/json",
+      "name": "current forward slot map of a site",
+      "uriTemplate": "warehouse://slotting-optimization/forward-slots/{siteId}"
+    }
+  ],
+  "prompts": [
+    {
+      "arguments": [
+        {
+          "name": "planId",
+          "description": "the slot plan id to review, e.g. plan-1b4e28ba-2fa1-4d3c-8f6e-0a1b2c3d4e5f (omit to have the SOP explain how to find the newest plan with list_slot_plans)"
+        }
+      ],
+      "description": "Standard operating procedure for reviewing a forward pick slot plan before its approval decision: read the plan, judge the assignments and moves against the current map and the demand, and know when to escalate.",
+      "name": "review_slot_plan"
+    }
+  ]
+}
