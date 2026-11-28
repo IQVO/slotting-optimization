@@ -1,0 +1,1018 @@
+openapi: 3.0.3
+info:
+  title: Slotting Optimization API
+  version: 1.0.0
+  description: |
+    The WMS-tier planner of forward pick slots in the warehouse-systems platform
+    (ADR 0001, ADR 0002). It proposes which SKUs get a forward pick slot and
+    which slot, as a reviewable **slot plan**, and records the human decision on
+    it. Policy `abc-velocity-v1`: rank SKUs by order-line picks over a lookback
+    window, class them A/B/C, and assign eligible forward slots with stickiness
+    (a SKU that still fits its current slot keeps it).
+
+    A plan is created as a `Draft`. Only an approval (`POST /slot-plans/{planId}/approvals`) makes it the site's forward
+    slot map (at most one `Approved` plan per site; approving a new one
+    supersedes the previous one in the same transaction). Approval publishes
+    `SlotPlanApproved` with the full assignment map and the moves. This service
+    moves no stock itself: wes-work-planning plans the moves as RELOCATE work and
+    inventory-storage records them; the resulting `StockRelocated` comes back as
+    the plan's `execution` progress on `GET /slot-plans/{planId}` (ADR 0010).
+
+    Plans are computed from local copies fed by events (ADR 0003); this API never
+    calls a sibling context. Events are published as CloudEvents on
+    `warehouse.slotting-optimization.events` through a transactional outbox (see
+    `apis/asyncapi.yaml`).
+
+    Errors are RFC 7807 problem documents with
+    `type = https://errors.slotting-optimization.warehouse-systems.dev/<slug>`.
+    There is no authentication layer (fleet decision 2026-09-11).
+  contact:
+    name: slotting-optimization maintainers
+    url: https://github.com/IQVO/slotting-optimization
+  license:
+    name: UNLICENSED
+servers:
+  - url: http://localhost:8080
+    description: Local development
+  - url: http://localhost:8000/api/slotting-optimization
+    description: Local kind cluster through Kong
+tags:
+  - name: Slot plans
+    description: Generate, review, approve and reject slot plans.
+  - name: Forward slots
+    description: The current approved forward-slot assignment map.
+  - name: Velocity
+    description: The demand velocity the planner works from.
+  - name: Reports
+    description: |
+      The analytics read side (ADR 0006), served read-only by the separate
+      slotting-reports binary (Service `<release>-reports`).
+  - name: Health
+    description: Liveness and readiness probes.
+
+paths:
+  /slot-plans:
+    post:
+      operationId: generateSlotPlan
+      summary: Generate a slot plan
+      description: |
+        Computes a new `Draft` plan for a site from the local demand, product and
+        layout copies and stores it. `siteId` defaults to the configured default
+        site; `lookbackDays` (1 to 365, default 28) sets the demand window, which
+        ends now and starts `lookbackDays` earlier. The plan lists its
+        assignments, the moves against the site's current Approved plan and the
+        SKUs it could not place, each with a reason. Requires an
+        `Idempotency-Key`; replaying the same key and body returns the original
+        plan.
+      tags: [Slot plans]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateSlotPlanRequest"
+            example:
+              siteId: SITE-1
+              lookbackDays: 28
+      responses:
+        "201":
+          description: The Draft plan was generated.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+            Location:
+              description: Path of the new plan.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SlotPlan"
+              example:
+                planId: plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07
+                siteId: SITE-1
+                state: Draft
+                policy: abc-velocity-v1
+                windowFrom: "2026-09-10T12:00:00Z"
+                windowTo: "2026-10-08T12:00:00Z"
+                generatedAt: "2026-10-08T12:00:00Z"
+                version: 1
+                assignments:
+                  - { sku: SKU-1, slot: WH1-FWD-A01-01-01-A, abcClass: A, picks: 80, units: 160, pickUnit: EACH }
+                  - { sku: SKU-2, slot: WH1-FWD-A01-01-02-A, abcClass: B, picks: 20, units: 40, pickUnit: EACH }
+                moves:
+                  - { sku: SKU-1, toSlot: WH1-FWD-A01-01-01-A, kind: Assign }
+                  - { sku: SKU-2, fromSlot: WH1-FWD-A02-03-01-A, toSlot: WH1-FWD-A01-01-02-A, kind: Relocate }
+                  - { sku: SKU-3, fromSlot: WH1-FWD-A01-01-03-A, kind: Vacate }
+                unassigned:
+                  - { sku: SKU-4, reason: NoPhysicalProfile }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/IdempotencyKeyReused"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      operationId: listSlotPlans
+      summary: List slot plans
+      description: |
+        Lists plans newest first, a page at a time. `cursor` is the opaque
+        `nextCursor` of the previous page; a response without `nextCursor` is the
+        last page. Optional filters narrow by site and state.
+      tags: [Slot plans]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: siteId
+          in: query
+          description: Only plans of this site.
+          schema:
+            type: string
+        - name: state
+          in: query
+          description: Only plans in this state.
+          schema:
+            $ref: "#/components/schemas/PlanState"
+      responses:
+        "200":
+          description: One page of plan summaries.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SlotPlanPage"
+              example:
+                items:
+                  - planId: plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07
+                    siteId: SITE-1
+                    state: Approved
+                    policy: abc-velocity-v1
+                    windowFrom: "2026-09-10T12:00:00Z"
+                    windowTo: "2026-10-08T12:00:00Z"
+                    generatedAt: "2026-10-08T12:00:00Z"
+                    approvedAt: "2026-10-08T12:30:00Z"
+                    assignmentCount: 2
+                    moveCount: 3
+                    unassignedCount: 1
+                    version: 2
+                nextCursor: cGxhbi0z
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /slot-plans/{planId}:
+    parameters:
+      - $ref: "#/components/parameters/PlanId"
+    get:
+      operationId: getSlotPlan
+      summary: Get a slot plan
+      description: |
+        Returns the full plan, with its assignments, moves, unassigned SKUs and
+        reasons, state and timestamps, plus `execution`: how far the floor has
+        executed its moves (ADR 0010), derived from the relocations
+        inventory-storage recorded (`StockRelocated`). Only this operation
+        carries `execution`; proposals are not gated on it.
+      tags: [Slot plans]
+      responses:
+        "200":
+          description: The plan.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SlotPlan"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/PlanNotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /slot-plans/{planId}/approvals:
+    parameters:
+      - $ref: "#/components/parameters/PlanId"
+    post:
+      operationId: approveSlotPlan
+      summary: Approve a Draft plan (create an approval)
+      description: |
+        Moves a `Draft` plan to `Approved` and publishes `SlotPlanApproved` with
+        the full assignment map and the moves. The site's previously Approved
+        plan, if any, becomes `Superseded` in the same transaction. Approving a
+        plan that is not a `Draft` is a 409 `plan-not-draft` (final: stored and
+        replayed under the same `Idempotency-Key`); losing a race to
+        another approval of the same site is a 409 `approved-plan-conflict` or a
+        409 `concurrent-modification` (retryable: not stored, the key is
+        released and a retry under the same key executes again).
+      tags: [Slot plans]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      responses:
+        "200":
+          description: The plan is now Approved.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SlotPlan"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/PlanNotFound"
+        "409":
+          $ref: "#/components/responses/PlanConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /slot-plans/{planId}/rejections:
+    parameters:
+      - $ref: "#/components/parameters/PlanId"
+    post:
+      operationId: rejectSlotPlan
+      summary: Reject a Draft plan (create a rejection)
+      description: |
+        Moves a `Draft` plan to `Rejected` and publishes `SlotPlanRejected`. The
+        optional `reason` is at most 500 characters. Rejecting a plan that is not
+        a `Draft` is a 409 `plan-not-draft`.
+      tags: [Slot plans]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RejectSlotPlanRequest"
+            example:
+              reason: Too many relocations before peak season.
+      responses:
+        "200":
+          description: The plan is now Rejected.
+          headers:
+            Idempotency-Replayed:
+              $ref: "#/components/headers/IdempotencyReplayed"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SlotPlan"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/PlanNotFound"
+        "409":
+          $ref: "#/components/responses/PlanConflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /forward-slots:
+    get:
+      operationId: listForwardSlots
+      x-pagination-exempt: view  # one composite resource: the single current approved forward-slot map of a site, read whole and atomically (plan id, approval time and assignments belong together)
+      summary: The current approved forward-slot map
+      description: |
+        The assignment map of the site's currently Approved plan, in SKU order.
+        Returns an empty `assignments` list and no `planId` while the site has no
+        Approved plan.
+      tags: [Forward slots]
+      parameters:
+        - name: siteId
+          in: query
+          description: The site; defaults to the configured default site.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The forward-slot map.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForwardSlots"
+              example:
+                siteId: SITE-1
+                planId: plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07
+                approvedAt: "2026-10-08T12:30:00Z"
+                assignments:
+                  - { sku: SKU-1, slot: WH1-FWD-A01-01-01-A, abcClass: A, pickUnit: EACH }
+                  - { sku: SKU-2, slot: WH1-FWD-A01-01-02-A, abcClass: B, pickUnit: EACH }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /sku-velocity:
+    get:
+      operationId: listSkuVelocity
+      summary: SKU velocity over a window
+      description: |
+        The demand the planner works from: per SKU, the number of ACTIVE demand
+        lines (`picks`) and their units over the last `windowDays` days, ordered
+        by picks, then units (descending) and SKU (ascending), a page at a time
+        (`limit` and the opaque `cursor` of the previous `nextCursor`; filters
+        are repeated on every page). Read from the local demand copy (ADR 0003).
+      tags: [Velocity]
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+        - name: windowDays
+          in: query
+          description: Lookback window in days, 1 to 365 (default 28).
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 365
+            default: 28
+        - name: siteId
+          in: query
+          description: The site; defaults to the configured default site.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The velocity list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkuVelocityList"
+              example:
+                siteId: SITE-1
+                windowFrom: "2026-09-10T12:00:00Z"
+                windowTo: "2026-10-08T12:00:00Z"
+                items:
+                  - { sku: SKU-1, picks: 80, units: 160 }
+                  - { sku: SKU-2, picks: 20, units: 40 }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /healthz:
+    get:
+      operationId: healthz
+      summary: Liveness probe
+      description: 200 while the process is running.
+      tags: [Health]
+      responses:
+        "200":
+          description: Alive.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+  /readyz:
+    get:
+      operationId: readyz
+      summary: Readiness probe
+      description: |
+        200 when the service can serve traffic. 503 in two cases: while
+        draining for shutdown (`{"status":"not_ready"}`), and while Postgres or
+        the Kafka broker is unreachable (problem `dependency-unavailable`, its
+        `detail` names the failing dependency: `postgres`, `kafka`). The
+        Postgres ping and the Kafka metadata request (an empty topic list is
+        healthy; topics are never required) are cached for 3 seconds and
+        bounded at 2 seconds.
+      tags: [Health]
+      responses:
+        "200":
+          description: Ready.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+        "503":
+          description: Draining for shutdown (`Status`), or a runtime dependency is unavailable (`Problem`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Status"
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/dependency-unavailable
+                title: A runtime dependency is unavailable
+                status: 503
+                detail: "not ready: kafka"
+                instance: /readyz
+
+  /reports/slot-plan-funnel:
+    servers:
+      - url: http://localhost:8092
+        description: slotting-reports (cluster-internal Service <release>-reports)
+    get:
+      operationId: getSlotPlanFunnel
+      summary: The slot-plan review funnel per day
+      tags: [Reports]
+      description: |
+        How do the site's slot-plan reviews flow? `days[]` has one row per UTC
+        calendar day intersecting `[from, to)` (zeros included); a day's counts
+        cover the part of the day inside the range. `plans_generated`,
+        `plans_approved` and `plans_rejected` count the events whose `time`
+        fell in the window; `supersessions` counts the plans a later approval
+        superseded in the window (a supersession is stamped on the plan that
+        LOST the forward-slot map, not on the approving one).
+        `approval_latency` is the generated-to-approved time of the plans
+        approved in the window whose generation the projection also saw; a
+        plan decided without a seen generation counts in its decision counter
+        but has no latency. `p50_seconds` / `p95_seconds` are
+        linear-interpolated percentiles and are null when `count` is 0.
+        `siteId` narrows every counter to one site (omitted = every site);
+        `granularity` is `day` (the only bucket; the default). The data is as
+        fresh as `GET /reports/freshness` says.
+      parameters:
+        - $ref: "#/components/parameters/ReportFrom"
+        - $ref: "#/components/parameters/ReportTo"
+        - name: siteId
+          in: query
+          required: false
+          description: Narrows every counter to one site. Omitted = every site.
+          schema:
+            type: string
+          example: SITE-1
+        - name: granularity
+          in: query
+          required: false
+          description: The time-bucket resolution; only `day` exists (the default).
+          schema:
+            type: string
+            enum: [day]
+          example: day
+      responses:
+        "200":
+          description: The funnel for the effective range.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SlotPlanFunnelReport"
+              example:
+                from: "2026-10-05T00:00:00Z"
+                to: "2026-10-07T00:00:00Z"
+                site_id: "SITE-1"
+                granularity: day
+                days:
+                  - day: "2026-10-05"
+                    plans_generated: 12
+                    plans_approved: 7
+                    plans_rejected: 3
+                    approval_latency: { count: 7, p50_seconds: 5400, p95_seconds: 19800 }
+                    supersessions: 1
+                  - day: "2026-10-06"
+                    plans_generated: 0
+                    plans_approved: 0
+                    plans_rejected: 0
+                    approval_latency: { count: 0, p50_seconds: null, p95_seconds: null }
+                    supersessions: 0
+        "400":
+          description: "`from` / `to` are not RFC 3339, empty or inverted or span more than 366 days (`invalid-report-range`), or `granularity` is not `day` (`invalid-report-granularity`)."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/invalid-report-range
+                title: from and to must form a valid RFC 3339 range of at most 366 days
+                status: 400
+                detail: from must be strictly before to
+                instance: /reports/slot-plan-funnel
+        "500":
+          $ref: "#/components/responses/ReportStoreError"
+  /reports/freshness:
+    servers:
+      - url: http://localhost:8092
+        description: slotting-reports (cluster-internal Service <release>-reports)
+    get:
+      operationId: getReportsFreshness
+      summary: How far the analytics projection is behind
+      tags: [Reports]
+      description: |
+        The freshness lag of the projection the report reads: `as_of` is the
+        CloudEvents time of the newest event the projector has applied and
+        `lag_seconds` is now minus `as_of` (never negative). Both are null
+        until the first event is applied. A growing lag means the projector
+        is down or behind, not that the report is wrong: it catches up when
+        the projector does.
+      responses:
+        "200":
+          description: The freshness (null fields while nothing was projected).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportsFreshness"
+              example:
+                as_of: "2026-10-07T11:59:55Z"
+                lag_seconds: 4.2
+        "500":
+          $ref: "#/components/responses/ReportStoreError"
+
+components:
+  parameters:
+    PlanId:
+      name: planId
+      in: path
+      required: true
+      description: The plan id (`plan-` followed by a unique suffix, at most 64 characters).
+      schema:
+        type: string
+        minLength: 6
+        maxLength: 64
+        pattern: "^plan-[^\\s/]+$"
+      example: plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07
+    Limit:
+      name: limit
+      in: query
+      description: Page size, 1 to 500 (default 100).
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 500
+        default: 100
+    Cursor:
+      name: cursor
+      in: query
+      description: The `nextCursor` value from the previous page.
+      schema:
+        type: string
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Caller-generated unique key (a UUID per logical submit) that makes a
+        retried request safe: 1 to 128 printable ASCII characters. Every POST
+        needs it, in every deployment (the service always runs on Postgres; there
+        is no in-memory mode). An absent key is a 400 `idempotency-key-required`,
+        an invalid one (longer than 128 characters or
+        with a control or non-ASCII character) is a 400 `idempotency-key-invalid`.
+        A replay with the same key and the same method, path and body returns the
+        stored response (status, headers and body) with `Idempotency-Replayed:
+        true`, but only when the first answer was final for the request: a 2xx
+        and a FINAL refusal are stored and replayed, while a RETRYABLE refusal
+        (409 `approved-plan-conflict`, 409 `concurrent-modification`, 400
+        `invalid-site-id` when no default site is configured) is not stored --
+        its key is released and the retry executes the work again, so the same
+        key with a different body afterwards is a NEW request, not a conflict.
+        The same key with a different request against a STORED answer is
+        409 `idempotency-key-reused`. A 5xx outcome is never stored.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+
+    ReportFrom:
+      name: from
+      in: query
+      required: false
+      description: RFC 3339 instant, inclusive. Defaults to `to` minus 30 days.
+      schema:
+        type: string
+        format: date-time
+      example: "2026-10-05T00:00:00Z"
+    ReportTo:
+      name: to
+      in: query
+      required: false
+      description: RFC 3339 instant, exclusive. Defaults to now. At most 366 days after `from`.
+      schema:
+        type: string
+        format: date-time
+      example: "2026-10-07T00:00:00Z"
+
+  headers:
+    IdempotencyReplayed:
+      description: "`true` when the response is the stored answer of an earlier request with the same Idempotency-Key; absent on the first execution."
+      schema:
+        type: string
+        enum: ["true"]
+
+  responses:
+    BadRequest:
+      description: Malformed JSON body (also a body over 64 KiB, which is cut off and fails to parse), an unknown or trailing JSON field, a NUL character (U+0000) in the body or the query (Postgres text cannot hold it), an invalid path or query parameter, an unknown query parameter on a list or lookup endpoint, or a missing or invalid Idempotency-Key on a POST.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            malformedBody:
+              summary: Malformed JSON body or unknown field
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/malformed-request
+                title: Malformed request
+                status: 400
+                detail: request body is not valid JSON for this operation
+                instance: /slot-plans
+            invalidLookback:
+              summary: lookbackDays out of range
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/invalid-lookback
+                title: Lookback is invalid
+                status: 400
+                detail: lookbackDays must be between 1 and 365
+                instance: /slot-plans
+            invalidSite:
+              summary: Invalid site id
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/invalid-site-id
+                title: Site id is invalid
+                status: 400
+                detail: "siteId must be 1..64 characters without whitespace, control characters or '/'"
+                instance: /slot-plans
+            invalidPlanId:
+              summary: Invalid plan id
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/invalid-plan-id
+                title: Plan id is invalid
+                status: 400
+                detail: "plan id must start with plan- and have no whitespace, control characters or '/'"
+                instance: /slot-plans/nope
+            invalidReason:
+              summary: Reject reason too long
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/reject-reason-too-long
+                title: Reject reason is too long
+                status: 400
+                detail: reason must be at most 500 characters
+                instance: /slot-plans/plan-1/rejections
+            invalidCursor:
+              summary: Invalid cursor
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/invalid-cursor
+                title: Cursor is invalid
+                status: 400
+                detail: cursor is not a value returned by this API
+                instance: /slot-plans
+            invalidLimit:
+              summary: Invalid limit or window
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/invalid-limit
+                title: Limit is invalid
+                status: 400
+                detail: limit must be between 1 and 500
+                instance: /sku-velocity
+            invalidState:
+              summary: Unknown plan state filter
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/invalid-state
+                title: State is invalid
+                status: 400
+                detail: "state must be one of Draft, Approved, Rejected, Superseded"
+                instance: /slot-plans
+            unknownQueryParameter:
+              summary: Query parameter the operation does not define
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/unknown-query-parameter
+                title: Unknown query parameter
+                status: 400
+                detail: 'unknown query parameter: "foo" is not a parameter of this operation'
+                instance: /slot-plans
+            idempotencyKeyInvalid:
+              summary: Idempotency-Key longer than 128 characters or not printable ASCII
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/idempotency-key-invalid
+                title: Idempotency-Key header is invalid
+                status: 400
+                detail: the Idempotency-Key must be 1 to 128 printable ASCII characters
+                instance: /slot-plans
+            idempotencyKeyRequired:
+              summary: Missing Idempotency-Key
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/idempotency-key-required
+                title: Idempotency-Key header is required
+                status: 400
+                detail: send an Idempotency-Key header with a unique value per logical request
+                instance: /slot-plans
+    IdempotencyKeyReused:
+      description: The Idempotency-Key was already used with a different request (method, path or body).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.slotting-optimization.warehouse-systems.dev/idempotency-key-reused
+            title: Idempotency-Key was already used with a different request
+            status: 409
+            detail: the Idempotency-Key was used with a different request
+            instance: /slot-plans
+    PlanNotFound:
+      description: No plan has this id (also a path containing a NUL, answered with the `resource-not-found` problem).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.slotting-optimization.warehouse-systems.dev/plan-not-found
+            title: Slot plan not found
+            status: 404
+            detail: slot plan not found
+            instance: /slot-plans/plan-unknown
+    PlanConflict:
+      description: The plan is not a Draft, another request changed the plan or the site's approval first, or the Idempotency-Key was already used with a different request (`idempotency-key-reused`). `plan-not-draft` and `idempotency-key-reused` are final (stored and replayed under the same key); `approved-plan-conflict` and `concurrent-modification` are retryable (not stored, the key is released, the retry executes again).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          examples:
+            planNotDraft:
+              summary: Only a Draft plan can be approved or rejected
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/plan-not-draft
+                title: Only a Draft plan can be approved or rejected
+                status: 409
+                detail: slot plan is not a Draft
+                instance: /slot-plans/plan-1/approvals
+            idempotencyKeyReused:
+              summary: The Idempotency-Key was used with a different request
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/idempotency-key-reused
+                title: Idempotency-Key was already used with a different request
+                status: 409
+                detail: the Idempotency-Key was used with a different request
+                instance: /slot-plans/plan-1/approvals
+            approvedPlanConflict:
+              summary: Another plan of the site was approved first
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/approved-plan-conflict
+                title: Another plan of this site was approved at the same time
+                status: 409
+                detail: the site already has a newer Approved plan; re-fetch and retry
+                instance: /slot-plans/plan-1/approvals
+            concurrentModification:
+              summary: Concurrent write
+              value:
+                type: https://errors.slotting-optimization.warehouse-systems.dev/concurrent-modification
+                title: The resource was modified by another request; re-fetch the latest version and retry
+                status: 409
+                detail: concurrent modification
+                instance: /slot-plans/plan-1/approvals
+    InternalError:
+      description: Unexpected server error.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.slotting-optimization.warehouse-systems.dev/internal-error
+            title: Internal server error
+            status: 500
+            detail: an unexpected error occurred
+    ReportStoreError:
+      description: The analytical database query failed (slotting-reports only).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.slotting-optimization.warehouse-systems.dev/report-store-error
+            title: The report could not be served
+            status: 500
+            detail: the analytical database query failed
+            instance: /reports/slot-plan-funnel
+
+  schemas:
+    PlanState:
+      type: string
+      description: Lifecycle state of a plan.
+      enum: [Draft, Approved, Rejected, Superseded]
+    AbcClass:
+      type: string
+      description: Velocity class by cumulative pick share (A up to 80 %, B up to 95 %, else C).
+      enum: [A, B, C]
+    MoveKind:
+      type: string
+      enum: [Assign, Relocate, Vacate]
+    UnassignedReason:
+      type: string
+      description: |
+        `NoPhysicalProfile`: the SKU has no effective dimensions. `NoCapacityFit`:
+        compatible slots exist but none holds one unit. `NoEligibleSlot`: no
+        compatible slot exists, or every eligible slot went to a higher-ranked SKU.
+      enum: [NoEligibleSlot, NoPhysicalProfile, NoCapacityFit]
+
+    GenerateSlotPlanRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        siteId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: "^[^\\s/]+$"
+          description: The site to plan; defaults to the configured default site.
+        lookbackDays:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 365
+          default: 28
+          description: Length of the demand window ending now, in days.
+    RejectSlotPlanRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          description: Why the plan was rejected; optional.
+
+    Assignment:
+      type: object
+      required: [sku, slot, abcClass, picks, units, pickUnit]
+      properties:
+        sku: { type: string, example: SKU-1 }
+        slot: { type: string, description: The facility-layout location code of the forward slot, example: WH1-FWD-A01-01-01-A }
+        abcClass: { $ref: "#/components/schemas/AbcClass" }
+        picks: { type: integer, format: int64, minimum: 1, description: ACTIVE demand lines in the window }
+        units: { type: integer, format: int64, minimum: 0, description: Units on those lines }
+        pickUnit: { type: string, enum: [EACH, CASE], description: "The unit the SKU is picked in from this face. CASE only for a SKU with an active CASE pack level and a case-pick zone face; EACH otherwise. Always present." }
+        casesCapacity: { type: integer, format: int64, minimum: 1, description: "Whole cases the CASE-pick face holds; omitted for EACH." }
+    Move:
+      type: object
+      required: [sku, kind]
+      properties:
+        sku: { type: string }
+        fromSlot: { type: string, description: Omitted for an Assign }
+        toSlot: { type: string, description: Omitted for a Vacate }
+        kind: { $ref: "#/components/schemas/MoveKind" }
+    Unassigned:
+      type: object
+      required: [sku, reason]
+      properties:
+        sku: { type: string }
+        reason: { $ref: "#/components/schemas/UnassignedReason" }
+    SlotPlan:
+      type: object
+      required: [planId, siteId, state, policy, windowFrom, windowTo, generatedAt, version, assignments, moves, unassigned]
+      properties:
+        planId: { type: string, example: plan-3b0e8d2a-7c41-4f6a-9d15-2a8b6c4e1f07 }
+        siteId: { type: string }
+        state: { $ref: "#/components/schemas/PlanState" }
+        policy: { type: string, example: abc-velocity-v1 }
+        windowFrom: { type: string, format: date-time }
+        windowTo: { type: string, format: date-time, description: Exclusive }
+        generatedAt: { type: string, format: date-time }
+        approvedAt: { type: string, format: date-time }
+        rejectedAt: { type: string, format: date-time }
+        supersededAt: { type: string, format: date-time }
+        rejectReason: { type: string }
+        supersedesPlanId: { type: string, description: The plan this one replaced when it was approved }
+        version: { type: integer, format: int64, description: "Starts at 1, +1 per accepted transition." }
+        assignments:
+          type: array
+          description: In SKU order.
+          items: { $ref: "#/components/schemas/Assignment" }
+        moves:
+          type: array
+          description: In SKU order.
+          items: { $ref: "#/components/schemas/Move" }
+        unassigned:
+          type: array
+          description: In SKU order.
+          items: { $ref: "#/components/schemas/Unassigned" }
+        execution:
+          $ref: "#/components/schemas/ExecutionProgress"
+    ExecutionProgress:
+      type: object
+      description: |
+        Execution progress of the plan (ADR 0010, additive): which of its moves
+        the floor has executed, from inventory-storage's `StockRelocated`
+        matched to the move (by the move reference `<planId>:<moveSeq>`, else
+        by SKU and bins on the site's Approved plan). Present on
+        `GET /slot-plans/{planId}` only. Only Approved and Superseded plans can
+        gain executions.
+      required: [movesTotal, movesExecuted, moves]
+      properties:
+        movesTotal: { type: integer, format: int32, minimum: 0, description: The plan's moves. }
+        movesExecuted: { type: integer, format: int32, minimum: 0, description: Moves with at least one relocation recorded. }
+        lastExecutedAt: { type: string, format: date-time, description: The latest relocation's instant; absent until one is recorded. }
+        moves:
+          type: array
+          description: One entry per move, in moveSeq order (the plan's moves, SKU order).
+          items: { $ref: "#/components/schemas/MoveExecution" }
+    MoveExecution:
+      type: object
+      required: [moveSeq, sku, kind, executed, executedQuantity]
+      properties:
+        moveSeq: { type: integer, format: int32, minimum: 0, description: "0-based position of the move in the plan's moves (the `move_seq` of SlotPlanApproved's consumers)." }
+        sku: { type: string }
+        kind: { $ref: "#/components/schemas/MoveKind" }
+        executed: { type: boolean, description: At least one relocation of this move is recorded. }
+        executedQuantity: { type: integer, format: int64, minimum: 0, description: "Units moved, summed over the move's relocations." }
+        lastExecutedAt: { type: string, format: date-time, description: Absent until the move is executed. }
+    SlotPlanSummary:
+      type: object
+      required: [planId, siteId, state, policy, windowFrom, windowTo, generatedAt, assignmentCount, moveCount, unassignedCount, version]
+      properties:
+        planId: { type: string }
+        siteId: { type: string }
+        state: { $ref: "#/components/schemas/PlanState" }
+        policy: { type: string }
+        windowFrom: { type: string, format: date-time }
+        windowTo: { type: string, format: date-time }
+        generatedAt: { type: string, format: date-time }
+        approvedAt: { type: string, format: date-time }
+        assignmentCount: { type: integer, format: int32, minimum: 0 }
+        moveCount: { type: integer, format: int32, minimum: 0 }
+        unassignedCount: { type: integer, format: int32, minimum: 0 }
+        version: { type: integer, format: int64 }
+    SlotPlanPage:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/SlotPlanSummary" }
+        nextCursor:
+          type: string
+          description: Opaque cursor for the next page; absent on the last page.
+    ForwardSlot:
+      type: object
+      required: [sku, slot, abcClass, pickUnit]
+      properties:
+        sku: { type: string }
+        slot: { type: string }
+        abcClass: { $ref: "#/components/schemas/AbcClass" }
+        pickUnit: { type: string, enum: [EACH, CASE], description: "The unit the SKU is picked in from this face. CASE only for a SKU with an active CASE pack level and a case-pick zone face; EACH otherwise. Always present." }
+        casesCapacity: { type: integer, format: int64, minimum: 1, description: "Whole cases the CASE-pick face holds; omitted for EACH." }
+    ForwardSlots:
+      type: object
+      required: [siteId, assignments]
+      properties:
+        siteId: { type: string }
+        planId: { type: string, description: The Approved plan the map comes from; absent when the site has none }
+        approvedAt: { type: string, format: date-time }
+        assignments:
+          type: array
+          items: { $ref: "#/components/schemas/ForwardSlot" }
+    SkuVelocity:
+      type: object
+      required: [sku, picks, units]
+      properties:
+        sku: { type: string }
+        picks: { type: integer, format: int64, minimum: 1 }
+        units: { type: integer, format: int64, minimum: 0 }
+    SkuVelocityList:
+      type: object
+      required: [siteId, windowFrom, windowTo, items]
+      properties:
+        siteId: { type: string }
+        windowFrom: { type: string, format: date-time }
+        windowTo: { type: string, format: date-time }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/SkuVelocity" }
+        nextCursor:
+          type: string
+          description: Opaque cursor for the next page; absent on the last page.
+    ApprovalLatencyTiming:
+      type: object
+      description: The generated-to-approved durations of one day's approved plans (linear-interpolated percentiles).
+      required: [count, p50_seconds, p95_seconds]
+      properties:
+        count: { type: integer, minimum: 0 }
+        p50_seconds: { type: number, format: double, nullable: true, minimum: 0, description: Null when count is 0. }
+        p95_seconds: { type: number, format: double, nullable: true, minimum: 0, description: Null when count is 0. }
+    SlotPlanFunnelDay:
+      type: object
+      required: [day, plans_generated, plans_approved, plans_rejected, approval_latency, supersessions]
+      properties:
+        day: { type: string, format: date, description: The UTC calendar day. }
+        plans_generated: { type: integer, minimum: 0, description: SlotPlanGenerated events that fell in the day's window. }
+        plans_approved: { type: integer, minimum: 0, description: SlotPlanApproved events that fell in the day's window. }
+        plans_rejected: { type: integer, minimum: 0, description: SlotPlanRejected events that fell in the day's window. }
+        approval_latency: { $ref: "#/components/schemas/ApprovalLatencyTiming" }
+        supersessions: { type: integer, minimum: 0, description: Plans a later approval superseded in the day's window. }
+    SlotPlanFunnelReport:
+      type: object
+      required: [from, to, granularity, days]
+      properties:
+        from: { type: string, format: date-time, description: The effective range start (inclusive). }
+        to: { type: string, format: date-time, description: The effective range end (exclusive). }
+        site_id: { type: string, description: The site scope; omitted when the report covers every site. }
+        granularity: { type: string, enum: [day] }
+        days:
+          type: array
+          description: One dense row per UTC calendar day intersecting the range, zeros included.
+          items: { $ref: "#/components/schemas/SlotPlanFunnelDay" }
+    ReportsFreshness:
+      type: object
+      required: [as_of, lag_seconds]
+      properties:
+        as_of: { type: string, format: date-time, nullable: true, description: The CloudEvents time of the newest applied event; null until the first. }
+        lag_seconds: { type: number, format: double, nullable: true, minimum: 0, description: "now - as_of, never negative; null until the first event." }
+    Problem:
+      type: object
+      description: RFC 7807 problem document used for every non-2xx response.
+      required: [type, title, status, detail]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer, format: int32 }
+        detail: { type: string }
+        instance: { type: string }
+    Status:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, example: ok }

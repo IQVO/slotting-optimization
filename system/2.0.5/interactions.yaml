@@ -1,0 +1,183 @@
+# slotting-optimization 2.0.5 (v2.0.5, 748599c) - System Assets & Interaction Standard v0.4
+# Interactions of slotting-optimization (STANDARD.md Part B): every call this
+# context MAKES (technology + operation + business) and every event it consumes.
+#
+# Outbound rest / mcp / a2a interactions: NONE, by CLAUDE.md hard rule 4 ("No calls
+# to sibling contexts, ever"). Demand, product, pack-level, layout and relocation
+# facts are event-fed LOCAL COPIES (ADR 0003, ADR 0012). The only invocation
+# technology is event.publish through the transactional outbox drained by the
+# cmd/api relay; each event is written to the integration topic and to the
+# analytics twin (ADR 0006) under the same CloudEvents id and type.
+# The MCP server (cmd/mcp) and the A2A agent (cmd/a2a) are read-only (L1):
+# they never run a use case that publishes, so they are not triggers here.
+apiVersion: warehouse/interactions/v1
+application: application.yaml
+
+interactions:
+
+  # --- GeneratePlan
+  - id: generate-plan-publish-slot-plan-generated
+    technology: event.publish
+    operation:
+      asset: slotting-optimization/asyncapi
+      id: receiveSlotPlanEvents
+      effect: write
+      event: { channel: warehouse.slotting-optimization.events, type: com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated }
+    business:
+      capability: slotting.slot-plan
+      process: slot-plan-generation
+      useCase: GeneratePlan
+      triggers:
+        - { kind: api, via: rest, ref: generateSlotPlan, actor: human:slotting-planner }
+      purpose: Announce a Draft slot plan (policy, window and assignment, move and unassigned counts) proposed for a site.
+      criticality: best-effort
+      onFailure: outbox-retry
+  - id: generate-plan-publish-slot-plan-generated-analytics
+    technology: event.publish
+    operation:
+      asset: slotting-optimization/asyncapi
+      id: receiveSlotPlanAnalytics
+      effect: write
+      event: { channel: warehouse.slotting-optimization.analytics, type: com.warehouse.wms.slotting-optimization.slotplan.SlotPlanGenerated }
+    business:
+      capability: slotting.slot-plan
+      process: slot-plan-generation
+      useCase: GeneratePlan
+      triggers:
+        - { kind: api, via: rest, ref: generateSlotPlan, actor: human:slotting-planner }
+      purpose: Analytics copy of SlotPlanGenerated for the reports read model (cmd/slotting-projector) and the data platform.
+      criticality: best-effort
+      onFailure: outbox-retry
+
+  # --- ApprovePlan
+  - id: approve-plan-publish-slot-plan-approved
+    technology: event.publish
+    operation:
+      asset: slotting-optimization/asyncapi
+      id: receiveSlotPlanEvents
+      effect: write
+      event: { channel: warehouse.slotting-optimization.events, type: com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved }
+    business:
+      capability: slotting.slot-plan
+      process: slot-plan-decision
+      useCase: ApprovePlan
+      triggers:
+        - { kind: api, via: rest, ref: approveSlotPlan, actor: human:slotting-planner }
+      purpose: Publish the human approval with the FULL assignment map and moves, so downstream relocation work needs no lookup (the previous Approved plan of the site is superseded in the same unit of work).
+      criticality: best-effort
+      onFailure: outbox-retry
+  - id: approve-plan-publish-slot-plan-approved-analytics
+    technology: event.publish
+    operation:
+      asset: slotting-optimization/asyncapi
+      id: receiveSlotPlanAnalytics
+      effect: write
+      event: { channel: warehouse.slotting-optimization.analytics, type: com.warehouse.wms.slotting-optimization.slotplan.SlotPlanApproved }
+    business:
+      capability: slotting.slot-plan
+      process: slot-plan-decision
+      useCase: ApprovePlan
+      triggers:
+        - { kind: api, via: rest, ref: approveSlotPlan, actor: human:slotting-planner }
+      purpose: Analytics copy of SlotPlanApproved for the reports read model (cmd/slotting-projector) and the data platform.
+      criticality: best-effort
+      onFailure: outbox-retry
+
+  # --- RejectPlan
+  - id: reject-plan-publish-slot-plan-rejected
+    technology: event.publish
+    operation:
+      asset: slotting-optimization/asyncapi
+      id: receiveSlotPlanEvents
+      effect: write
+      event: { channel: warehouse.slotting-optimization.events, type: com.warehouse.wms.slotting-optimization.slotplan.SlotPlanRejected }
+    business:
+      capability: slotting.slot-plan
+      process: slot-plan-decision
+      useCase: RejectPlan
+      triggers:
+        - { kind: api, via: rest, ref: rejectSlotPlan, actor: human:slotting-planner }
+      purpose: Publish that a Draft slot plan was discarded by a human, with the optional reason.
+      criticality: best-effort
+      onFailure: outbox-retry
+  - id: reject-plan-publish-slot-plan-rejected-analytics
+    technology: event.publish
+    operation:
+      asset: slotting-optimization/asyncapi
+      id: receiveSlotPlanAnalytics
+      effect: write
+      event: { channel: warehouse.slotting-optimization.analytics, type: com.warehouse.wms.slotting-optimization.slotplan.SlotPlanRejected }
+    business:
+      capability: slotting.slot-plan
+      process: slot-plan-decision
+      useCase: RejectPlan
+      triggers:
+        - { kind: api, via: rest, ref: rejectSlotPlan, actor: human:slotting-planner }
+      purpose: Analytics copy of SlotPlanRejected for the reports read model (cmd/slotting-projector) and the data platform.
+      criticality: best-effort
+      onFailure: outbox-retry
+
+subscriptions:
+  - id: consume-order-management-site-sku-demand
+    operation:
+      asset: order-management/asyncapi
+      id: consumeOrderManagementEvents
+      consumerOperation: consumeSiteSkuDemand
+      event:
+        channel: warehouse.order-management.events
+        types:
+          - com.warehouse.wes.order-management.siteskudemand.SiteSkuDemandChanged
+    business:
+      capability: slotting.sku-velocity
+      process: local-demand-copy
+      useCases: [ApplyDemandChanged]
+      purpose: Keep the local per-order-line site/SKU demand copy (last writer wins, REMOVED deactivates) that SKU velocity and slot plans are ranked from (ADR 0003).
+  - id: consume-product-master-product-events
+    operation:
+      asset: product-master/asyncapi
+      id: receiveProductEvents
+      consumerOperation: consumeProductMasterEvents
+      event:
+        channel: warehouse.product-master.events
+        types:
+          - com.warehouse.wms.product-master.product.ProductClassified
+          - com.warehouse.wms.product-master.product.ProductDimensionsDeclared
+          - com.warehouse.wms.product-master.product.ProductMeasured
+          - com.warehouse.wms.product-master.product.ProductPackLevelDeclared
+          - com.warehouse.wms.product-master.product.ProductPackLevelRetired
+          - com.warehouse.wms.product-master.product.ProductPackLevelMeasured
+    business:
+      capability: slotting.slot-eligibility
+      process: local-product-copy
+      useCases: [ApplyProductClassified, ApplyPhysicalProfile, ApplyPackLevelDeclared, ApplyPackLevelRetired, ApplyPackLevelMeasured]
+      purpose: Keep the local product classification, physical profile and pack-level copies that slot eligibility (hazmat, temperature, capacity, CASE-pick faces) is decided from (ADR 0003, ADR 0012).
+  - id: consume-facility-layout-zone-and-location-slot-events
+    operation:
+      asset: facility-layout/asyncapi
+      id: onFacilityEvent
+      consumerOperation: consumeFacilityLayoutEvents
+      event:
+        channel: warehouse.facility.events
+        types:
+          - com.warehouse.wms.facility-layout.zone.ZoneRegistered
+          - com.warehouse.wms.facility-layout.locationslot.LocationSlotRegistered
+          - com.warehouse.wms.facility-layout.locationslot.LocationSlotDecommissioned
+    business:
+      capability: slotting.slot-eligibility
+      process: local-layout-copy
+      useCases: [ApplyZoneRegistered, ApplyLocationSlotRegistered, ApplyLocationSlotDecommissioned]
+      purpose: Keep the local copy of zones and location slots the forward slots of a site are read from (ADR 0003).
+  - id: consume-inventory-storage-stock-relocated
+    operation:
+      asset: inventory-storage/asyncapi
+      id: consumeInventoryStorageEvents
+      consumerOperation: consumeInventoryStorageRelocations
+      event:
+        channel: warehouse.inventory.events
+        types:
+          - com.warehouse.wms.inventory-storage.stock.StockRelocated
+    business:
+      capability: slotting.slot-plan-execution
+      process: slot-plan-execution-tracking
+      useCases: [RecordRelocation]
+      purpose: Record which moves of an Approved slot plan the floor has executed, matched by move reference or by site, SKU and bins (ADR 0010).

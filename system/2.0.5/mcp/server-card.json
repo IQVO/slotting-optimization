@@ -1,0 +1,20 @@
+{
+  "name": "com.warehouse.wms/slotting-optimization",
+  "version": "2.0.5",
+  "title": "Slotting Optimization MCP",
+  "description": "Decides which SKUs deserve a forward pick slot: velocity-ranked slot plans and slot moves that a human approves, derived purely from event-fed local copies.",
+  "websiteUrl": "https://iqvo.github.io/slotting-optimization/",
+  "repository": {
+    "url": "https://github.com/IQVO/slotting-optimization",
+    "source": "github"
+  },
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "http://localhost:8010/api/mcp/slotting-optimization",
+      "protocolVersions": [
+        "2026-07-28"
+      ]
+    }
+  ]
+}
